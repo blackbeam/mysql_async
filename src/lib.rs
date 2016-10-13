@@ -102,6 +102,7 @@ pub mod futures {
     #[doc(inline)]
     pub use conn::{
         BinQueryResult,
+        Disconnect,
         First,
         NewConn,
         Ping,

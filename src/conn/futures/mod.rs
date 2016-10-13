@@ -1,4 +1,5 @@
 mod columns;
+mod disconnect;
 mod first;
 mod new_conn;
 mod new_text_query_result;
@@ -15,6 +16,10 @@ mod write_packet;
 pub use self::columns::{
     Columns,
     new as new_columns,
+};
+pub use self::disconnect::{
+    Disconnect,
+    new as new_disconnect,
 };
 pub use self::first::{
     First,

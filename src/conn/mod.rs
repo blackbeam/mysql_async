@@ -10,6 +10,7 @@ use Opts;
 pub use self::futures::{
     BinQueryResult,
     Columns,
+    Disconnect,
     First,
     MaybeRow,
     NewConn,
@@ -28,6 +29,7 @@ pub use self::futures::{
 
 use self::futures::{
     new_columns,
+    new_disconnect,
     new_first,
     new_new_conn,
     new_new_text_query_result,
@@ -112,6 +114,11 @@ impl Conn {
         new_reset(self.write_command_data(consts::Command::COM_RESET_CONNECTION, &[]))
     }
 
+    /// Disconnect
+    pub fn disconnect(self) -> Disconnect {
+        new_disconnect(self.write_command_data(consts::Command::COM_QUIT, &[]))
+    }
+
     fn handle_text_resultset(self) -> NewTextQueryResult {
         new_new_text_query_result(self.read_packet(), false)
     }
@@ -184,6 +191,19 @@ mod test {
             .and_then(|conn| {
                 conn.reset()
             });
+
+        lp.run(fut).unwrap();
+    }
+
+    #[test]
+    fn should_disconnect() {
+        let mut lp = Core::new().unwrap();
+
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
+            conn.ping()
+        }).and_then(|conn| {
+            conn.disconnect()
+        });
 
         lp.run(fut).unwrap();
     }
