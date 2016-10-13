@@ -138,6 +138,12 @@ enum Step {
     Consumed,
 }
 
+enum Out {
+    ReadPacket((Conn, Packet)),
+    NextResult(TextQueryResult),
+    Done,
+}
+
 /// Mysql query result set.
 ///
 /// `TextQueryResult` may contain zero or more rows. It may also be followed by another result set in
@@ -232,17 +238,18 @@ impl TextQueryResult {
         self.ok_packet.as_ref().and_then(OkPacket::session_state_changes)
     }
 
-    fn either_poll(&mut self) -> Result<Async<Option<Either<(Conn, Packet),
-                                                            Either<TextQueryResult, ()>>>>> {
+    fn either_poll(&mut self) -> Result<Async<Option<Out>>> {
         match self.step {
             Step::ReadPacket(ref mut fut) => {
-                Ok(Async::Ready(Some(Left(try_ready!(fut.poll())))))
+                let val = try_ready!(fut.poll());
+                Ok(Async::Ready(Some(Out::ReadPacket(val))))
             },
             Step::NextResult(ref mut fut) => {
-                Ok(Async::Ready(Some(Right(Left(try_ready!(fut.poll()))))))
+                let val = try_ready!(fut.poll());
+                Ok(Async::Ready(Some(Out::NextResult(val))))
             },
             Step::Done(_) => {
-                Ok(Async::Ready(Some(Right(Right(())))))
+                Ok(Async::Ready(Some(Out::Done)))
             },
             Step::Consumed => {
                 Ok(Async::Ready(None))
@@ -257,7 +264,7 @@ impl Stream for TextQueryResult {
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match try_ready!(self.either_poll()) {
-            Some(Left((conn, packet))) => {
+            Some(Out::ReadPacket((mut conn, packet))) => {
                 if packet.is(PacketType::Eof) {
                     if conn.status.contains(consts::SERVER_MORE_RESULTS_EXISTS) {
                         self.step = Step::NextResult(conn.handle_text_resultset());
@@ -278,11 +285,11 @@ impl Stream for TextQueryResult {
                     Ok(Async::Ready(Some(MaybeRow::Row(row))))
                 }
             },
-            Some(Right(Left(query_result))) => {
+            Some(Out::NextResult(query_result)) => {
                 self.step = Step::Consumed;
                 Ok(Async::Ready(Some(MaybeRow::End(Left(query_result)))))
             },
-            Some(Right(Right(()))) => {
+            Some(Out::Done) => {
                 if let Step::Done(conn) = mem::replace(&mut self.step, Step::Consumed) {
                     Ok(Async::Ready(Some(MaybeRow::End(Right(conn)))))
                 } else {
