@@ -1,5 +1,3 @@
-use consts;
-
 use errors::*;
 
 use std::fmt;
@@ -7,7 +5,6 @@ use std::fmt;
 use lib_futures::stream;
 use lib_futures::{
     Async,
-    Future,
     Poll,
 };
 
@@ -33,7 +30,6 @@ use std::io::Read;
 use std::net::ToSocketAddrs;
 
 use tokio::net::TcpStream;
-use tokio::io::write_all;
 use tokio::reactor::Handle;
 
 mod io_futures;
@@ -48,14 +44,6 @@ pub struct Stream {
 impl fmt::Debug for Stream {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Stream (endpoint={:?})", self.endpoint)
-    }
-}
-
-impl Drop for Stream {
-    fn drop(&mut self) {
-        let endpoint = self.endpoint.take().unwrap();
-        let data = vec![1, 0, 0, 0, consts::Command::COM_QUIT as u8];
-        let _ = write_all(endpoint, data).map(|_| ()).map_err(|_| ()).wait();
     }
 }
 
