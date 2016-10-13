@@ -155,6 +155,7 @@ impl Future for NewConn {
                             warnings: 0,
                             version: self.version,
                             id: self.id,
+                            has_result: None,
                         };
                         self.step = Step::ReadMaxAllowedPacket(conn.read_max_allowed_packet());
                         self.poll()

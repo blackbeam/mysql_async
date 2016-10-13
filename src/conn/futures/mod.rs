@@ -1,5 +1,6 @@
 mod columns;
 mod disconnect;
+mod drop_result;
 mod first;
 mod new_conn;
 mod new_text_query_result;
@@ -20,6 +21,10 @@ pub use self::columns::{
 pub use self::disconnect::{
     Disconnect,
     new as new_disconnect,
+};
+pub use self::drop_result::{
+    DropResult,
+    new as new_drop_result,
 };
 pub use self::first::{
     First,

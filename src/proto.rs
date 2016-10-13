@@ -548,6 +548,7 @@ impl HandshakeResponse {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct OkPacket {
     data: Vec<u8>,
     affected_rows: u64,

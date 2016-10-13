@@ -1,16 +1,22 @@
+use Column;
+
 use consts;
 
-use lib_futures::stream::Stream as FuturesStream;
+use FromRow;
 
 use io::Stream;
 
-use FromRow;
+use lib_futures::stream::Stream as FuturesStream;
+
 use Opts;
+
+use proto::OkPacket;
 
 pub use self::futures::{
     BinQueryResult,
     Columns,
     Disconnect,
+    DropResult,
     First,
     MaybeRow,
     NewConn,
@@ -30,6 +36,7 @@ pub use self::futures::{
 use self::futures::{
     new_columns,
     new_disconnect,
+    new_drop_result,
     new_first,
     new_new_conn,
     new_new_text_query_result,
@@ -42,10 +49,13 @@ use self::futures::{
     new_write_packet,
 };
 
+use std::sync::Arc;
+
 use tokio::reactor::Handle;
 
 pub mod futures;
 pub mod named_params;
+pub mod pool;
 pub mod stmt;
 
 /// Mysql connection
@@ -61,7 +71,10 @@ pub struct Conn {
     status: consts::StatusFlags,
     last_insert_id: u64,
     affected_rows: u64,
-    warnings: u16
+    warnings: u16,
+
+    // TODO: Реализовать Conn::drop_result()
+    has_result: Option<(Arc<Vec<Column>>, Option<OkPacket>, bool)>,
 }
 
 impl Conn {
@@ -117,6 +130,10 @@ impl Conn {
     /// Disconnect
     pub fn disconnect(self) -> Disconnect {
         new_disconnect(self.write_command_data(consts::Command::COM_QUIT, &[]))
+    }
+
+    fn drop_result(self) -> DropResult {
+        new_drop_result(self)
     }
 
     fn handle_text_resultset(self) -> NewTextQueryResult {

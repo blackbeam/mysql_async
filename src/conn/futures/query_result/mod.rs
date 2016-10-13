@@ -146,20 +146,20 @@ pub struct TextQueryResult {
     step: Step,
     columns: Arc<Vec<Column>>,
     ok_packet: Option<OkPacket>,
-    // TODO: Remove
-    #[allow(dead_code)]
     is_bin: bool,
 }
 
-pub fn new(conn: Conn,
-           cols: Vec<Column>,
-           ok_packet: Option<OkPacket>,
-           is_bin: bool) -> TextQueryResult
+pub fn new<T: Into<Arc<Vec<Column>>>>(mut conn: Conn,
+                                      columns: T,
+                                      ok_packet: Option<OkPacket>,
+                                      is_bin: bool) -> TextQueryResult
 {
-    let cols_len = cols.len();
+    let columns = columns.into();
+    let cols_len = columns.len();
+    conn.has_result = Some((columns.clone(), ok_packet.clone(), is_bin));
     TextQueryResult {
         step: if cols_len == 0 { Step::Done(conn) } else { Step::ReadPacket(conn.read_packet()) },
-        columns: Arc::new(cols),
+        columns: columns,
         ok_packet: ok_packet,
         is_bin: is_bin,
     }
@@ -263,6 +263,7 @@ impl Stream for TextQueryResult {
                         self.step = Step::NextResult(conn.handle_text_resultset());
                         self.poll()
                     } else {
+                        conn.has_result = None;
                         self.step = Step::Done(conn);
                         self.poll()
                     }
