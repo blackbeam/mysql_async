@@ -50,19 +50,23 @@ mod futures;
 
 pub use self::futures::{
     BinCollect,
+    BinForEach,
     BinMap,
     BinReduce,
     Collect,
     CollectAll,
+    ForEach,
     Map,
     Reduce,
 };
 use self::futures::{
     new_bin_collect,
+    new_bin_for_each,
     new_bin_map,
     new_bin_reduce,
     new_collect,
     new_collect_all,
+    new_for_each,
     new_map,
     new_reduce,
 };
@@ -144,6 +148,7 @@ enum Out {
     Done,
 }
 
+// TODO: Give a way to generalize over (Bin)MaybeRow.
 /// Mysql query result set.
 ///
 /// `TextQueryResult` may contain zero or more rows. It may also be followed by another result set in
@@ -201,6 +206,13 @@ impl TextQueryResult {
           Self: Sized,
     {
         new_reduce(self, init, fun)
+    }
+
+    pub fn for_each<F>(self, fun: F) -> ForEach<F>
+    where F: FnMut(Row),
+          Self: Sized
+    {
+        new_for_each(self, fun)
     }
 
     /// Affected rows value returned by a server, if any.
@@ -348,6 +360,13 @@ impl BinQueryResult {
               Self: Sized,
     {
         new_bin_reduce(self, init, fun)
+    }
+
+    pub fn for_each<F>(self, fun: F) -> BinForEach<F>
+        where F: FnMut(Row),
+              Self: Sized
+    {
+        new_bin_for_each(self, fun)
     }
 
     /// Affected rows value returned by a server, if any.
