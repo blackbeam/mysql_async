@@ -1,4 +1,11 @@
 use Conn;
+use conn::futures::query::QueryNew;
+use conn::futures::query_result::{
+    QueryResult,
+    ResultSetNew,
+    TextQueryResultNew,
+};
+use conn::futures::query_result::futures::collect_all::CollectAllNew;
 
 use errors::*;
 
@@ -8,7 +15,6 @@ use FromRow;
 
 use futures::{
     CollectAll,
-    Query,
     TextQueryResult,
 };
 
@@ -26,13 +32,13 @@ use lib_futures::Async::Ready;
 use std::marker::PhantomData;
 
 enum Step {
-    WaitForResult(Query),
-    CollectingResult(CollectAll),
+    WaitForResult(QueryNew),
+    CollectingResult(CollectAllNew<TextQueryResultNew>),
 }
 
 enum Out {
-    WaitForResult(TextQueryResult),
-    CollectingResult((Vec<ResultSet<Row>>, Conn)),
+    WaitForResult(TextQueryResultNew),
+    CollectingResult((Vec<ResultSetNew<Row, TextQueryResultNew>>, Conn)),
 }
 
 pub struct First<R> {
@@ -48,14 +54,14 @@ impl<R> First<R> {
                 Ok(Ready(Out::WaitForResult(val)))
             },
             Step::CollectingResult(ref mut fut) => {
-                let val = try_ready!(fut.poll());
+                let val = try_ready!(<CollectAllNew<TextQueryResultNew> as Future>::poll(fut));
                 Ok(Ready(Out::CollectingResult(val)))
             }
         }
     }
 }
 
-pub fn new<R>(query: Query) -> First<R> {
+pub fn new<R>(query: QueryNew) -> First<R> {
     First {
         step: Step::WaitForResult(query),
         _phantom: PhantomData,

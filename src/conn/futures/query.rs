@@ -14,55 +14,64 @@ use lib_futures::Async::Ready;
 use super::{
     NewTextQueryResult,
     TextQueryResult,
+    TextQueryResultNew,
     WritePacket,
 };
 
-enum Step {
+use conn::futures::query_result::{
+    RawQueryResult,
+    TextResult,
+};
+use conn::futures::NewRawQueryResult;
+
+enum StepNew {
     WriteCommandData(WritePacket),
-    HandleTextResultset(NewTextQueryResult),
+    HandleResultSet(NewRawQueryResult<TextResult>),
 }
 
-enum Out {
+enum OutNew {
     WriteCommandData(Conn),
-    HandleTextResultset(TextQueryResult),
+    HandleResultSet(RawQueryResult<TextResult>),
 }
 
-pub struct Query {
-    step: Step,
+pub struct QueryNew {
+    step: StepNew,
 }
 
-pub fn new(write_packet: WritePacket) -> Query {
-    Query {
-        step: Step::WriteCommandData(write_packet),
+pub fn new_new(write_packet: WritePacket) -> QueryNew {
+    QueryNew {
+        step: StepNew::WriteCommandData(write_packet),
     }
 }
 
-impl Query {
-    fn either_poll(&mut self) -> Result<Async<Out>> {
+impl QueryNew {
+    fn either_poll(&mut self) -> Result<Async<OutNew>> {
         match self.step {
-            Step::WriteCommandData(ref mut fut) => {
+            StepNew::WriteCommandData(ref mut fut) => {
                 let val = try_ready!(fut.poll());
-                Ok(Ready(Out::WriteCommandData(val)))
+                Ok(Ready(OutNew::WriteCommandData(val)))
             },
-            Step::HandleTextResultset(ref mut fut) => {
+            StepNew::HandleResultSet(ref mut fut) => {
                 let val = try_ready!(fut.poll());
-                Ok(Ready(Out::HandleTextResultset(val)))
-            },
+                Ok(Ready(OutNew::HandleResultSet(val)))
+            }
         }
     }
 }
 
-impl Future for Query {
-    type Item = TextQueryResult;
+impl Future for QueryNew {
+    type Item = TextQueryResultNew;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.either_poll()) {
-            Out::WriteCommandData(conn) => {
-                self.step = Step::HandleTextResultset(conn.handle_text_resultset());
+            OutNew::WriteCommandData(conn) => {
+                self.step = StepNew::HandleResultSet(conn.handle_result_set());
                 self.poll()
             },
-            Out::HandleTextResultset(query_result) => Ok(Ready(query_result)),
+            OutNew::HandleResultSet(raw_query_result) => {
+                Ok(Ready(raw_query_result.into()))
+            }
         }
     }
 }

@@ -21,9 +21,9 @@ pub use self::futures::{
     MaybeRow,
     NewConn,
     NewTextQueryResult,
+    NewRawQueryResult,
     Ping,
     Prepare,
-    Query,
     TextQueryResult,
     ReadMaxAllowedPacket,
     ReadPacket,
@@ -40,13 +40,19 @@ use self::futures::{
     new_first,
     new_new_conn,
     new_new_text_query_result,
+    new_new_raw_query_result,
     new_ping,
     new_prepare,
-    new_query,
     new_read_max_allowed_packet,
     new_read_packet,
     new_reset,
     new_write_packet,
+};
+
+use self::futures::query_result::ResultKind;
+use self::futures::query::{
+    QueryNew,
+    new_new as new_query_new,
 };
 
 use std::sync::Arc;
@@ -103,9 +109,9 @@ impl Conn {
     }
 
     /// Return future, that resolves to `TextQueryResult`.
-    pub fn query<Q: AsRef<str>>(self, query: Q) -> Query {
+    pub fn query<Q: AsRef<str>>(self, query: Q) -> QueryNew {
         let query = query.as_ref().as_bytes();
-        new_query(self.write_command_data(consts::Command::COM_QUERY, query))
+        new_query_new(self.write_command_data(consts::Command::COM_QUERY, query))
     }
 
     pub fn first<R, Q>(self, query: Q) -> First<R>
@@ -134,6 +140,10 @@ impl Conn {
 
     fn drop_result(self) -> DropResult {
         new_drop_result(self)
+    }
+
+    fn handle_result_set<K: ResultKind>(self) -> NewRawQueryResult<K> {
+        new_new_raw_query_result::<K>(self.read_packet())
     }
 
     fn handle_text_resultset(self) -> NewTextQueryResult {
@@ -175,6 +185,7 @@ impl Conn {
 mod test {
     use env_logger;
     use errors::*;
+    use prelude::*;
     use lib_futures::Future;
     use lib_futures::stream::Stream;
 
@@ -237,15 +248,13 @@ mod test {
                     SELECT 'world', 231
                 ")
             }).and_then(|query_result| {
-                query_result.fold(vec![], |mut accum, row| {
-                    if let MaybeRow::Row(row) = row {
-                        accum.push(from_row(row))
-                    }
-                    Ok::<_, Error>(accum)
+                query_result.reduce(vec![], |mut accum, row| {
+                    accum.push(from_row(row));
+                    accum
                 })
             });
 
-        let result = lp.run(fut).unwrap();
+        let result = lp.run(fut).unwrap().0;
         assert_eq!((String::from("hello"), 123), result[0]);
         assert_eq!((String::from("world"), 231), result[1]);
     }

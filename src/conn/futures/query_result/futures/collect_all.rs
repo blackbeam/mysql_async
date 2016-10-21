@@ -1,4 +1,8 @@
 use conn::Conn;
+use conn::futures::query_result::{
+    QueryResult,
+    QueryResultOutput,
+};
 
 use either::{
     Left,
@@ -12,6 +16,7 @@ use lib_futures::{
     Future,
     Poll,
 };
+use lib_futures::Async::Ready;
 use lib_futures::stream::Stream;
 
 use proto::Row;
@@ -22,7 +27,58 @@ use super::super::{
     MaybeRow,
     TextQueryResult,
     ResultSet,
+    ResultSetNew,
 };
+
+pub struct CollectAllNew<T: QueryResult> {
+    vec: Vec<ResultSetNew<Row, T>>,
+    row_vec: Vec<Row>,
+    query_result: Option<T>,
+}
+
+pub fn new_new<T: Sized>(query_result: T) -> CollectAllNew<T>
+    where T: QueryResult
+{
+    CollectAllNew {
+        vec: Vec::new(),
+        row_vec: Vec::new(),
+        query_result: Some(query_result),
+    }
+}
+
+impl<T> Future for CollectAllNew<T>
+where T: QueryResult,
+      T::Output: QueryResultOutput<Payload=T>,
+{
+    type Item = (Vec<ResultSetNew<Row, T>>, Conn);
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match try_ready!(self.query_result.as_mut().unwrap().poll()) {
+            Left(row) => {
+                self.row_vec.push(row);
+                self.poll()
+            },
+            Right(output) => {
+                let set = mem::replace(&mut self.row_vec, Vec::new());
+                match output.into_next_or_conn() {
+                    Left(next_query_result) => {
+                        let old_query_result = mem::replace(self.query_result.as_mut().unwrap(),
+                                                            next_query_result);
+                        self.vec.push(ResultSetNew(set, old_query_result));
+                        self.poll()
+                    },
+                    Right(conn) => {
+                        let query_result = self.query_result.take().unwrap();
+                        self.vec.push(ResultSetNew(set, query_result));
+                        let vec = mem::replace(&mut self.vec, Vec::new());
+                        Ok(Ready((vec, conn)))
+                    }
+                }
+            }
+        }
+    }
+}
 
 pub struct CollectAll {
     vec: Vec<ResultSet<Row>>,

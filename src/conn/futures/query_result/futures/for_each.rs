@@ -3,6 +3,8 @@ use Stmt;
 
 use either::{
     Either,
+    Left,
+    Right,
 };
 
 use errors::*;
@@ -23,7 +25,43 @@ use super::super::{
     BinQueryResult,
     MaybeRow,
     TextQueryResult,
+    QueryResult,
 };
+
+pub struct ForEachNew<F, T: QueryResult> {
+    query_result: T,
+    fun: F,
+}
+
+pub fn new_new<F, T: Sized>(query_result: T, fun: F) -> ForEachNew<F, T>
+    where F: FnMut(Row),
+          T: QueryResult,
+{
+    ForEachNew {
+        query_result: query_result,
+        fun: fun,
+    }
+}
+
+impl<F, T> Future for ForEachNew<F, T>
+where F: FnMut(Row),
+      T: QueryResult,
+{
+    type Item = T::Output;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match try_ready!(self.query_result.poll()) {
+            Left(row) => {
+                (&mut self.fun)(row);
+                self.poll()
+            },
+            Right(output) => {
+                Ok(Async::Ready(output))
+            },
+        }
+    }
+}
 
 pub struct ForEach<F> {
     stream: TextQueryResult,

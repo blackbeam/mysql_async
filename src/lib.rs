@@ -106,7 +106,6 @@ pub mod futures {
         First,
         NewConn,
         Ping,
-        Query,
         TextQueryResult,
     };
 
@@ -114,6 +113,11 @@ pub mod futures {
     pub use conn::stmt::futures::{
         Execute,
     };
+}
+
+pub mod prelude {
+    #[doc(inline)]
+    pub use conn::futures::query_result::QueryResult;
 }
 
 #[cfg(test)]

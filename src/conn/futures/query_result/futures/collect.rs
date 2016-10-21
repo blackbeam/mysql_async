@@ -5,7 +5,11 @@ use MaybeRow;
 use ResultSet;
 use Stmt;
 
-use either::Either;
+use either::{
+    Either,
+    Left,
+    Right,
+};
 
 use errors::*;
 
@@ -14,6 +18,11 @@ use from_row;
 use futures::{
     BinQueryResult,
     TextQueryResult,
+};
+
+use conn::futures::query_result::{
+    TextQueryResultNew,
+    TextResult,
 };
 
 use lib_futures::{
@@ -27,7 +36,43 @@ use std::mem;
 
 use super::super::{
     unwrap_bin,
+    QueryResult,
+    ResultSetNew,
 };
+
+pub struct CollectNew<R, T> {
+    vec: Vec<R>,
+    query_result: Option<T>,
+}
+
+pub fn new_new<R, T>(query_result: T) -> CollectNew<R, T> {
+    CollectNew {
+        vec: Vec::new(),
+        query_result: Some(query_result),
+    }
+}
+
+impl<R, T> Future for CollectNew<R, T>
+where R: FromRow,
+      T: QueryResult,
+{
+    type Item = (ResultSetNew<R, T>, T::Output);
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match try_ready!(self.query_result.as_mut().unwrap().poll()) {
+            Left(row) => {
+                self.vec.push(from_row::<R>(row));
+                self.poll()
+            },
+            Right(output) => {
+                let query_result = self.query_result.take().unwrap();
+                let vec = mem::replace(&mut self.vec, Vec::new());
+                Ok(Async::Ready((ResultSetNew(vec, query_result), output)))
+            }
+        }
+    }
+}
 
 pub struct Collect<R> {
     vec: Vec<R>,

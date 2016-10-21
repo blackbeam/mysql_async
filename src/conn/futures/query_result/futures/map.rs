@@ -3,6 +3,8 @@ use Stmt;
 
 use either::{
     Either,
+    Left,
+    Right,
 };
 
 use errors::*;
@@ -22,8 +24,48 @@ use super::super::{
     BinMaybeRow,
     BinQueryResult,
     MaybeRow,
+    QueryResult,
     TextQueryResult,
 };
+
+pub struct MapNew<F, U, T: QueryResult> {
+    query_result: T,
+    fun: F,
+    acc: Vec<U>,
+}
+
+pub fn new_new<F, U, T>(query_result: T, fun: F) -> MapNew<F, U, T>
+    where F: FnMut(Row) -> U,
+          T: QueryResult,
+{
+    MapNew {
+        query_result: query_result,
+        fun: fun,
+        acc: Vec::new(),
+    }
+}
+
+impl<F, U, T> Future for MapNew<F, U, T>
+where F: FnMut(Row) -> U,
+      T: QueryResult,
+{
+    type Item = (Vec<U>, T::Output);
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match try_ready!(self.query_result.poll()) {
+            Left(row) => {
+                let val = (&mut self.fun)(row);
+                self.acc.push(val);
+                self.poll()
+            },
+            Right(output) => {
+                let acc = mem::replace(&mut self.acc, Vec::new());
+                Ok(Async::Ready((acc, output)))
+            }
+        }
+    }
+}
 
 pub struct Map<F, U> {
     stream: TextQueryResult,

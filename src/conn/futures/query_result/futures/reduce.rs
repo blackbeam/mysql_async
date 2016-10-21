@@ -4,7 +4,11 @@ use MaybeRow;
 use Row;
 use Stmt;
 
-use either::Either;
+use either::{
+    Either,
+    Left,
+    Right,
+};
 
 use errors::*;
 
@@ -19,6 +23,48 @@ use lib_futures::{
     Poll,
 };
 use lib_futures::stream::Stream;
+
+use super::super::QueryResult;
+
+pub struct ReduceNew<A, F, T: QueryResult> {
+    query_result: T,
+    accum: Option<A>,
+    fun: F,
+}
+
+pub fn new_new<A, F, T>(query_result: T, init: A, fun: F) -> ReduceNew<A, F, T>
+    where F: FnMut(A, Row) -> A,
+          T: QueryResult,
+{
+    ReduceNew {
+        query_result: query_result,
+        accum: Some(init),
+        fun: fun,
+    }
+}
+
+impl<A, F, T> Future for ReduceNew<A, F, T>
+where F: FnMut(A, Row) -> A,
+      T: QueryResult,
+{
+    type Item = (A, T::Output);
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match try_ready!(self.query_result.poll()) {
+            Left(row) => {
+                let old_acc_val = self.accum.take().unwrap();
+                let new_acc_val = (self.fun)(old_acc_val, row);
+                self.accum = Some(new_acc_val);
+                self.poll()
+            },
+            Right(output) => {
+                let acc_val = self.accum.take().unwrap();
+                Ok(Async::Ready((acc_val, output)))
+            },
+        }
+    }
+}
 
 pub struct Reduce<A, F> {
     fut: TextQueryResult,

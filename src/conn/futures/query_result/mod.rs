@@ -23,6 +23,7 @@ use lib_futures::{
     Future,
     Poll,
 };
+use lib_futures::Async::Ready;
 use lib_futures::stream::Stream;
 
 use proto::{
@@ -33,10 +34,12 @@ use proto::{
 
 use super::{
     NewTextQueryResult,
+    NewRawQueryResult,
     ReadPacket,
 };
 
 use std::borrow::Cow;
+use std::marker::PhantomData;
 use std::mem;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -46,7 +49,7 @@ use value::{
     Value,
 };
 
-mod futures;
+pub mod futures;
 
 pub use self::futures::{
     BinCollect,
@@ -70,6 +73,38 @@ use self::futures::{
     new_map,
     new_reduce,
 };
+
+use self::futures::{
+    CollectAllNew,
+    CollectNew,
+    ForEachNew,
+    MapNew,
+    ReduceNew,
+    new_collect_all_new,
+    new_collect_new,
+    new_for_each_new,
+    new_map_new,
+    new_reduce_new,
+};
+
+pub struct ResultSetNew<T, Q: QueryResult>(Vec<T>, Q);
+
+impl<T, Q: QueryResult> Deref for ResultSetNew<T, Q> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.deref()
+    }
+}
+
+impl<T, Q: QueryResult> IntoIterator for ResultSetNew<T, Q> {
+    type Item = T;
+    type IntoIter = ::std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
 
 /// This type stores collected result set.
 pub struct ResultSet<T>(Vec<T>, TextQueryResult);
@@ -127,6 +162,287 @@ impl<R> IntoIterator for ResultSet<R> {
         self.0.into_iter()
     }
 }
+
+pub trait ResultKind {
+    type Output: Sized;
+
+    fn read_values(packet: Packet, cols: &Arc<Vec<Column>>) -> Result<Vec<Value>>;
+    fn handle_next_query_result(next: RawQueryResult<Self>) -> Self::Output;
+    fn handle_end(conn: Conn) -> Self::Output;
+}
+
+pub struct BinaryResult;
+impl ResultKind for BinaryResult {
+    type Output = Conn;
+
+    fn read_values(packet: Packet, cols: &Arc<Vec<Column>>) -> Result<Vec<Value>> {
+        Value::from_bin_payload(packet.as_ref(), cols)
+    }
+
+    fn handle_next_query_result(next: RawQueryResult<Self>) -> Self::Output {
+        panic!("Binary protocol query can't produce multi-result set");
+    }
+
+    fn handle_end(conn: Conn) -> Self::Output {
+        conn
+    }
+}
+
+pub struct TextResult;
+impl ResultKind for TextResult {
+    type Output = Either<TextQueryResultNew, Conn>;
+
+    fn read_values(packet: Packet, cols: &Arc<Vec<Column>>) -> Result<Vec<Value>> {
+        Value::from_payload(packet.as_ref(), cols.len())
+    }
+
+    fn handle_next_query_result(next: RawQueryResult<Self>) -> Self::Output {
+        Left(next.into())
+    }
+
+    fn handle_end(conn: Conn) -> Self::Output {
+        Right(conn)
+    }
+}
+
+enum RawStep<K: ResultKind + ?Sized> {
+    ReadPacket(ReadPacket),
+    NextResult(NewRawQueryResult<K>),
+    Done(Conn),
+    Consumed,
+}
+
+enum RawOut<K: ResultKind + ?Sized> {
+    ReadPacket((Conn, Packet)),
+    NextResult(RawQueryResult<K>),
+    Done,
+}
+
+pub struct RawQueryResult<K: ResultKind + ?Sized> {
+    step: RawStep<K>,
+    columns: Arc<Vec<Column>>,
+    ok_packet: Option<OkPacket>,
+    _phantom: PhantomData<K>,
+}
+
+pub fn new_raw<K: ?Sized, T>(mut conn: Conn, cols: T, ok_packet: Option<OkPacket>) -> RawQueryResult<K>
+where T: Into<Arc<Vec<Column>>>,
+      K: ResultKind,
+{
+    let cols = cols.into();
+    let step = if cols.len() == 0 {
+        RawStep::Done(conn)
+    } else {
+        RawStep::ReadPacket(conn.read_packet())
+    };
+
+    RawQueryResult {
+        step: step,
+        columns: cols,
+        ok_packet: ok_packet,
+        _phantom: PhantomData,
+    }
+}
+
+impl<K: ResultKind> RawQueryResult<K> {
+    fn either_poll(&mut self) -> Result<Async<Option<RawOut<K>>>> {
+        match self.step {
+            RawStep::ReadPacket(ref mut fut) => {
+                let val = try_ready!(fut.poll());
+                Ok(Async::Ready(Some(RawOut::ReadPacket(val))))
+            },
+            RawStep::NextResult(ref mut fut) => {
+                let val = try_ready!(fut.poll());
+                Ok(Async::Ready(Some(RawOut::NextResult(val))))
+            },
+            RawStep::Done(_) => {
+                Ok(Async::Ready(Some(RawOut::Done)))
+            },
+            RawStep::Consumed => {
+                Ok(Async::Ready(None))
+            },
+        }
+    }
+}
+
+impl<K: ResultKind> Stream for RawQueryResult<K> {
+    type Item = Either<Row, K::Output>;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        match try_ready!(self.either_poll()) {
+            Some(RawOut::ReadPacket((mut conn, packet))) => if packet.is(PacketType::Eof) {
+                if conn.status.contains(consts::SERVER_MORE_RESULTS_EXISTS) {
+                    self.step = RawStep::NextResult(conn.handle_result_set::<K>());
+                    self.poll()
+                } else {
+                    conn.has_result = None;
+                    self.step = RawStep::Done(conn);
+                    self.poll()
+                }
+            } else {
+                let values = try!(K::read_values(packet, &self.columns));
+                let row = Row::new(values, self.columns.clone());
+                self.step = RawStep::ReadPacket(conn.read_packet());
+                Ok(Ready(Some(Left(row))))
+            },
+            Some(RawOut::NextResult(query_result)) => {
+                let output = K::handle_next_query_result(query_result);
+                self.step = RawStep::Consumed;
+                Ok(Ready(Some(Right(output))))
+            },
+            Some(RawOut::Done) => {
+                if let RawStep::Done(conn) = mem::replace(&mut self.step, RawStep::Consumed) {
+                    let output = K::handle_end(conn);
+                    Ok(Async::Ready(Some(Right(output))))
+                } else {
+                    unreachable!();
+                }
+            },
+            None => Ok(Ready(None)),
+        }
+    }
+}
+
+pub trait QueryResultOutput {
+    type Payload;
+
+    fn into_next_or_conn(self) -> Either<Self::Payload, Conn>;
+}
+
+impl QueryResultOutput for Conn {
+    type Payload = ();
+
+    fn into_next_or_conn(self) -> Either<Self::Payload, Conn> {
+        Right(self)
+    }
+}
+
+impl QueryResultOutput for Either<TextQueryResultNew, Conn> {
+    type Payload = TextQueryResultNew;
+
+    fn into_next_or_conn(self) -> Either<TextQueryResultNew, Conn> {
+        self
+    }
+}
+
+pub trait QueryResult {
+    type Output: QueryResultOutput;
+
+    #[doc(hidden)]
+    fn poll(&mut self) -> Result<Async<Either<Row, Self::Output>>>;
+
+    fn collect<R>(self) -> CollectNew<R, Self>
+        where Self: Sized,
+              R: FromRow,
+    {
+        new_collect_new(self)
+    }
+
+    fn collect_all(self) -> CollectAllNew<Self>
+        where Self: Sized,
+    {
+        new_collect_all_new(self)
+    }
+
+    fn map<F, U>(self, fun: F) -> MapNew<F, U, Self>
+        where Self: Sized,
+              F: FnMut(Row) -> U,
+    {
+        new_map_new(self, fun)
+    }
+
+    fn reduce<A, F>(self, init: A, fun: F) -> ReduceNew<A, F, Self>
+        where Self: Sized,
+              F: FnMut(A, Row) -> A,
+    {
+        new_reduce_new(self, init, fun)
+    }
+
+    fn for_each<F>(self, fun: F) -> ForEachNew<F, Self>
+        where Self: Sized,
+              F: FnMut(Row),
+    {
+        new_for_each_new(self, fun)
+    }
+}
+
+pub struct TextQueryResultNew {
+    // TODO: Is option needed?
+    raw: Option<RawQueryResult<TextResult>>,
+}
+
+impl From<RawQueryResult<TextResult>> for TextQueryResultNew {
+    fn from(raw_query_result: RawQueryResult<TextResult>) -> Self {
+        TextQueryResultNew {
+            raw: Some(raw_query_result),
+        }
+    }
+}
+
+impl QueryResult for TextQueryResultNew {
+    type Output = <TextResult as ResultKind>::Output;
+
+    fn poll(&mut self) -> Result<Async<Either<Row, Self::Output>>> {
+        let result = try_ready!(self.raw.as_mut().unwrap().poll());
+        Ok(Async::Ready(result.expect("Can't poll consumed query result")))
+    }
+}
+
+pub struct BinQueryResultNew {
+    raw: Option<RawQueryResult<BinaryResult>>,
+}
+
+impl From<RawQueryResult<BinaryResult>> for BinQueryResultNew {
+    fn from(raw_query_result: RawQueryResult<BinaryResult>) -> Self {
+        BinQueryResultNew {
+            raw: Some(raw_query_result),
+        }
+    }
+}
+
+impl QueryResult for BinQueryResultNew {
+    type Output = <BinaryResult as ResultKind>::Output;
+
+    fn poll(&mut self) -> Result<Async<Either<Row, Self::Output>>> {
+        let result = try_ready!(self.raw.as_mut().unwrap().poll());
+        Ok(Async::Ready(result.expect("Can't poll consumed query result")))
+    }
+}
+
+//impl Stream for TextQueryResult {
+//    type Item = MaybeRow;
+//    type Error = Error;
+//
+//    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+//        match try_ready!(self.either_poll()) {
+//            Some(Out::NextResult(query_result)) => {
+//                self.step = Step::Consumed;
+//                Ok(Async::Ready(Some(MaybeRow::End(Left(query_result)))))
+//            },
+//            Some(Out::Done) => {
+//                if let Step::Done(conn) = mem::replace(&mut self.step, Step::Consumed) {
+//                    Ok(Async::Ready(Some(MaybeRow::End(Right(conn)))))
+//                } else {
+//                    unreachable!();
+//                }
+//            },
+//    }
+//}
+//impl Stream for BinQueryResult {
+//    type Item = BinMaybeRow;
+//    type Error = Error;
+//
+//    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+//        match try_ready!(self.wrapped.poll()) {
+//            Some(MaybeRow::Row(row)) => Ok(Async::Ready(Some(BinMaybeRow::Row(row)))),
+//            Some(MaybeRow::End(Right(conn))) => {
+//                Ok(Async::Ready(Some(BinMaybeRow::End(new_stmt(self.inner_stmt.clone(), conn)))))
+//            },
+//            _ => Ok(Async::Ready(None)),
+//        }
+//    }
+//}
 
 pub enum MaybeRow {
     /// Row of a result set

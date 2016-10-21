@@ -1,18 +1,19 @@
-mod columns;
-mod disconnect;
-mod drop_result;
-mod first;
-mod new_conn;
-mod new_text_query_result;
-mod ping;
-mod prepare;
-mod query;
+pub mod columns;
+pub mod disconnect;
+pub mod drop_result;
+pub mod first;
+pub mod new_conn;
+pub mod new_text_query_result;
+pub mod new_raw_query_result;
+pub mod ping;
+pub mod prepare;
+pub mod query;
 pub mod query_result;
-mod read_max_allowed_packet;
-mod read_packet;
-mod reset;
-mod send_long_data;
-mod write_packet;
+pub mod read_max_allowed_packet;
+pub mod read_packet;
+pub mod reset;
+pub mod send_long_data;
+pub mod write_packet;
 
 pub use self::columns::{
     Columns,
@@ -38,6 +39,10 @@ pub use self::new_text_query_result::{
     NewTextQueryResult,
     new as new_new_text_query_result,
 };
+pub use self::new_raw_query_result::{
+    NewRawQueryResult,
+    new as new_new_raw_query_result,
+};
 pub use self::ping::{
     Ping,
     new as new_ping,
@@ -46,16 +51,15 @@ pub use self::prepare::{
     Prepare,
     new as new_prepare,
 };
-pub use self::query::{
-    Query,
-    new as new_query,
-};
 pub use self::query_result::{
     BinQueryResult,
+    BinQueryResultNew,
     MaybeRow,
     new as new_text_query_result,
     new_bin as new_bin_query_result,
     TextQueryResult,
+    TextQueryResultNew,
+    QueryResult,
     ResultSet,
 };
 pub use self::read_max_allowed_packet::{
