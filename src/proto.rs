@@ -734,7 +734,9 @@ impl EofPacket {
     }
 }
 
-
+/// Row of a result set.
+///
+/// Row could be indexed by numeric column index or by column name.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Row {
     values: Vec<Option<Value>>,
@@ -847,6 +849,7 @@ impl<'a> ColumnIndex for &'a str {
     }
 }
 
+/// Mysql column.
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct Column {
     payload: Vec<u8>,

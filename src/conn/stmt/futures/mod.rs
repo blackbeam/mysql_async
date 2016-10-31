@@ -1,6 +1,4 @@
 mod execute;
 
-pub use self::execute::{
-    Execute,
-    new as new_execute,
-};
+pub use self::execute::Execute;
+pub use self::execute::new_new as new_execute;

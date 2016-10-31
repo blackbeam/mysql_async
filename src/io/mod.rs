@@ -1,39 +1,29 @@
 use errors::*;
-
 use std::fmt;
-
+use lib_futures::Async::NotReady;
+use lib_futures::Async::Ready;
+use lib_futures::Poll;
 use lib_futures::stream;
-use lib_futures::{
-    Async,
-    Poll,
-};
-
-pub use self::io_futures::{
-    ConnectingStream,
-    WritePacket,
-};
-use self::io_futures::{
-    new_connecting_stream,
-    new_write_packet,
-};
-
-use proto::{
-    NewPacket,
-    Packet,
-    ParseResult,
-};
-
+use io::futures::ConnectingStream;
+use io::futures::new_connecting_stream;
+use io::futures::new_write_packet;
+use io::futures::WritePacket;
+use proto::NewPacket;
+use proto::Packet;
+use proto::ParseResult;
 use std::cmp;
 use std::collections::vec_deque::VecDeque;
 use std::io;
 use std::io::Read;
 use std::net::ToSocketAddrs;
-
 use tokio::net::TcpStream;
 use tokio::reactor::Handle;
 
-mod io_futures;
 
+pub mod futures;
+
+
+/// Stream connected to MySql server.
 pub struct Stream {
     endpoint: Option<TcpStream>,
     closed: bool,
@@ -102,7 +92,7 @@ impl stream::Stream for Stream {
                 };
             }
         } else {
-            return Ok(Async::Ready(None))
+            return Ok(Ready(None))
         }
 
         // need to call again if there is a data in self.buf
@@ -113,7 +103,7 @@ impl stream::Stream for Stream {
         let next_packet = match next_packet {
             ParseResult::Done(packet, seq_id) => {
                 self.next_packet = Some(NewPacket::empty().parse());
-                return Ok(Async::Ready(Some((packet, seq_id))));
+                return Ok(Ready(Some((packet, seq_id))));
             },
             ParseResult::NeedHeader(mut new_packet, needed) => {
                 {
@@ -150,7 +140,7 @@ impl stream::Stream for Stream {
         if should_poll {
             self.poll()
         } else {
-            Ok(Async::NotReady)
+            Ok(NotReady)
         }
     }
 }

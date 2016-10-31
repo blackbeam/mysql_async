@@ -1,24 +1,18 @@
 use conn::Conn;
-
 use errors::*;
-
-use lib_futures::{
-    Async,
-    Future,
-    Poll,
-};
+use lib_futures::Async::Ready;
+use lib_futures::Future;
+use lib_futures::Poll;
 use lib_futures::stream::StreamFuture;
-
 use io::Stream;
+use proto::EofPacket;
+use proto::ErrPacket;
+use proto::OkPacket;
+use proto::Packet;
+use proto::PacketType;
 
-use proto::{
-    EofPacket,
-    ErrPacket,
-    OkPacket,
-    Packet,
-    PacketType,
-};
 
+/// Future that resolves to a pair of `Conn` and `Packet` which was read from it.
 pub struct ReadPacket {
     conn: Option<Conn>,
     future: StreamFuture<Stream>,
@@ -64,7 +58,7 @@ impl Future for ReadPacket {
                             packet
                         }
                     };
-                    Ok(Async::Ready((self.conn.take().unwrap(), packet)))
+                    Ok(Ready((self.conn.take().unwrap(), packet)))
                 },
                 None => Err(ErrorKind::ConnectionClosed.into()),
             },

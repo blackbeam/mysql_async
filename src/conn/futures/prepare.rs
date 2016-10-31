@@ -1,36 +1,21 @@
 use Column;
 use Conn;
-
+use conn::futures::read_packet::ReadPacket;
+use conn::futures::write_packet::WritePacket;
+use conn::named_params::parse_named_params;
+use conn::stmt::InnerStmt;
+use conn::stmt::new_stmt;
+use conn::stmt::Stmt;
 use consts;
-
 use errors::*;
-
-use lib_futures::Async::*;
-use lib_futures::{
-    Async,
-    Future,
-    Poll,
-};
-
-use proto::{
-    Packet,
-    PacketType,
-};
-
-use conn::stmt::{
-    InnerStmt,
-    new_stmt,
-    Stmt,
-};
-
+use lib_futures::Async;
+use lib_futures::Async::Ready;
+use lib_futures::Future;
+use lib_futures::Poll;
+use proto::Packet;
+use proto::PacketType;
 use std::mem;
 
-use super::{
-    ReadPacket,
-    WritePacket,
-};
-
-use super::super::named_params::parse_named_params;
 
 enum Step {
     Failed,
@@ -45,6 +30,7 @@ enum Out {
     ReadParamOrColumn((Conn, Packet)),
 }
 
+/// Future that resolves to prepared `Stmt`.
 pub struct Prepare {
     step: Step,
     error: Option<Error>,

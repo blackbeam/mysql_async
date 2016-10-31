@@ -1,23 +1,17 @@
 use byteorder::LittleEndian as LE;
-use byteorder::{WriteBytesExt};
-
+use byteorder::WriteBytesExt;
 use consts;
-
 use errors::*;
+use io::Stream;
+use lib_futures::Async::Ready;
+use lib_futures::Future;
+use lib_futures::Poll;
+use tokio::io::write_all;
+use tokio::io::WriteAll;
 
-use lib_futures::{
-    Future,
-    Poll,
-    Async,
-};
 
-use super::super::Stream;
-
-use tokio::io::{
-    write_all,
-    WriteAll,
-};
-
+/// Future that writes packet to a `Stream` and resolves to a pair of `Stream` and MySql's sequence
+/// id.
 pub struct WritePacket {
     future: WriteAll<Stream, Vec<u8>>,
     seq_id: u8,
@@ -53,7 +47,7 @@ impl Future for WritePacket {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.future.poll()) {
-            (stream, _) => Ok(Async::Ready((stream, self.seq_id))),
+            (stream, _) => Ok(Ready((stream, self.seq_id))),
         }
     }
 }

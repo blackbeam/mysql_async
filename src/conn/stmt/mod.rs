@@ -1,20 +1,16 @@
+use conn::Conn;
+use conn::stmt::futures::*;
+use byteorder::ReadBytesExt;
+use byteorder::LittleEndian as LE;
 use errors::*;
-use byteorder::{
-    ReadBytesExt,
-    LittleEndian as LE,
-};
+use proto::Column;
+use value::Params;
 
-use Column;
-use Conn;
-use Params;
-
-use self::futures::{
-    Execute,
-    new_execute,
-};
 
 pub mod futures;
 
+
+/// Inner statement representation.
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct InnerStmt {
     /// Positions and names of named parameters
@@ -47,6 +43,7 @@ impl InnerStmt {
     }
 }
 
+/// Prepered MySql statement.
 pub struct Stmt {
     stmt: InnerStmt,
     conn: Conn,
@@ -60,6 +57,7 @@ pub fn new_stmt(stmt: InnerStmt, conn: Conn) -> Stmt {
 }
 
 impl Stmt {
+    /// Returns future that executes this statement with provided `params`.
     pub fn execute<T: Into<Params>>(self, params: T) -> Execute {
         new_execute(self, params.into())
     }

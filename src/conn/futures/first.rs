@@ -1,46 +1,33 @@
-use Conn;
-use conn::futures::query::QueryNew;
-use conn::futures::query_result::{
-    QueryResult,
-    ResultSetNew,
-    TextQueryResultNew,
-};
-use conn::futures::query_result::futures::collect_all::CollectAllNew;
-
+use conn::Conn;
+use conn::futures::query::Query;
+use conn::futures::query_result::futures::CollectAll;
+use conn::futures::query_result::ResultSet;
+use conn::futures::query_result::TextQueryResult;
+use conn::futures::query_result::UnconsumedQueryResult;
 use errors::*;
-
-use from_row;
-
-use FromRow;
-
-use futures::{
-    CollectAll,
-    TextQueryResult,
-};
-
-use ResultSet;
-use Row;
-
-
-use lib_futures::{
-    Async,
-    Future,
-    Poll,
-};
+use lib_futures::Async;
 use lib_futures::Async::Ready;
-
+use lib_futures::Future;
+use lib_futures::Poll;
+use from_row;
+use FromRow;
+use Row;
 use std::marker::PhantomData;
 
+
 enum Step {
-    WaitForResult(QueryNew),
-    CollectingResult(CollectAllNew<TextQueryResultNew>),
+    WaitForResult(Query),
+    CollectingResult(CollectAll<TextQueryResult>),
 }
 
 enum Out {
-    WaitForResult(TextQueryResultNew),
-    CollectingResult((Vec<ResultSetNew<Row, TextQueryResultNew>>, Conn)),
+    WaitForResult(TextQueryResult),
+    CollectingResult((Vec<ResultSet<Row, TextQueryResult>>, Conn)),
 }
 
+/// Future that returns first row of query result.
+///
+/// It is parametrized by `R: FromRow` and calls `R::from_row(Row)` internally.
 pub struct First<R> {
     step: Step,
     _phantom: PhantomData<R>,
@@ -54,14 +41,14 @@ impl<R> First<R> {
                 Ok(Ready(Out::WaitForResult(val)))
             },
             Step::CollectingResult(ref mut fut) => {
-                let val = try_ready!(<CollectAllNew<TextQueryResultNew> as Future>::poll(fut));
+                let val = try_ready!(<CollectAll<TextQueryResult> as Future>::poll(fut));
                 Ok(Ready(Out::CollectingResult(val)))
             }
         }
     }
 }
 
-pub fn new<R>(query: QueryNew) -> First<R> {
+pub fn new<R>(query: Query) -> First<R> {
     First {
         step: Step::WaitForResult(query),
         _phantom: PhantomData,
@@ -83,10 +70,10 @@ where R: FromRow
             Out::CollectingResult((sets, conn)) => {
                 for rows in sets.into_iter() {
                     for row in rows.into_iter() {
-                        return Ok(Async::Ready((Some(from_row(row)), conn)));
+                        return Ok(Ready((Some(from_row(row)), conn)));
                     }
                 }
-                return Ok(Async::Ready((None, conn)))
+                return Ok(Ready((None, conn)))
             }
         }
     }

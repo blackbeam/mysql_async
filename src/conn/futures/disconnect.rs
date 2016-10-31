@@ -1,15 +1,13 @@
+use conn::futures::write_packet::WritePacket;
 use errors::*;
-
-use lib_futures::{
-    Future,
-    Poll,
-};
 use lib_futures::Async::Ready;
+use lib_futures::Future;
+use lib_futures::Poll;
 
-use super::{
-    WritePacket,
-};
 
+/// Future that disconnects `Conn` from server and consumes it.
+///
+/// Resolves to `()`.
 pub struct Disconnect {
     future: WritePacket,
 }

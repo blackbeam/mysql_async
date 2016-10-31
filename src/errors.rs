@@ -1,12 +1,7 @@
-use proto::{
-    ErrPacket,
-    Row,
-};
-
+use proto::ErrPacket;
+use proto::Row;
 use std::io;
-
 use url;
-
 use value::Value;
 
 error_chain! {

@@ -1,75 +1,63 @@
-use conn::{
-    Conn,
-};
-
+use Conn;
+use conn::futures::new_raw_query_result::NewRawQueryResult;
+use conn::futures::query_result::RawQueryResult;
+use conn::futures::query_result::TextQueryResult;
+use conn::futures::query_result::TextResult;
+use conn::futures::write_packet::WritePacket;
 use errors::*;
-
-use lib_futures::{
-    Async,
-    Future,
-    Poll,
-};
+use lib_futures::Async;
 use lib_futures::Async::Ready;
+use lib_futures::Future;
+use lib_futures::Poll;
 
-use super::{
-    NewTextQueryResult,
-    TextQueryResult,
-    TextQueryResultNew,
-    WritePacket,
-};
 
-use conn::futures::query_result::{
-    RawQueryResult,
-    TextResult,
-};
-use conn::futures::NewRawQueryResult;
-
-enum StepNew {
+enum Step {
     WriteCommandData(WritePacket),
     HandleResultSet(NewRawQueryResult<TextResult>),
 }
 
-enum OutNew {
+enum Out {
     WriteCommandData(Conn),
     HandleResultSet(RawQueryResult<TextResult>),
 }
 
-pub struct QueryNew {
-    step: StepNew,
+/// Future that resolves to result of a query execution.
+pub struct Query {
+    step: Step,
 }
 
-pub fn new_new(write_packet: WritePacket) -> QueryNew {
-    QueryNew {
-        step: StepNew::WriteCommandData(write_packet),
+pub fn new_new(write_packet: WritePacket) -> Query {
+    Query {
+        step: Step::WriteCommandData(write_packet),
     }
 }
 
-impl QueryNew {
-    fn either_poll(&mut self) -> Result<Async<OutNew>> {
+impl Query {
+    fn either_poll(&mut self) -> Result<Async<Out>> {
         match self.step {
-            StepNew::WriteCommandData(ref mut fut) => {
+            Step::WriteCommandData(ref mut fut) => {
                 let val = try_ready!(fut.poll());
-                Ok(Ready(OutNew::WriteCommandData(val)))
+                Ok(Ready(Out::WriteCommandData(val)))
             },
-            StepNew::HandleResultSet(ref mut fut) => {
+            Step::HandleResultSet(ref mut fut) => {
                 let val = try_ready!(fut.poll());
-                Ok(Ready(OutNew::HandleResultSet(val)))
+                Ok(Ready(Out::HandleResultSet(val)))
             }
         }
     }
 }
 
-impl Future for QueryNew {
-    type Item = TextQueryResultNew;
+impl Future for Query {
+    type Item = TextQueryResult;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.either_poll()) {
-            OutNew::WriteCommandData(conn) => {
-                self.step = StepNew::HandleResultSet(conn.handle_result_set());
+            Out::WriteCommandData(conn) => {
+                self.step = Step::HandleResultSet(conn.handle_result_set(None));
                 self.poll()
             },
-            OutNew::HandleResultSet(raw_query_result) => {
+            Out::HandleResultSet(raw_query_result) => {
                 Ok(Ready(raw_query_result.into()))
             }
         }

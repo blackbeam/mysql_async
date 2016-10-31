@@ -1,36 +1,22 @@
-use Conn;
 use Column;
-
+use Conn;
+use conn::stmt::InnerStmt;
+use conn::futures::columns::Columns;
+use conn::futures::query_result::ResultKind;
+use conn::futures::query_result::RawQueryResult;
+use conn::futures::query_result::new_raw as new_raw_query_result;
+use conn::futures::read_packet::ReadPacket;
 use errors::*;
-
-use lib_futures::{
-    Async,
-    Future,
-    Poll,
-};
+use lib_futures::Async;
 use lib_futures::Async::Ready;
-
-use proto::{
-    OkPacket,
-    Packet,
-    PacketType,
-    read_lenenc_int,
-};
-
+use lib_futures::Future;
+use lib_futures::Poll;
+use proto::OkPacket;
+use proto::Packet;
+use proto::PacketType;
+use proto::read_lenenc_int;
 use std::marker::PhantomData;
 
-use super::{
-    Columns,
-    TextQueryResult,
-    ReadPacket,
-
-    new_text_query_result,
-};
-use super::query_result::{
-    ResultKind,
-    RawQueryResult,
-    new_raw as new_raw_query_result,
-};
 
 enum Step {
     ReadPacket(ReadPacket),
@@ -42,14 +28,21 @@ enum Out {
     ReadColumns((Conn, Vec<Column>)),
 }
 
+/// Future that resolves to `RawQueryResult`.
+///
+/// It could be a part of query or statement execution.
 pub struct NewRawQueryResult<K: ResultKind + ?Sized> {
     step: Step,
+    inner_stmt: Option<InnerStmt>,
     _phantom: PhantomData<K>,
 }
 
-pub fn new<K: ResultKind + ?Sized>(read_packet: ReadPacket) -> NewRawQueryResult<K> {
+pub fn new<K: ResultKind + ?Sized>(read_packet: ReadPacket,
+                                   inner_stmt: Option<InnerStmt>) -> NewRawQueryResult<K>
+{
     NewRawQueryResult {
         step: Step::ReadPacket(read_packet),
+        inner_stmt: inner_stmt,
         _phantom: PhantomData,
     }
 }
@@ -77,16 +70,16 @@ impl<K: ResultKind + ?Sized> Future for NewRawQueryResult<K> {
         match try_ready!(self.either_poll()) {
             Out::ReadPacket((conn, packet)) => if packet.is(PacketType::Ok) {
                 let ok_packet = OkPacket::new(packet, conn.capabilities);
-                let query_result = new_raw_query_result::<K, _>(conn, vec![], ok_packet);
-                Ok(Async::Ready(query_result))
+                let query_result = new_raw_query_result::<K, _>(conn, vec![], ok_packet, self.inner_stmt.clone());
+                Ok(Ready(query_result))
             } else {
                 let column_count = try!(read_lenenc_int(&mut packet.as_ref()));
                 self.step = Step::ReadColumns(conn.read_result_set_columns(column_count));
                 self.poll()
             },
             Out::ReadColumns((conn, columns)) => {
-                let query_result = new_raw_query_result::<K, _>(conn, columns, None);
-                Ok(Async::Ready(query_result))
+                let query_result = new_raw_query_result::<K, _>(conn, columns, None, self.inner_stmt.clone());
+                Ok(Ready(query_result))
             },
         }
     }

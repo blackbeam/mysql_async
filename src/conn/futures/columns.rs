@@ -1,19 +1,16 @@
 use conn::Conn;
-
+use conn::futures::read_packet::ReadPacket;
 use errors::*;
-
-use lib_futures::{
-    Async,
-    Future,
-    Poll,
-};
-
+use lib_futures::Async::Ready;
+use lib_futures::Future;
+use lib_futures::Poll;
 use proto::Column;
-
 use std::mem;
 
-use super::ReadPacket;
 
+/// Future that resolves to a vector of columns of a result set.
+///
+/// It is a part of a result set.
 pub struct Columns {
     future: ReadPacket,
     count: u64,
@@ -37,7 +34,7 @@ impl Future for Columns {
             (conn, packet) => {
                 if self.count == self.columns.len() as u64 {
                     let columns = mem::replace(&mut self.columns, Vec::new());
-                    Ok(Async::Ready((conn, columns)))
+                    Ok(Ready((conn, columns)))
                 } else {
                     let column = Column::new(packet, conn.last_command);
                     self.columns.push(column);

@@ -8,9 +8,11 @@ use either::{
 
 use errors::*;
 
-use conn::futures::query_result::new as new_text_query_result;
-
-use futures::TextQueryResult;
+use conn::futures::query_result::BinaryResult;
+use conn::futures::query_result::new_raw as new_raw_query_result;
+use conn::futures::query_result::QueryResult;
+use conn::futures::query_result::TextQueryResultNew;
+use conn::futures::query_result::TextResult;
 
 use lib_futures::{
     Async,
@@ -23,7 +25,7 @@ use lib_futures::stream::Stream;
 use MaybeRow;
 
 enum Step {
-    NextQueryResult(TextQueryResult),
+    NextQueryResult(Box<QueryResult>),
     Dropped(Option<Conn>),
 }
 
@@ -40,11 +42,11 @@ impl DropResult {
     fn either_poll(&mut self) -> Result<Async<Out>> {
         match self.step {
             Step::NextQueryResult(ref mut fut) => {
-                let val = try_ready!(fut.poll()).expect("TextQueryResult polled twice");
+                let val = try_ready!(fut.poll()).expect("QueryResult polled twice");
                 Ok(Ready(Out::NextQueryResult(val)))
             },
             Step::Dropped(ref mut val) => {
-                let conn = val.take().expect("Pooled twice");
+                let conn = val.take().expect("DropResult pooled twice");
                 Ok(Ready(Out::Dropped(conn)))
             }
         }
@@ -53,9 +55,21 @@ impl DropResult {
 
 pub fn new(mut conn: Conn) -> DropResult {
     match conn.has_result.take() {
-        Some((columns, ok_packet, is_bin)) => {
-            let text_query_result = new_text_query_result(conn, columns, ok_packet, is_bin);
-            let step = Step::NextQueryResult(text_query_result);
+        Some((columns, ok_packet, inner_stmt)) => {
+            let query_result: Box<QueryResult> = if inner_stmt.is_some() {
+                let query_result = new_raw_query_result::<BinaryResult, _>(conn,
+                                                                           columns,
+                                                                           ok_packet,
+                                                                           inner_stmt);
+                Box::new(query_result)
+            } else {
+                let query_result = new_raw_query_result::<TextResult, _>(conn,
+                                                                         columns,
+                                                                         ok_packet,
+                                                                         inner_stmt);
+                Box::new(query_result)
+            };
+            let step = Step::NextQueryResult(query_result);
             DropResult {
                 step: step,
             }

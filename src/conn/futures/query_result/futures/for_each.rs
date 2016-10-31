@@ -1,51 +1,35 @@
-use Conn;
-use Stmt;
-
-use either::{
-    Either,
-    Left,
-    Right,
-};
-
+use conn::futures::query_result::InnerQueryResult;
+use conn::futures::query_result::UnconsumedQueryResult;
+use either::Left;
+use either::Right;
 use errors::*;
-
-use lib_futures::{
-    Async,
-    Future,
-    Poll,
-};
-use lib_futures::stream::Stream;
-
+use lib_futures::Async::Ready;
+use lib_futures::Future;
+use lib_futures::Poll;
 use proto::Row;
 
-use std::mem;
 
-use super::super::{
-    BinMaybeRow,
-    BinQueryResult,
-    MaybeRow,
-    TextQueryResult,
-    QueryResult,
-};
-
-pub struct ForEachNew<F, T: QueryResult> {
+/// Future that calls `F: FnMut(Row)` on each Row of a `QueryResult`.
+///
+/// It resolves to an output of corresponding `ResultKind`.
+pub struct ForEach<F, T> {
     query_result: T,
     fun: F,
 }
 
-pub fn new_new<F, T: Sized>(query_result: T, fun: F) -> ForEachNew<F, T>
+pub fn new_new<F, T: Sized>(query_result: T, fun: F) -> ForEach<F, T>
     where F: FnMut(Row),
-          T: QueryResult,
 {
-    ForEachNew {
+    ForEach {
         query_result: query_result,
         fun: fun,
     }
 }
 
-impl<F, T> Future for ForEachNew<F, T>
+impl<F, T> Future for ForEach<F, T>
 where F: FnMut(Row),
-      T: QueryResult,
+      T: InnerQueryResult,
+      T: UnconsumedQueryResult,
 {
     type Item = T::Output;
     type Error = Error;
@@ -57,76 +41,8 @@ where F: FnMut(Row),
                 self.poll()
             },
             Right(output) => {
-                Ok(Async::Ready(output))
+                Ok(Ready(output))
             },
-        }
-    }
-}
-
-pub struct ForEach<F> {
-    stream: TextQueryResult,
-    fun: F,
-}
-
-pub fn new<F>(stream: TextQueryResult, fun: F) -> ForEach<F>
-    where F: FnMut(Row),
-{
-    ForEach {
-        stream: stream,
-        fun: fun,
-    }
-}
-
-impl<F> Future for ForEach<F>
-where F: FnMut(Row),
-{
-    type Item = Either<TextQueryResult, Conn>;
-    type Error = Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try_ready!(self.stream.poll()) {
-            Some(MaybeRow::Row(row)) => {
-                (&mut self.fun)(row);
-                self.poll()
-            },
-            Some(MaybeRow::End(query_result_or_conn)) => {
-                Ok(Async::Ready(query_result_or_conn))
-            },
-            None => panic!("pooled twice"),
-        }
-    }
-}
-
-pub struct BinForEach<F> {
-    stream: BinQueryResult,
-    fun: F,
-}
-
-pub fn new_bin<F>(stream: BinQueryResult, fun: F) -> BinForEach<F>
-    where F: FnMut(Row),
-{
-    BinForEach {
-        stream: stream,
-        fun: fun,
-    }
-}
-
-impl<F> Future for BinForEach<F>
-where F: FnMut(Row),
-{
-    type Item = Stmt;
-    type Error = Error;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try_ready!(self.stream.poll()) {
-            Some(BinMaybeRow::Row(row)) => {
-                (&mut self.fun)(row);
-                self.poll()
-            },
-            Some(BinMaybeRow::End(stmt)) => {
-                Ok(Async::Ready(stmt))
-            },
-            None => panic!("pooled twice"),
         }
     }
 }

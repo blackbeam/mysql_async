@@ -1,37 +1,23 @@
 use Conn;
-
+use conn::futures::read_max_allowed_packet::ReadMaxAllowedPacket;
 use consts;
-
 use errors::*;
-
-use lib_futures::{
-    Async,
-    Future,
-    Poll,
-};
+use io::futures::ConnectingStream;
+use io::futures::WritePacket;
+use io::Stream;
+use lib_futures::Async;
 use lib_futures::Async::Ready;
-use lib_futures::stream::{
-    Stream as StreamTrait,
-    StreamFuture,
-};
-
-use io::{
-    ConnectingStream,
-    Stream,
-    WritePacket,
-};
-
+use lib_futures::Future;
+use lib_futures::Poll;
+use lib_futures::stream::Stream as StreamTrait;
+use lib_futures::stream::StreamFuture;
 use Opts;
+use proto::ErrPacket;
+use proto::HandshakePacket;
+use proto::HandshakeResponse;
+use proto::Packet;
+use proto::PacketType;
 
-use proto::{
-    ErrPacket,
-    HandshakePacket,
-    HandshakeResponse,
-    Packet,
-    PacketType,
-};
-
-use super::ReadMaxAllowedPacket;
 
 enum Step {
     ConnectingStream(ConnectingStream),
@@ -49,6 +35,7 @@ enum Out {
     ReadMaxAllowedPacket(Conn),
 }
 
+/// Future that resulves to a `Conn`.
 pub struct NewConn {
     step: Step,
     opts: Opts,
@@ -164,7 +151,7 @@ impl Future for NewConn {
                 None => panic!("No handshake response!?"),
             },
             Out::ReadMaxAllowedPacket(conn) => {
-                Ok(Async::Ready(conn))
+                Ok(Ready(conn))
             },
         }
     }

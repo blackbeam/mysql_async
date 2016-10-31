@@ -1,68 +1,22 @@
-use Column;
-
+use conn::futures::*;
+use conn::futures::query_result::ResultKind;
+use conn::stmt::InnerStmt;
 use consts;
-
-use FromRow;
-
 use io::Stream;
-
 use lib_futures::stream::Stream as FuturesStream;
-
-use Opts;
-
+use opts::Opts;
+use proto::Column;
 use proto::OkPacket;
-
-pub use self::futures::{
-    BinQueryResult,
-    Columns,
-    Disconnect,
-    DropResult,
-    First,
-    MaybeRow,
-    NewConn,
-    NewTextQueryResult,
-    NewRawQueryResult,
-    Ping,
-    Prepare,
-    TextQueryResult,
-    ReadMaxAllowedPacket,
-    ReadPacket,
-    Reset,
-    ResultSet,
-    SendLongData,
-    WritePacket,
-};
-
-use self::futures::{
-    new_columns,
-    new_disconnect,
-    new_drop_result,
-    new_first,
-    new_new_conn,
-    new_new_text_query_result,
-    new_new_raw_query_result,
-    new_ping,
-    new_prepare,
-    new_read_max_allowed_packet,
-    new_read_packet,
-    new_reset,
-    new_write_packet,
-};
-
-use self::futures::query_result::ResultKind;
-use self::futures::query::{
-    QueryNew,
-    new_new as new_query_new,
-};
-
+use value::FromRow;
 use std::sync::Arc;
-
 use tokio::reactor::Handle;
+
 
 pub mod futures;
 pub mod named_params;
 pub mod pool;
 pub mod stmt;
+
 
 /// Mysql connection
 #[derive(Debug)]
@@ -80,7 +34,7 @@ pub struct Conn {
     warnings: u16,
 
     // TODO: Реализовать Conn::drop_result()
-    has_result: Option<(Arc<Vec<Column>>, Option<OkPacket>, bool)>,
+    has_result: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>,
 }
 
 impl Conn {
@@ -99,21 +53,23 @@ impl Conn {
         new_new_conn(future, opts)
     }
 
+    /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
     fn read_max_allowed_packet(self) -> ReadMaxAllowedPacket {
         new_read_max_allowed_packet(self.first::<(u64,), _>("SELECT @@max_allowed_packet"))
     }
 
-    /// Returns `Conn` on success or `Error` on error.
+    /// Returns future that resolve to `Conn` if `COM_PING` executed successfully.
     pub fn ping(self) -> Ping {
         new_ping(self.write_command_data(consts::Command::COM_PING, &[]))
     }
 
-    /// Return future, that resolves to `TextQueryResult`.
-    pub fn query<Q: AsRef<str>>(self, query: Q) -> QueryNew {
+    /// Returns future that executes `query` and resolves to `TextQueryResult`.
+    pub fn query<Q: AsRef<str>>(self, query: Q) -> Query {
         let query = query.as_ref().as_bytes();
-        new_query_new(self.write_command_data(consts::Command::COM_QUERY, query))
+        new_query(self.write_command_data(consts::Command::COM_QUERY, query))
     }
 
+    /// Returns future that resolves to a first row of result of a `query` execution (if any).
     pub fn first<R, Q>(self, query: Q) -> First<R>
     where Q: AsRef<str>,
           R: FromRow + Send + 'static,
@@ -122,39 +78,36 @@ impl Conn {
     }
 
     // TODO: Implement cache.
+    /// Returns future that resolves to a `Stmt`.
     pub fn prepare<Q>(self, query: Q) -> Prepare
         where Q: AsRef<str>
     {
         new_prepare(self, query.as_ref())
     }
 
-    /// Resets the session state.
+    /// Returns future that resolves to a `Conn` with `COM_RESET_CONNECTION` executed on it.
     pub fn reset(self) -> Reset {
         new_reset(self.write_command_data(consts::Command::COM_RESET_CONNECTION, &[]))
     }
 
-    /// Disconnect
+    /// Returns future that consumes `Conn` and disconnects it from a server.
     pub fn disconnect(self) -> Disconnect {
         new_disconnect(self.write_command_data(consts::Command::COM_QUIT, &[]))
     }
 
-    fn drop_result(self) -> DropResult {
-        new_drop_result(self)
+    // TODO: DropResult
+
+    /// Returns future that resolves to `RawQueryResult` of corresponding `K: ResultKind`.
+    fn handle_result_set<K: ResultKind>(self, inner_stmt: Option<InnerStmt>) -> NewRawQueryResult<K> {
+        new_new_raw_query_result::<K>(self.read_packet(), inner_stmt)
     }
 
-    fn handle_result_set<K: ResultKind>(self) -> NewRawQueryResult<K> {
-        new_new_raw_query_result::<K>(self.read_packet())
-    }
-
-    fn handle_text_resultset(self) -> NewTextQueryResult {
-        new_new_text_query_result(self.read_packet(), false)
-    }
-
+    /// Returns future that resolves to a columns of result set.
     fn read_result_set_columns(self, column_count: u64) -> Columns {
         new_columns(self.read_packet(), column_count)
     }
 
-    /// Returns future that resolves to `Conn`.
+    /// Returns future that writes comand and it's data to a server and resolves to `Conn`.
     fn write_command_data<D>(mut self, cmd: consts::Command, command_data: D) -> WritePacket
     where D: AsRef<[u8]>,
     {
@@ -165,7 +118,7 @@ impl Conn {
         self.write_packet(data)
     }
 
-    /// Returns future that resolves to `Conn`.
+    /// Returns future that writes packet to a server and resolves to `Conn`.
     fn write_packet<D>(mut self, data: D) -> WritePacket
     where D: Into<Vec<u8>>,
     {
@@ -174,6 +127,7 @@ impl Conn {
         new_write_packet(self, future)
     }
 
+    /// Returns future that read packet from a server end resolves to `(Conn, Packet)`.
     fn read_packet(mut self) -> ReadPacket {
         let stream = self.stream.take().unwrap();
         let future = stream.into_future();
@@ -184,13 +138,10 @@ impl Conn {
 #[cfg(test)]
 mod test {
     use env_logger;
-    use errors::*;
     use prelude::*;
     use lib_futures::Future;
-    use lib_futures::stream::Stream;
 
     use super::Conn;
-    use super::futures::MaybeRow;
 
     use test_misc::DATABASE_URL;
 
@@ -279,11 +230,11 @@ mod test {
         assert_eq!(sets.len(), 2);
         for (i, rows) in sets.into_iter().enumerate() {
             if i == 0 {
-                assert_eq!((String::from("hello"), 123), from_row((*rows)[0].clone()));
-                assert_eq!((String::from("world"), 231), from_row((*rows)[1].clone()));
+                assert_eq!((String::from("hello"), 123), from_row(rows.as_ref()[0].clone()));
+                assert_eq!((String::from("world"), 231), from_row(rows.as_ref()[1].clone()));
             }
             if i == 1 {
-                assert_eq!((String::from("foo"), 255), from_row((*rows)[0].clone()));
+                assert_eq!((String::from("foo"), 255), from_row(rows.as_ref()[0].clone()));
             }
         }
     }
@@ -360,7 +311,7 @@ mod test {
             }).and_then(|query_result| {
                 query_result.collect::<(u8,)>()
             }).and_then(|(result_set, stmt)| {
-                assert_eq!(*result_set, [(42u8,)]);
+                assert_eq!(result_set.as_ref(), [(42u8,)]);
                 stmt.execute(("foo",))
             }).and_then(|query_result| {
                 query_result.map(|row| {

@@ -44,9 +44,8 @@ pub use self::conn::Conn;
 
 #[doc(inline)]
 pub use self::conn::futures::query_result::{
-    BinMaybeRow,
-    MaybeRow,
-    ResultSet,
+    TextQueryResult,
+    BinQueryResult,
 };
 
 #[doc(inline)]
@@ -83,41 +82,29 @@ pub use self::value::{
 
 /// Futures used in this crate
 pub mod futures {
-    #[doc(inline)]
-    pub use conn::futures::{
-        Prepare,
-    };
-
-    #[doc(inline)]
-    pub use conn::futures::query_result::{
-        BinCollect,
-        BinMap,
-        BinReduce,
-        Collect,
-        CollectAll,
-        Map,
-        Reduce,
-    };
-
-    #[doc(inline)]
-    pub use conn::{
-        BinQueryResult,
-        Disconnect,
-        First,
-        NewConn,
-        Ping,
-        TextQueryResult,
-    };
-
-    #[doc(inline)]
-    pub use conn::stmt::futures::{
-        Execute,
-    };
+    #[doc(inline)] pub use conn::futures::Disconnect;
+    #[doc(inline)] pub use conn::futures::First;
+    #[doc(inline)] pub use conn::futures::NewConn;
+    #[doc(inline)] pub use conn::futures::Ping;
+    #[doc(inline)] pub use conn::futures::Prepare;
+    #[doc(inline)] pub use conn::futures::Query;
+    #[doc(inline)] pub use conn::futures::Reset;
+    #[doc(inline)] pub use conn::futures::query_result::BinaryResult;
+    #[doc(inline)] pub use conn::futures::query_result::ResultSet;
+    #[doc(inline)] pub use conn::futures::query_result::TextResult;
+    #[doc(inline)] pub use conn::futures::query_result::futures::Collect;
+    #[doc(inline)] pub use conn::futures::query_result::futures::CollectAll;
+    #[doc(inline)] pub use conn::futures::query_result::futures::ForEach;
+    #[doc(inline)] pub use conn::futures::query_result::futures::Map;
+    #[doc(inline)] pub use conn::futures::query_result::futures::Reduce;
+    #[doc(inline)] pub use conn::stmt::futures::Execute;
 }
 
+/// Traits used in this crate
 pub mod prelude {
-    #[doc(inline)]
-    pub use conn::futures::query_result::QueryResult;
+    #[doc(inline)] pub use conn::futures::query_result::QueryResult;
+    #[doc(inline)] pub use conn::futures::query_result::ResultKind;
+    #[doc(inline)] pub use conn::futures::query_result::UnconsumedQueryResult;
 }
 
 #[cfg(test)]

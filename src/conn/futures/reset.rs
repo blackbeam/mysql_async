@@ -1,22 +1,14 @@
-use Conn;
-
+use conn::Conn;
+use conn::futures::read_packet::ReadPacket;
+use conn::futures::write_packet::WritePacket;
 use errors::*;
+use lib_futures::Async;
+use lib_futures::Async::Ready;
+use lib_futures::Future;
+use lib_futures::Poll;
+use proto::Packet;
+use proto::PacketType;
 
-use lib_futures::{
-    Async,
-    Future,
-    Poll,
-};
-
-use proto::{
-    Packet,
-    PacketType,
-};
-
-use super::{
-    ReadPacket,
-    WritePacket,
-};
 
 enum Step {
     WritePacket(WritePacket),
@@ -28,6 +20,7 @@ enum Out {
     ReadResponse((Conn, Packet)),
 }
 
+/// Future that resolves to a `Conn` with MySql's `COM_RESET_CONNECTION` executed on it.
 pub struct Reset {
     step: Step,
 }
@@ -37,11 +30,11 @@ impl Reset {
         match self.step {
             Step::WritePacket(ref mut fut) => {
                 let val = try_ready!(fut.poll());
-                Ok(Async::Ready(Out::WritePacket(val)))
+                Ok(Ready(Out::WritePacket(val)))
             },
             Step::ReadResponse(ref mut fut) => {
                 let val = try_ready!(fut.poll());
-                Ok(Async::Ready(Out::ReadResponse(val)))
+                Ok(Ready(Out::ReadResponse(val)))
             },
         }
     }
@@ -69,7 +62,7 @@ impl Future for Reset {
                     conn.last_insert_id = 0;
                     conn.affected_rows = 0;
                     conn.warnings = 0;
-                    Ok(Async::Ready(conn))
+                    Ok(Ready(conn))
                 } else {
                     Err(ErrorKind::UnexpectedPacket.into())
                 }

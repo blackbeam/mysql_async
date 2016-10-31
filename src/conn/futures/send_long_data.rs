@@ -1,28 +1,19 @@
-use byteorder::{
-    WriteBytesExt,
-    LittleEndian as LE,
-};
-
-use Conn;
+use byteorder::WriteBytesExt;
+use byteorder::LittleEndian as LE;
+use conn::Conn;
+use conn::futures::write_packet::WritePacket;
 use conn::stmt::InnerStmt;
 use consts::Command;
-
 use errors::*;
-
-
-use lib_futures::{
-    Async,
-    Future,
-    Poll,
-};
-
+use lib_futures::Async;
+use lib_futures::Async::Ready;
+use lib_futures::Future;
+use lib_futures::Poll;
 use std::io::Write;
 use std::mem;
+use value::Value;
+use value::Value::*;
 
-use super::WritePacket;
-
-use Value;
-use Value::*;
 
 enum Step {
     WritePacket(WritePacket),
@@ -34,6 +25,9 @@ enum Out {
     Done(Conn, InnerStmt),
 }
 
+/// Future that sends part of statement parametes via MySql's `COM_STMT_SEND_LONG_DATA`.
+///
+/// It resolves to `Conn`, `InnerStmt` and statement parameters.
 pub struct SendLongData {
     step: Step,
     stmt: Option<InnerStmt>,
@@ -46,12 +40,12 @@ impl SendLongData {
     fn either_poll(&mut self) -> Result<Async<Out>> {
         match self.step {
             Step::WritePacket(ref mut fut) => {
-                Ok(Async::Ready(Out::WritePacket(try_ready!(fut.poll()))))
+                Ok(Ready(Out::WritePacket(try_ready!(fut.poll()))))
             },
             Step::Done(ref mut conn) => {
                 let conn = conn.take().unwrap();
                 let stmt = self.stmt.take().unwrap();
-                Ok(Async::Ready(Out::Done(conn, stmt)))
+                Ok(Ready(Out::Done(conn, stmt)))
             }
         }
     }
@@ -158,7 +152,7 @@ impl Future for SendLongData {
             },
             Out::Done(conn, stmt) => {
                 let params = mem::replace(&mut self.params, vec![]);
-                Ok(Async::Ready((conn, stmt, params)))
+                Ok(Ready((conn, stmt, params)))
             },
         }
     }

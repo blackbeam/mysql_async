@@ -1,15 +1,12 @@
 use Conn;
-
+use conn::futures::first::First;
 use errors::*;
+use lib_futures::Async::Ready;
+use lib_futures::Future;
+use lib_futures::Poll;
 
-use futures::First;
 
-use lib_futures::{
-    Async,
-    Future,
-    Poll,
-};
-
+/// Future that resolves to `Conn` with value of MySql's max_allowed_packet stored in it.
 pub struct ReadMaxAllowedPacket {
     future: First<(u64,)>,
 }
@@ -28,7 +25,7 @@ impl Future for ReadMaxAllowedPacket {
         match try_ready!(self.future.poll()) {
             (maybe_row, mut conn) => {
                 conn.max_allowed_packet = maybe_row.map(|x| x.0).unwrap_or(1024 * 1024 * 2);
-                Ok(Async::Ready(conn))
+                Ok(Ready(conn))
             },
         }
     }
