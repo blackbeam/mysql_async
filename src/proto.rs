@@ -521,7 +521,13 @@ impl HandshakeResponse {
             let mut writer = &mut *data;
             writer.write_u32::<LE>(client_flags.bits()).unwrap();
             writer.write_all(&[0u8; 4]).unwrap();
-            writer.write_u8(33).unwrap(); // TODO: Implement get_default_collation
+            let mut collation = consts::UTF8_GENERAL_CI;
+            if let Ok(version) = handshake.srv_ver_parsed() {
+                if version >= (5, 5, 3) {
+                    collation = consts::UTF8MB4_GENERAL_CI;
+                }
+            }
+            writer.write_u8(collation).unwrap();
             writer.write_all(&[0u8; 23]).unwrap();
             if let Some(user) = user {
                 writer.write_all(user.as_ref()).unwrap();
