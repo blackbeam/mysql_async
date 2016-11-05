@@ -15,12 +15,10 @@ use lib_futures::Future;
 use lib_futures::Poll;
 use lib_futures::stream::Stream as StreamTrait;
 use lib_futures::stream::StreamFuture;
-#[macro_use] use macros;
 use Opts;
 use proto::ErrPacket;
 use proto::HandshakePacket;
 use proto::HandshakeResponse;
-use proto::Packet;
 use proto::PacketType;
 
 
@@ -31,7 +29,7 @@ pub struct NewConn {
     status: consts::StatusFlags,
     id: u32,
     version: (u16, u16, u16),
-    init: Vec<String>,
+    init_len: usize,
 }
 
 steps! {
@@ -48,7 +46,7 @@ steps! {
 
 pub fn new(connecting_stream: ConnectingStream, opts: Opts) -> NewConn {
     NewConn {
-        init: opts.get_init().to_owned(),
+        init_len: opts.get_init().len(),
         opts: opts,
         step: Step::ConnectingStream(connecting_stream),
         status: consts::StatusFlags::empty(),
@@ -128,26 +126,26 @@ impl Future for NewConn {
                 None => panic!("No handshake response!?"),
             },
             Out::ReadMaxAllowedPacket(conn) => {
-                match self.init.pop() {
-                    Some(query) => {
-                        self.step = Step::Query(conn.query(query));
-                        self.poll()
-                    },
-                    None => Ok(Ready(conn)),
-                }
+                let step = match self.opts.get_init().get(self.opts.get_init().len() - self.init_len) {
+                    Some(query) => Step::Query(conn.query(query)),
+                    None => return Ok(Ready(conn)),
+                };
+                self.step = step;
+                self.init_len -= 1;
+                self.poll()
             },
             Out::Query(query_result) => {
                 self.step = Step::CollectAll(query_result.collect_all());
                 self.poll()
             },
             Out::CollectAll((_, conn)) => {
-                match self.init.pop() {
-                    Some(query) => {
-                        self.step = Step::Query(conn.query(query));
-                        self.poll()
-                    },
-                    Node => Ok(Ready(conn)),
-                }
+                let step = match self.opts.get_init().get(self.opts.get_init().len() - self.init_len) {
+                    Some(query) => Step::Query(conn.query(query)),
+                    None => return Ok(Ready(conn)),
+                };
+                self.step = step;
+                self.init_len -= 1;
+                self.poll()
             }
         }
     }
