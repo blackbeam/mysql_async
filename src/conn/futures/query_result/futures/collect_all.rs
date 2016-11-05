@@ -1,7 +1,4 @@
-use conn::futures::query_result::InnerQueryResult;
-use conn::futures::query_result::QueryResultOutput;
-use conn::futures::query_result::ResultSet;
-use conn::futures::query_result::UnconsumedQueryResult;
+use conn::futures::query_result::*;
 use either::Left;
 use either::Right;
 use errors::*;
@@ -30,12 +27,12 @@ pub fn new_new<T: Sized>(query_result: T) -> CollectAll<T> {
     }
 }
 
-impl<T, F> Future for CollectAll<T>
+impl<T> Future for CollectAll<T>
 where T: InnerQueryResult,
       T: UnconsumedQueryResult,
-      T::Output: QueryResultOutput<Payload=T, Output=F>,
+      T::Output: QueryResultOutput<Result=T>,
 {
-    type Item = (Vec<ResultSet<Row, T>>, F);
+    type Item = (Vec<ResultSet<Row, T>>, <T::Output as QueryResultOutput>::Output);
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -46,19 +43,18 @@ where T: InnerQueryResult,
             },
             Right(output) => {
                 let set = mem::replace(&mut self.row_vec, Vec::new());
-                match output.into_payload_or_output() {
-                    Left(next_query_result) => {
-                        let old_query_result = mem::replace(self.query_result.as_mut().unwrap(),
-                                                            next_query_result);
-                        self.vec.push(ResultSet(set, old_query_result));
+                let prev_result = self.query_result.take().unwrap();
+                match output.into_next_or_output(prev_result) {
+                    (prev_result, Left(next_result)) => {
+                        self.query_result = Some(next_result);
+                        self.vec.push(ResultSet(set, prev_result));
                         self.poll()
                     },
-                    Right(conn) => {
-                        let query_result = self.query_result.take().unwrap();
-                        self.vec.push(ResultSet(set, query_result));
+                    (prev_result, Right(out)) => {
+                        self.vec.push(ResultSet(set, prev_result));
                         let vec = mem::replace(&mut self.vec, Vec::new());
-                        Ok(Ready((vec, conn)))
-                    }
+                        Ok(Ready((vec, out)))
+                    },
                 }
             }
         }

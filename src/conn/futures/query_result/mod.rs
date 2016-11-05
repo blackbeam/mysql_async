@@ -229,38 +229,42 @@ impl<K: ResultKind + InnerResultKind> Stream for RawQueryResult<K> {
 
 /// Final result of a query result.
 pub trait QueryResultOutput {
-    /// Payload of a query result output.
-    ///
-    /// It is next query result for text protocol or `()` for binary protocol.
-    type Payload;
+    /// Type of query result for this query result output.
+    type Result: QueryResult;
     /// Output of a query result output.
     ///
     /// It is `Conn` for text protocol or `Stmt` fot binary protocol.
     type Output;
 
-    /// A way to generically extract payload and output of query result output.
-    fn into_payload_or_output(self) -> Either<Self::Payload, Self::Output>;
+    /// A way to generically extract possible next result and output of query result output.
+    ///
+    /// Returns (previous result, Either<next result, output>)
+    fn into_next_or_output(self, prev: Self::Result) -> (Self::Result,
+                                                         Either<Self::Result, Self::Output>);
 }
 
 impl QueryResultOutput for Stmt {
-    type Payload = ();
+    type Result = BinQueryResult;
     type Output = Stmt;
 
-    fn into_payload_or_output(self) -> Either<Self::Payload, Self::Output> {
-        Right(self)
+    fn into_next_or_output(self, prev: BinQueryResult) -> (Self::Result,
+                                                           Either<Self::Result, Self::Output>)
+    {
+        (prev, Right(self))
     }
 }
 
 impl QueryResultOutput for Either<TextQueryResult, Conn> {
-    type Payload = TextQueryResult;
+    type Result = TextQueryResult;
     type Output = Conn;
 
-    fn into_payload_or_output(self) -> Either<Self::Payload, Self::Output> {
-        self
+    fn into_next_or_output(self, prev: TextQueryResult) -> (Self::Result,
+                                                            Either<Self::Result, Self::Output>)
+    {
+        (prev, self)
     }
 }
 
-// TODO: Нужно, чтобы пустой результат query и execute сразу возвращал QueryResultOutput::Output.
 /// Query result which was not consumed yet.
 pub trait UnconsumedQueryResult: InnerQueryResult {
     type Output: QueryResultOutput;

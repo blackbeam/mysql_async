@@ -1,4 +1,8 @@
 use Conn;
+use conn::futures::Query;
+use conn::futures::query_result::futures::CollectAll;
+use conn::futures::query_result::TextQueryResult;
+use conn::futures::query_result::UnconsumedQueryResult;
 use conn::futures::read_max_allowed_packet::ReadMaxAllowedPacket;
 use consts;
 use errors::*;
@@ -11,6 +15,7 @@ use lib_futures::Future;
 use lib_futures::Poll;
 use lib_futures::stream::Stream as StreamTrait;
 use lib_futures::stream::StreamFuture;
+#[macro_use] use macros;
 use Opts;
 use proto::ErrPacket;
 use proto::HandshakePacket;
@@ -19,65 +24,36 @@ use proto::Packet;
 use proto::PacketType;
 
 
-enum Step {
-    ConnectingStream(ConnectingStream),
-    ReadHandshake(StreamFuture<Stream>),
-    WriteHandshake(WritePacket),
-    ReadResponse(StreamFuture<Stream>),
-    ReadMaxAllowedPacket(ReadMaxAllowedPacket),
-}
-
-enum Out {
-    ConnectingStream(Stream),
-    ReadHandshake((Option<(Packet, u8)>, Stream)),
-    WriteHandshake((Stream, u8)),
-    ReadResponse((Option<(Packet, u8)>, Stream)),
-    ReadMaxAllowedPacket(Conn),
-}
-
-/// Future that resulves to a `Conn`.
+/// Future that resolves to a `Conn`.
 pub struct NewConn {
     step: Step,
     opts: Opts,
     status: consts::StatusFlags,
     id: u32,
     version: (u16, u16, u16),
+    init: Vec<String>,
+}
+
+steps! {
+    NewConn {
+        ConnectingStream(ConnectingStream),
+        ReadHandshake(StreamFuture<Stream>),
+        WriteHandshake(WritePacket),
+        ReadResponse(StreamFuture<Stream>),
+        ReadMaxAllowedPacket(ReadMaxAllowedPacket),
+        Query(Query),
+        CollectAll(CollectAll<TextQueryResult>),
+    }
 }
 
 pub fn new(connecting_stream: ConnectingStream, opts: Opts) -> NewConn {
     NewConn {
+        init: opts.get_init().to_owned(),
         opts: opts,
         step: Step::ConnectingStream(connecting_stream),
         status: consts::StatusFlags::empty(),
         id: 0,
         version: (0, 0, 0),
-    }
-}
-
-impl NewConn {
-    fn either_poll(&mut self) -> Result<Async<Out>> {
-        match self.step {
-            Step::ConnectingStream(ref mut fut) => {
-                let val = try_ready!(fut.poll());
-                Ok(Ready(Out::ConnectingStream(val)))
-            },
-            Step::ReadHandshake(ref mut fut) => {
-                let val = try_ready!(fut.poll());
-                Ok(Ready(Out::ReadHandshake(val)))
-            },
-            Step::WriteHandshake(ref mut fut) => {
-                let val = try_ready!(fut.poll());
-                Ok(Ready(Out::WriteHandshake(val)))
-            },
-            Step::ReadResponse(ref mut fut) => {
-                let val = try_ready!(fut.poll());
-                Ok(Ready(Out::ReadResponse(val)))
-            },
-            Step::ReadMaxAllowedPacket(ref mut fut) => {
-                let val = try_ready!(fut.poll());
-                Ok(Ready(Out::ReadMaxAllowedPacket(val)))
-            }
-        }
     }
 }
 
@@ -113,7 +89,7 @@ impl Future for NewConn {
                 },
                 None => panic!("No handshake!?"),
             },
-            Out::WriteHandshake((stream, _)) => { // TODO: mentinon seq_id
+            Out::WriteHandshake((stream, _)) => { // TODO: take seq_id to account
                 self.step = Step::ReadResponse(stream.into_future());
                 self.poll()
             },
@@ -143,6 +119,7 @@ impl Future for NewConn {
                             version: self.version,
                             id: self.id,
                             has_result: None,
+                            pool: None,
                         };
                         self.step = Step::ReadMaxAllowedPacket(conn.read_max_allowed_packet());
                         self.poll()
@@ -151,8 +128,27 @@ impl Future for NewConn {
                 None => panic!("No handshake response!?"),
             },
             Out::ReadMaxAllowedPacket(conn) => {
-                Ok(Ready(conn))
+                match self.init.pop() {
+                    Some(query) => {
+                        self.step = Step::Query(conn.query(query));
+                        self.poll()
+                    },
+                    None => Ok(Ready(conn)),
+                }
             },
+            Out::Query(query_result) => {
+                self.step = Step::CollectAll(query_result.collect_all());
+                self.poll()
+            },
+            Out::CollectAll((_, conn)) => {
+                match self.init.pop() {
+                    Some(query) => {
+                        self.step = Step::Query(conn.query(query));
+                        self.poll()
+                    },
+                    Node => Ok(Ready(conn)),
+                }
+            }
         }
     }
 }

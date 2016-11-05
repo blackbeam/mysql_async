@@ -131,7 +131,7 @@ mod test {
     #[cfg(feature = "nightly")]
     mod bench {
         use test;
-        use named_params::parse_named_params;
+        use super::super::parse_named_params;
 
         #[bench]
         fn parse_ten_named_params(bencher: &mut test::Bencher) {

@@ -9,6 +9,11 @@ use std::str::FromStr;
 use url::Url;
 use url::percent_encoding::percent_decode;
 
+
+const DEFAULT_MIN_CONNS: usize = 10;
+const DEFAULT_MAX_CONNS: usize = 100;
+
+
 /// Mysql connection options.
 ///
 /// Build one with [`OptsBuilder`](struct.OptsBuilder.html).
@@ -31,6 +36,12 @@ pub struct Opts {
 
     // TODO: keepalive_timeout
     // TODO: local infile handler
+
+    /// Lower bound of opened connections for `Pool`.
+    pool_min: usize,
+
+    /// Upper bound of opened connections for `Pool`.
+    pool_max: usize,
 
     /// Commands to execute on each new database connection.
     init: Vec<String>,
@@ -85,6 +96,16 @@ impl Opts {
     pub fn get_init(&self) -> &[String] {
         self.init.as_ref()
     }
+
+    /// Lower bound of opened connections for `Pool`.
+    pub fn get_pool_min(&self) -> usize {
+        self.pool_min
+    }
+
+    /// Upper bound of opened connections for `Pool`.
+    pub fn get_pool_max(&self) -> usize {
+        self.pool_max
+    }
 }
 
 impl Default for Opts {
@@ -96,6 +117,8 @@ impl Default for Opts {
             pass: None,
             db_name: None,
             init: vec![],
+            pool_min: 10,
+            pool_max: 100,
         }
     }
 }
@@ -165,6 +188,18 @@ impl OptsBuilder {
         self.opts.init = init.into_iter().map(Into::into).collect();
         self
     }
+
+    /// Lower bound of opened connections for `Pool` (defaults to `10`. None to reset to default).
+    pub fn pool_min<T: Into<usize>>(&mut self, pool_min: Option<T>) -> &mut Self {
+        self.opts.pool_min = pool_min.map(Into::into).unwrap_or(DEFAULT_MIN_CONNS);
+        self
+    }
+
+    /// Lower bound of opened connections for `Pool` (defaults to `100`. None to reset to default).
+    pub fn pool_max<T: Into<usize>>(&mut self, pool_max: Option<T>) -> &mut Self {
+        self.opts.pool_max = pool_max.map(Into::into).unwrap_or(DEFAULT_MAX_CONNS);
+        self
+    }
 }
 
 impl From<OptsBuilder> for Opts {
@@ -228,33 +263,31 @@ fn from_url_basic(url_str: &str) -> Result<(Opts, Vec<(String, String)>)> {
 }
 
 fn from_url(url: &str) -> Result<Opts> {
-    let (opts, query_pairs) = try!(from_url_basic(url));
-    for (key, _ /* value */) in query_pairs {
-        if key == "prefer_socket" {
-//            if cfg!(all(not(feature = "socket"), not(feature = "pipe"))) {
-//                return Err(
-//                    ErrorKind::UrlFeatureRequired("`socket' or `pipe'".into(),
-//                                                  "prefer_socket".into()).into()
-//                );
-//            } else {
-//                if value == "true" {
-//                    opts.set_prefer_socket(true);
-//                } else if value == "false" {
-//                    opts.set_prefer_socket(false);
-//                } else {
-//                    return Err(ErrorKind::UrlInvalidValue("prefer_socket".into(), value).into());
-//                }
-//            }
+    let (mut opts, query_pairs) = try!(from_url_basic(url));
+    for (key, value) in query_pairs {
+        if key == "pool_min" {
+            match usize::from_str(&*value) {
+                Ok(value) => opts.pool_min = value,
+                _ => return Err(ErrorKind::UrlInvalidParamValue("pool_min".into(), value).into()),
+            }
+        } else if key == "pool_max" {
+            match usize::from_str(&*value) {
+                Ok(value) => opts.pool_max = value,
+                _ => return Err(ErrorKind::UrlInvalidParamValue("pool_max".into(), value).into()),
+            }
         } else {
             return Err(ErrorKind::UrlUnknownParameter(key).into());
         }
     }
+    if opts.pool_min > opts.pool_max {
+        return Err(ErrorKind::InvalidPoolConstraints(opts.pool_min, opts.pool_max).into());
+    }
     Ok(opts)
 }
 
-impl<'a> From<&'a str> for Opts {
-    fn from(url: &'a str) -> Opts {
-        match from_url(url) {
+impl<T: AsRef<str> + Sized> From<T> for Opts {
+    fn from(url: T) -> Opts {
+        match from_url(url.as_ref()) {
             Ok(opts) => opts,
             Err(err) => panic!("{}", err),
         }

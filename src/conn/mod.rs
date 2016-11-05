@@ -1,5 +1,6 @@
 use conn::futures::*;
 use conn::futures::query_result::ResultKind;
+use conn::pool::Pool;
 use conn::stmt::InnerStmt;
 use consts;
 use io::Stream;
@@ -8,6 +9,8 @@ use opts::Opts;
 use proto::Column;
 use proto::OkPacket;
 use value::FromRow;
+use value::Params;
+use std::mem;
 use std::sync::Arc;
 use tokio::reactor::Handle;
 
@@ -32,12 +35,30 @@ pub struct Conn {
     last_insert_id: u64,
     affected_rows: u64,
     warnings: u16,
-
-    // TODO: Реализовать Conn::drop_result()
+    pool: Option<Pool>,
     has_result: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>,
 }
 
 impl Conn {
+    /// Hacky way to move connection through &mut. `self` becomes unusable.
+    fn take(&mut self) -> Conn {
+        mem::replace(self, Conn {
+            stream: Default::default(),
+            id: Default::default(),
+            version: Default::default(),
+            seq_id: Default::default(),
+            last_command: consts::Command::COM_QUIT,
+            max_allowed_packet: Default::default(),
+            capabilities: consts::CapabilityFlags::empty(),
+            status: consts::StatusFlags::empty(),
+            last_insert_id: Default::default(),
+            affected_rows: Default::default(),
+            warnings: Default::default(),
+            pool: Default::default(),
+            has_result: Default::default(),
+        })
+    }
+
     /// Returns future that resolves to `Conn`.
     pub fn new<O>(opts: O, handle: &Handle) -> NewConn
         where O: Into<Opts>,
@@ -47,7 +68,7 @@ impl Conn {
         let future = {
             let addr = opts.get_ip_or_hostname();
             let port = opts.get_tcp_port();
-            Stream::connect((addr, port), handle)
+            Stream::connect((addr, port), &handle)
         };
 
         new_new_conn(future, opts)
@@ -58,7 +79,7 @@ impl Conn {
         new_read_max_allowed_packet(self.first::<(u64,), _>("SELECT @@max_allowed_packet"))
     }
 
-    /// Returns future that resolve to `Conn` if `COM_PING` executed successfully.
+    /// Returns future that resolves to `Conn` if `COM_PING` executed successfully.
     pub fn ping(self) -> Ping {
         new_ping(self.write_command_data(consts::Command::COM_PING, &[]))
     }
@@ -85,17 +106,43 @@ impl Conn {
         new_prepare(self, query.as_ref())
     }
 
+    /// Returns future that prepares and executes statement in one pass and resolves to
+    /// `BinQueryResult`.
+    pub fn prep_exec<Q, P>(self, query: Q, params: P) -> PrepExec
+        where Q: AsRef<str>,
+              P: Into<Params>,
+    {
+        new_prep_exec(self, query, params)
+    }
+
+    /// Returns future that resolves to a first row of result of a statement execution (if any).
+    ///
+    /// Returned future will call `R::from_row(row)` internally.
+    pub fn first_exec<R, Q, P>(self, query: Q, params: P) -> FirstExec<R>
+        where Q: AsRef<str>,
+              P: Into<Params>,
+              R: FromRow,
+    {
+        new_first_exec(self, query, params)
+    }
+
+
     /// Returns future that resolves to a `Conn` with `COM_RESET_CONNECTION` executed on it.
     pub fn reset(self) -> Reset {
         new_reset(self.write_command_data(consts::Command::COM_RESET_CONNECTION, &[]))
     }
 
     /// Returns future that consumes `Conn` and disconnects it from a server.
-    pub fn disconnect(self) -> Disconnect {
+    pub fn disconnect(mut self) -> Disconnect {
+        self.pool = None;
         new_disconnect(self.write_command_data(consts::Command::COM_QUIT, &[]))
     }
 
-    // TODO: DropResult
+    /// Return future that reads result from a server and resolves to `Conn`.
+    fn drop_result(mut self) -> DropResult {
+        let has_result = self.has_result.take();
+        new_drop_result(self, has_result)
+    }
 
     /// Returns future that resolves to `RawQueryResult` of corresponding `K: ResultKind`.
     fn handle_result_set<K: ResultKind>(self, inner_stmt: Option<InnerStmt>) -> NewRawQueryResult<K> {
@@ -137,7 +184,9 @@ impl Conn {
 
 #[cfg(test)]
 mod test {
+    use opts::OptsBuilder;
     use env_logger;
+    use either::Left;
     use prelude::*;
     use lib_futures::Future;
 
@@ -160,6 +209,24 @@ mod test {
         });
 
         lp.run(fut).unwrap();
+    }
+
+    #[test]
+    fn should_execute_init_queryes_on_new_connection() {
+        let mut lp = Core::new().unwrap();
+
+        let mut opts_builder = OptsBuilder::from_opts(&**DATABASE_URL);
+        opts_builder.init(vec!["SET @a = 42", "SET @b = 'foo'"]);
+        let fut = Conn::new(opts_builder, &lp.handle()).and_then(|conn| {
+            conn.query("SELECT @a, @b")
+        }).and_then(|query_result| {
+            query_result.collect::<(u8, String)>()
+        }).map(|(result_set, _)| {
+            result_set
+        });
+
+        let result = lp.run(fut).unwrap();
+        assert_eq!(result.0, vec![(42, "foo".into())]);
     }
 
     #[test]
@@ -288,12 +355,53 @@ mod test {
     }
 
     #[test]
+    fn should_iterate_over_resultset() {
+        use std::cell::RefCell;
+        let mut lp = Core::new().unwrap();
+        let acc: RefCell<u8> = RefCell::new(1);
+
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
+            conn.query(r"
+                SELECT 2
+                UNION ALL
+                SELECT 3;
+                SELECT 5;
+            ")
+        }).and_then(|query_result| {
+            query_result.for_each(|row| {
+                let (x,) = from_row(row);
+                *acc.borrow_mut() *= x;
+            })
+        }).and_then(|maybe_next| {
+            if let Left(query_result) = maybe_next {
+                query_result.for_each(|row| {
+                    let (x,) = from_row(row);
+                    *acc.borrow_mut() *= x;
+                })
+            } else {
+                unreachable!();
+            }
+        });
+
+        let conn = lp.run(fut).unwrap();
+        assert!(conn.is_right());
+        assert_eq!(*acc.borrow(), 30);
+    }
+
+    #[test]
     fn should_prepare_statement() {
         let mut lp = Core::new().unwrap();
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle())
             .and_then(|conn| {
                 conn.prepare(r"SELECT ?")
+            });
+
+        lp.run(fut).unwrap();
+
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| {
+                conn.prepare(r"SELECT :foo")
             });
 
         lp.run(fut).unwrap();
@@ -330,6 +438,84 @@ mod test {
 
         let output = lp.run(fut).unwrap();
         assert_eq!(output, 10);
+
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| {
+                conn.prepare(r"SELECT :foo, :bar, :foo")
+            }).and_then(|stmt| {
+            stmt.execute(params! {
+                "foo" => 2,
+                "bar" => 3,
+            })
+        }).and_then(|query_result| {
+            query_result.collect::<(u8, u8, u8)>()
+        }).and_then(|(result_set, stmt)| {
+            assert_eq!(result_set.as_ref(), [(2, 3, 2)]);
+            stmt.execute(params! {
+                "foo" => "quux",
+                "bar" => "baz",
+            })
+        }).and_then(|query_result| {
+            query_result.map(|row| {
+                from_row::<(String, String, String)>(row)
+            })
+        }).and_then(|(mut rows, stmt)| {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows.pop(), Some(("quux".into(), "baz".into(), "quux".into())));
+            stmt.execute(params! {
+                "foo" => 2,
+                "bar" => 3,
+            })
+        }).and_then(|query_result| {
+            query_result.reduce(0, |acc, row| {
+                let (a, b, c): (u8,u8,u8) = from_row(row);
+                acc + a + b + c
+            })
+        }).map(|(output, _)| output);
+
+        let output = lp.run(fut).unwrap();
+        assert_eq!(output, 7);
+    }
+
+    #[test]
+    fn should_prep_exec_statement() {
+
+        let mut lp = Core::new().unwrap();
+
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
+            conn.prep_exec(r"SELECT :a, :b, :a", params! {
+                "a" => 2,
+                "b" => 3,
+            })
+        }).and_then(|query_result| {
+            query_result.map(|row| {
+                let (a, b, c): (u8, u8, u8) = from_row(row);
+                a * b * c
+            })
+        }).map(|(out, _)| {
+            out[0]
+        });
+
+        let output = lp.run(fut).unwrap();
+        assert_eq!(output, 12u8);
+    }
+
+    #[test]
+    fn should_first_exec_statement() {
+
+        let mut lp = Core::new().unwrap();
+
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
+            conn.first_exec::<(u8,), _, _>(r"SELECT :a UNION ALL SELECT :b", params! {
+                "a" => 2,
+                "b" => 3,
+            })
+        }).map(|(row, _)| {
+            row.unwrap()
+        });
+
+        let output = lp.run(fut).unwrap();
+        assert_eq!(output, (2,));
     }
 
     #[cfg(feature = "nightly")]
@@ -338,6 +524,7 @@ mod test {
         use conn::Conn;
         use tokio::reactor::Core;
         use lib_futures::Future;
+        use test_misc::DATABASE_URL;
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {

@@ -64,6 +64,10 @@ error_chain! {
         UrlInvalid {
             description("Invalid or incomplete connection URL")
         }
+        InvalidPoolConstraints(min: usize, max: usize) {
+            description("Invalid pool constraints: pool_min > pool_max.")
+            display("Invalid pool constraints: pool_min ({}) > pool_max ({}).", min, max)
+        }
     }
 }
 

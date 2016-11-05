@@ -32,7 +32,7 @@ impl Future for ReadPacket {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.future.poll()) {
             (maybe_packet, stream) => match maybe_packet {
-                Some((packet, _)) => { // TODO: mention seq_id, make Conn a stream of packets.
+                Some((packet, _)) => { // TODO: take seq_id to account
                     let packet = {
                         let conn = self.conn.as_mut().unwrap();
                         conn.stream = Some(stream);

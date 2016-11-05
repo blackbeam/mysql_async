@@ -1,10 +1,13 @@
 mod columns;
 mod disconnect;
+mod drop_result;
 mod first;
+mod first_exec;
 mod new_conn;
 mod new_raw_query_result;
 mod ping;
 mod prepare;
+mod prep_exec;
 mod query;
 pub mod query_result;
 mod read_max_allowed_packet;
@@ -19,8 +22,14 @@ pub use self::columns::new as new_columns;
 pub use self::disconnect::Disconnect;
 pub use self::disconnect::new as new_disconnect;
 
+pub use self::drop_result::DropResult;
+pub use self::drop_result::new as new_drop_result;
+
 pub use self::first::First;
 pub use self::first::new as new_first;
+
+pub use self::first_exec::FirstExec;
+pub use self::first_exec::new as new_first_exec;
 
 pub use self::new_conn::NewConn;
 pub use self::new_conn::new as new_new_conn;
@@ -33,6 +42,9 @@ pub use self::ping::new as new_ping;
 
 pub use self::prepare::Prepare;
 pub use self::prepare::new as new_prepare;
+
+pub use self::prep_exec::PrepExec;
+pub use self::prep_exec::new as new_prep_exec;
 
 pub use self::query::Query;
 pub use self::query::new_new as new_query;

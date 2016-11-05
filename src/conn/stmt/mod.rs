@@ -4,6 +4,7 @@ use byteorder::ReadBytesExt;
 use byteorder::LittleEndian as LE;
 use errors::*;
 use proto::Column;
+use value::FromRow;
 use value::Params;
 
 
@@ -44,6 +45,7 @@ impl InnerStmt {
 }
 
 /// Prepered MySql statement.
+#[derive(Debug)]
 pub struct Stmt {
     stmt: InnerStmt,
     conn: Conn,
@@ -57,9 +59,21 @@ pub fn new_stmt(stmt: InnerStmt, conn: Conn) -> Stmt {
 }
 
 impl Stmt {
-    /// Returns future that executes this statement with provided `params`.
+    /// Returns future that executes statement and resolves to `BinQueryResult`.
     pub fn execute<T: Into<Params>>(self, params: T) -> Execute {
         new_execute(self, params.into())
+    }
+
+    /// Returns future that executes statement and resolves to a first row of result if any.
+    ///
+    /// Returned future will call `R::from_row(row)` internally.
+    pub fn first<T: Into<Params>, R: FromRow>(self, params: T) -> First<R> {
+        new_first::<R>(self, params.into())
+    }
+
+    /// Unwraps `Conn`.
+    pub fn unwrap(self) -> Conn {
+        self.conn
     }
 
     #[doc(hidden)]

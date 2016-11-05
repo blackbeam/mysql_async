@@ -485,9 +485,10 @@ impl HandshakeResponse {
                         user: Option<U>,
                         passwd: Option<P>,
                         database: Option<D>) -> HandshakeResponse
-    where U: AsRef<[u8]> + Clone,
-          P: AsRef<[u8]>,
-          D: AsRef<[u8]> + Clone {
+        where U: AsRef<[u8]> + Clone,
+              P: AsRef<[u8]>,
+              D: AsRef<[u8]> + Clone,
+    {
         let mut client_flags = consts::CLIENT_PROTOCOL_41 |
                                consts::CLIENT_SECURE_CONNECTION |
                                consts::CLIENT_LONG_PASSWORD |
@@ -512,7 +513,7 @@ impl HandshakeResponse {
 
         let mut payload_len = 4 + 4 + 1 + 23 + user_len + 1 + 1 + scramble_len;
         if database_len > 0 {
-            payload_len = database_len + 1;
+            payload_len += database_len + 1;
         }
 
         let mut data = vec![0u8; payload_len];
@@ -648,7 +649,9 @@ impl OkPacket {
     }
 }
 
-// TODO: impl fmt::Debug for OkPacket
+/// MySql error packet.
+///
+/// `Debug` implementation will renders something similar to console mysql client error message.
 pub struct ErrPacket {
     data: Vec<u8>,
 }

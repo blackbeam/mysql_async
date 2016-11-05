@@ -28,6 +28,8 @@ extern crate url;
 extern crate env_logger;
 
 #[macro_use]
+mod macros;
+#[macro_use]
 mod value;
 mod conn;
 /// Mysql constants
@@ -46,6 +48,11 @@ pub use self::conn::Conn;
 pub use self::conn::futures::query_result::{
     TextQueryResult,
     BinQueryResult,
+};
+
+#[doc(inline)]
+pub use self::conn::pool::{
+    Pool,
 };
 
 #[doc(inline)]
@@ -97,6 +104,7 @@ pub mod futures {
     #[doc(inline)] pub use conn::futures::query_result::futures::ForEach;
     #[doc(inline)] pub use conn::futures::query_result::futures::Map;
     #[doc(inline)] pub use conn::futures::query_result::futures::Reduce;
+    #[doc(inline)] pub use conn::pool::futures::GetConn;
     #[doc(inline)] pub use conn::stmt::futures::Execute;
 }
 
