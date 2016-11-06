@@ -913,6 +913,7 @@ impl Column {
             reader = &reader[size + len..];
 
             offset += 1;
+            reader = &reader[1..];
 
             let charset = u16_le(reader).expect("7");
             offset += 2;
