@@ -99,12 +99,12 @@ impl Stmt {
     }
 
     #[doc(hidden)]
-    pub fn params(&self) -> Option<&Vec<Column>> {
-        self.stmt.params.as_ref()
+    pub fn params(&self) -> Option<&[Column]> {
+        self.stmt.params.as_ref().map(|x| &**x)
     }
 
     #[doc(hidden)]
-    pub fn named_params(&self) -> Option<&Vec<String>> {
-        self.stmt.named_params.as_ref()
+    pub fn named_params(&self) -> Option<&[String]> {
+        self.stmt.named_params.as_ref().map(|x| &**x)
     }
 }
