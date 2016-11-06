@@ -312,6 +312,13 @@ pub trait UnconsumedQueryResult: InnerQueryResult {
     {
         new_for_each(self, fun)
     }
+
+    /// It returns future that drops result and resolves to wrapped `Conn` on `Stmt`.
+    fn drop_result(self) -> DropResult<Self>
+        where Self: Sized,
+    {
+        new_drop_result(self)
+    }
 }
 
 /// Inner methods of `QueryResult`.
