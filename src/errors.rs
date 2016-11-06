@@ -68,6 +68,9 @@ error_chain! {
             description("Invalid pool constraints: pool_min > pool_max.")
             display("Invalid pool constraints: pool_min ({}) > pool_max ({}).", min, max)
         }
+        PoolDisconnected {
+            description("Pool was disconnected")
+        }
     }
 }
 

@@ -21,6 +21,7 @@ pub mod futures;
 
 
 pub struct Inner {
+    closed: bool,
     new: Vec<NewConn>,
     idle: Vec<Conn>,
     disconnecting: Vec<Disconnect>,
@@ -64,6 +65,7 @@ impl Pool {
             handle: handle.clone(),
             opts: opts,
             inner: Rc::new(RefCell::new(Inner {
+                closed: false,
                 new: new_conns,
                 idle: Vec::new(),
                 disconnecting: Vec::new(),
@@ -81,6 +83,20 @@ impl Pool {
         new_get_conn(self)
     }
 
+    /// Returns future that disconnects this pool from server and resolves to `()`.
+    ///
+    /// Active connections taken from this pool should be disconnected manually.
+    /// Also all pending and new `GetConn`'s will resolve to error.
+    pub fn disconnect(mut self) -> DisconnectPool {
+        if ! self.inner_ref().closed {
+            self.inner_mut().closed = true;
+            while let Some(conn) = self.take_conn() {
+                self.inner_mut().disconnecting.push(conn.disconnect());
+            }
+        }
+        new_disconnect_pool(self)
+    }
+
     /// A way to take connection from a pool.
     fn take_conn(&mut self) -> Option<Conn> {
         let maybe_conn = self.inner_mut().idle.pop();
@@ -94,6 +110,9 @@ impl Pool {
 
     /// A way to return connection taken from a pool.
     fn return_conn(&mut self, conn: Conn) {
+        if self.inner_ref().closed {
+            return;
+        }
         if conn.has_result.is_some() {
             self.inner_mut().dropping.push(conn.drop_result());
         } else {
@@ -144,7 +163,11 @@ impl Pool {
         // Handle dirty connections.
         handle!(dropping {
             Ok(Ready(conn)) => {
-                self.return_conn(conn);
+                if self.inner_ref().closed {
+                    self.inner_mut().disconnecting.push(conn.disconnect());
+                } else {
+                    self.return_conn(conn);
+                }
             },
             Err(_) => {},
         });
@@ -152,10 +175,16 @@ impl Pool {
         // Handle connecting connections.
         handle!(new {
             Ok(Ready(conn)) => {
-                self.return_conn(conn);
+                if self.inner_ref().closed {
+                    self.inner_mut().disconnecting.push(conn.disconnect());
+                } else {
+                    self.return_conn(conn);
+                }
             },
             Err(err) => {
-                return Err(err);
+                if ! self.inner_ref().closed {
+                    return Err(err);
+                }
             },
         });
 
@@ -164,7 +193,12 @@ impl Pool {
 
     /// Will poll pool for connection.
     fn poll(&mut self) -> Result<Async<Conn>> {
+        if self.inner_ref().closed {
+            return Err(ErrorKind::PoolDisconnected.into());
+        }
+
         try!(self.handle_futures());
+
         match self.take_conn() {
             Some(conn) => Ok(Ready(conn)),
             None => if self.inner_ref().new.len() == 0 && self.inner_ref().idle.len() < self.max {
@@ -199,7 +233,9 @@ mod test {
         let mut lp = Core::new().unwrap();
 
         let pool = Pool::new(&**DATABASE_URL, &lp.handle());
-        let fut = pool.get_conn().and_then(|conn| conn.ping());
+        let fut = pool.get_conn().and_then(|conn| conn.ping().map(|_| ())).and_then(|_| {
+            pool.disconnect()
+        });
 
         lp.run(fut).unwrap();
     }
@@ -209,8 +245,9 @@ mod test {
         let mut lp = Core::new().unwrap();
 
         let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL), &lp.handle());
+        let pool_clone = pool.clone();
         let fut = pool.get_conn().join(pool.get_conn()).and_then(|(mut conn1, conn2)| {
-            let new_conn = pool.get_conn();
+            let new_conn = pool_clone.get_conn();
             conn1.pool.as_mut().unwrap().handle_futures().unwrap();
             assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().new.len(), 0);
             assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().idle.len(), 0);
@@ -228,7 +265,7 @@ mod test {
             assert_eq!(pool.inner_ref().idle.len(), 1);
             assert_eq!(pool.inner_ref().disconnecting.len(), 0);
             assert_eq!(pool.inner_ref().dropping.len(), 0);
-            Ok(())
+            pool.disconnect()
         });
 
         lp.run(fut).unwrap();
