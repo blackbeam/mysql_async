@@ -64,6 +64,13 @@ impl Stmt {
         new_execute(self, params.into())
     }
 
+    /// Returns future that performs batch execution of statement and resolves to `Stmt`.
+    ///
+    /// All results will be dropped.
+    pub fn batch<T: Into<Params>>(self, params_vec: Vec<T>) -> Batch {
+        new_batch(self, params_vec)
+    }
+
     /// Returns future that executes statement and resolves to a first row of result if any.
     ///
     /// Returned future will call `R::from_row(row)` internally.
