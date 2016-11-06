@@ -154,6 +154,8 @@ impl Pool {
             });
         }
 
+        let mut handled = false;
+
         // Handle closing connections.
         handle!(disconnecting {
             Ok(Ready(_)) => {},
@@ -168,6 +170,7 @@ impl Pool {
                 } else {
                     self.return_conn(conn);
                 }
+                handled = true;
             },
             Err(_) => {},
         });
@@ -180,6 +183,7 @@ impl Pool {
                 } else {
                     self.return_conn(conn);
                 }
+                handled = true;
             },
             Err(err) => {
                 if ! self.inner_ref().closed {
@@ -188,7 +192,11 @@ impl Pool {
             },
         });
 
-        Ok(())
+        if handled {
+            self.handle_futures()
+        } else {
+            Ok(())
+        }
     }
 
     /// Will poll pool for connection.
