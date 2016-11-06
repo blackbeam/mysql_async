@@ -204,9 +204,8 @@ mod test {
         let mut lp = Core::new().unwrap();
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-        .and_then(|conn| {
-            conn.ping()
-        });
+        .and_then(|conn| conn.ping())
+        .and_then(|conn| conn.disconnect());
 
         lp.run(fut).unwrap();
     }
@@ -221,8 +220,8 @@ mod test {
             conn.query("SELECT @a, @b")
         }).and_then(|query_result| {
             query_result.collect::<(u8, String)>()
-        }).map(|(result_set, _)| {
-            result_set
+        }).and_then(|(result_set, conn)| {
+            conn.right().unwrap().disconnect().map(|_| result_set)
         });
 
         let result = lp.run(fut).unwrap();
@@ -230,26 +229,12 @@ mod test {
     }
 
     #[test]
-    fn should_reset_the_connect() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-            .and_then(|conn| {
-                conn.reset()
-            });
-
-        lp.run(fut).unwrap();
-    }
-
-    #[test]
-    fn should_disconnect() {
+    fn should_reset_the_connection() {
         let mut lp = Core::new().unwrap();
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
-            conn.ping()
-        }).and_then(|conn| {
-            conn.disconnect()
-        });
+            conn.reset()
+        }).and_then(|conn| conn.disconnect());
 
         lp.run(fut).unwrap();
     }
@@ -258,21 +243,22 @@ mod test {
     fn should_perform_queries() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-            .and_then(|conn| {
-                conn.query(r"
-                    SELECT 'hello', 123
-                    UNION ALL
-                    SELECT 'world', 231
-                ")
-            }).and_then(|query_result| {
-                query_result.reduce(vec![], |mut accum, row| {
-                    accum.push(from_row(row));
-                    accum
-                })
-            });
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
+            conn.query(r"
+                SELECT 'hello', 123
+                UNION ALL
+                SELECT 'world', 231
+            ")
+        }).and_then(|query_result| {
+            query_result.reduce(vec![], |mut accum, row| {
+                accum.push(from_row(row));
+                accum
+            })
+        }).and_then(|(result, conn)| {
+            conn.right().unwrap().disconnect().map(|_| result)
+        });
 
-        let result = lp.run(fut).unwrap().0;
+        let result = lp.run(fut).unwrap();
         assert_eq!((String::from("hello"), 123), result[0]);
         assert_eq!((String::from("world"), 231), result[1]);
     }
@@ -281,19 +267,20 @@ mod test {
     fn should_handle_mutliresult_set() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-            .and_then(|conn| {
-                conn.query(r"
-                    SELECT 'hello', 123
-                    UNION ALL
-                    SELECT 'world', 231;
-                    SELECT 'foo', 255;
-                ")
-            }).and_then(|query_result| {
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
+            conn.query(r"
+                SELECT 'hello', 123
+                UNION ALL
+                SELECT 'world', 231;
+                SELECT 'foo', 255;
+            ")
+        }).and_then(|query_result| {
             query_result.collect_all()
+        }).and_then(|(sets, conn)| {
+            conn.disconnect().map(|_| sets)
         });
 
-        let (sets, _) = lp.run(fut).unwrap();
+        let sets = lp.run(fut).unwrap();
         assert_eq!(sets.len(), 2);
         for (i, rows) in sets.into_iter().enumerate() {
             if i == 0 {
@@ -310,20 +297,20 @@ mod test {
     fn should_map_resultset() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-            .and_then(|conn| {
-                conn.query(r"
-                    SELECT 'hello', 123
-                    UNION ALL
-                    SELECT 'world', 231;
-                    SELECT 'foo', 255;
-                ")
-            }).and_then(|query_result| {
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
+            conn.query(r"
+                SELECT 'hello', 123
+                UNION ALL
+                SELECT 'world', 231;
+                SELECT 'foo', 255;
+            ")
+        }).and_then(|query_result| {
             query_result.map(|row| from_row::<(String, u8)>(row))
+        }).and_then(|(out, next)| {
+            next.left().unwrap().collect_all().and_then(|(_, conn)| conn.disconnect()).map(|_| out)
         });
 
-        let (sets, conn) = lp.run(fut).unwrap();
-        assert!(conn.is_left());
+        let sets = lp.run(fut).unwrap();
         assert_eq!(sets.len(), 2);
         assert_eq!((String::from("hello"), 123), sets[0].clone());
         assert_eq!((String::from("world"), 231), sets[1].clone());
@@ -333,24 +320,24 @@ mod test {
     fn should_reduce_resultset() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-            .and_then(|conn| {
-                conn.query(r"
-                    SELECT 5
-                    UNION ALL
-                    SELECT 6;
-                    SELECT 'foo';
-                ")
-            }).and_then(|query_result| {
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
+            conn.query(r"
+                SELECT 5
+                UNION ALL
+                SELECT 6;
+                SELECT 'foo';
+            ")
+        }).and_then(|query_result| {
             query_result.reduce(0, |mut acc, row| {
                 let (val,) = from_row::<(u8,)>(row);
                 acc += val;
                 acc
             })
+        }).and_then(|(out, next)| {
+            next.left().unwrap().collect_all().and_then(|(_, conn)| conn.disconnect()).map(move|_| out)
         });
 
-        let (result, conn) = lp.run(fut).unwrap();
-        assert!(conn.is_left());
+        let result = lp.run(fut).unwrap();
         assert_eq!(result, 11);
     }
 
@@ -381,10 +368,11 @@ mod test {
             } else {
                 unreachable!();
             }
+        }).and_then(|conn| {
+            conn.right().unwrap().disconnect()
         });
 
-        let conn = lp.run(fut).unwrap();
-        assert!(conn.is_right());
+        lp.run(fut).unwrap();
         assert_eq!(*acc.borrow(), 30);
     }
 
@@ -395,14 +383,14 @@ mod test {
         let fut = Conn::new(&**DATABASE_URL, &lp.handle())
             .and_then(|conn| {
                 conn.prepare(r"SELECT ?")
-            });
+            }).and_then(|stmt| stmt.unwrap().disconnect());
 
         lp.run(fut).unwrap();
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle())
             .and_then(|conn| {
                 conn.prepare(r"SELECT :foo")
-            });
+            }).and_then(|stmt| stmt.unwrap().disconnect());
 
         lp.run(fut).unwrap();
     }
@@ -434,7 +422,9 @@ mod test {
                     let (val,): (u8,) = from_row(row);
                     acc + val
                 })
-            }).map(|(output, _)| output);
+            }).and_then(|(output, stmt)| {
+                stmt.unwrap().disconnect().map(move|_| output)
+            });
 
         let output = lp.run(fut).unwrap();
         assert_eq!(output, 10);
@@ -471,7 +461,9 @@ mod test {
                 let (a, b, c): (u8,u8,u8) = from_row(row);
                 acc + a + b + c
             })
-        }).map(|(output, _)| output);
+        }).and_then(|(output, stmt)| {
+            stmt.unwrap().disconnect().map(move|_| output)
+        });
 
         let output = lp.run(fut).unwrap();
         assert_eq!(output, 7);
@@ -492,8 +484,8 @@ mod test {
                 let (a, b, c): (u8, u8, u8) = from_row(row);
                 a * b * c
             })
-        }).map(|(out, _)| {
-            out[0]
+        }).and_then(|(output, stmt)| {
+            stmt.unwrap().disconnect().map(move|_| output[0])
         });
 
         let output = lp.run(fut).unwrap();
@@ -502,7 +494,6 @@ mod test {
 
     #[test]
     fn should_first_exec_statement() {
-
         let mut lp = Core::new().unwrap();
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
@@ -510,8 +501,8 @@ mod test {
                 "a" => 2,
                 "b" => 3,
             })
-        }).map(|(row, _)| {
-            row.unwrap()
+        }).and_then(|(row, conn)| {
+            conn.disconnect().map(move|_| row.unwrap())
         });
 
         let output = lp.run(fut).unwrap();
