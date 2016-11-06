@@ -932,19 +932,6 @@ impl Params {
     }
 }
 
-/// This macro allows you to pass named params to a prepared statement.
-#[macro_export]
-macro_rules! params {
-    ($($name:expr => $value:expr),*) => (
-        vec![
-            $((::std::string::String::from($name), $crate::Value::from($value))),*
-        ]
-    );
-    ($($name:expr => $value:expr),*,) => (
-        params!($($name => $value),*)
-    );
-}
-
 impl<'a, T: Into<Params> + Clone> From<&'a T> for Params {
     fn from(x: &'a T) -> Params {
         x.clone().into()

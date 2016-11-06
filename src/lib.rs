@@ -28,7 +28,7 @@ extern crate url;
 extern crate env_logger;
 
 #[macro_use]
-mod macros;
+pub mod macros;
 #[macro_use]
 mod value;
 mod conn;

@@ -1,4 +1,3 @@
-#[macro_export]
 macro_rules! steps {
     ($fut:ty { $($step:ident($ty:ty),)+ }) => (
         enum Step {
@@ -16,5 +15,18 @@ macro_rules! steps {
                 }
             }
         }
+    );
+}
+
+/// This macro allows you to pass named params to a prepared statement.
+#[macro_export]
+macro_rules! params {
+    ($($name:expr => $value:expr),*) => (
+        vec![
+            $((::std::string::String::from($name), $crate::Value::from($value))),*
+        ]
+    );
+    ($($name:expr => $value:expr),*,) => (
+        params!($($name => $value),*)
     );
 }
