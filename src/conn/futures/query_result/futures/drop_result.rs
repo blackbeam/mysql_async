@@ -5,6 +5,8 @@ use lib_futures::Async::Ready;
 use lib_futures::Future;
 use lib_futures::Poll;
 
+
+/// Future that drops result and resolves to wrapped `Conn` or `Stmt`.
 pub struct DropResult<T> {
     query_result: Option<T>,
 }

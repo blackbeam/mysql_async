@@ -126,6 +126,15 @@ impl Conn {
         new_first_exec(self, query, params)
     }
 
+    /// Returns future that prepares statement, performs batch execution and resolves to `Conn`.
+    ///
+    /// All results will be dropped.
+    pub fn batch_exec<Q, P>(self, query: Q, params_vec: Vec<P>) -> BatchExec
+        where Q: AsRef<str>,
+              P: Into<Params>,
+    {
+        new_batch_exec(self, query, params_vec)
+    }
 
     /// Returns future that resolves to a `Conn` with `COM_RESET_CONNECTION` executed on it.
     pub fn reset(self) -> Reset {

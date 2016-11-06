@@ -1,3 +1,4 @@
+mod batch_exec;
 mod columns;
 mod disconnect;
 mod drop_result;
@@ -15,6 +16,9 @@ mod read_packet;
 mod reset;
 mod send_long_data;
 mod write_packet;
+
+pub use self::batch_exec::BatchExec;
+pub use self::batch_exec::new as new_batch_exec;
 
 pub use self::columns::Columns;
 pub use self::columns::new as new_columns;
