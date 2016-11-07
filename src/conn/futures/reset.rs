@@ -6,38 +6,19 @@ use lib_futures::Async;
 use lib_futures::Async::Ready;
 use lib_futures::Future;
 use lib_futures::Poll;
-use proto::Packet;
 use proto::PacketType;
 
 
-enum Step {
-    WritePacket(WritePacket),
-    ReadResponse(ReadPacket),
-}
-
-enum Out {
-    WritePacket(Conn),
-    ReadResponse((Conn, Packet)),
+steps! {
+    Reset {
+        WritePacket(WritePacket),
+        ReadResponse(ReadPacket),
+    }
 }
 
 /// Future that resolves to a `Conn` with MySql's `COM_RESET_CONNECTION` executed on it.
 pub struct Reset {
     step: Step,
-}
-
-impl Reset {
-    fn either_poll(&mut self) -> Result<Async<Out>> {
-        match self.step {
-            Step::WritePacket(ref mut fut) => {
-                let val = try_ready!(fut.poll());
-                Ok(Ready(Out::WritePacket(val)))
-            },
-            Step::ReadResponse(ref mut fut) => {
-                let val = try_ready!(fut.poll());
-                Ok(Ready(Out::ReadResponse(val)))
-            },
-        }
-    }
 }
 
 pub fn new(write_packet: WritePacket) -> Reset {
