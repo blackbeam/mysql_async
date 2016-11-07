@@ -1,6 +1,5 @@
 use byteorder::WriteBytesExt;
 use byteorder::LittleEndian as LE;
-use conn::Conn;
 use conn::futures::NewRawQueryResult;
 use conn::futures::query_result::BinaryResult;
 use conn::futures::query_result::BinQueryResult;
@@ -15,6 +14,8 @@ use consts::Command;
 use errors::*;
 use lib_futures::Async;
 use lib_futures::Async::Ready;
+use lib_futures::Failed;
+use lib_futures::failed;
 use lib_futures::Future;
 use lib_futures::Poll;
 use proto::Column;
@@ -25,17 +26,13 @@ use value::Value;
 use value::Value::*;
 
 
-enum Step {
-    Failed(Option<ErrorKind>),
-    SendLongData(SendLongData),
-    WriteCommand(WritePacket),
-    HandleResultSet(NewRawQueryResult<BinaryResult>),
-}
-
-enum Out {
-    SendLongData((Conn, InnerStmt, Vec<Value>)),
-    WriteCommand(Conn),
-    HandleResultSet(BinQueryResult),
+steps! {
+    Execute {
+        Failed(Failed<(), Error>),
+        SendLongData(SendLongData),
+        WriteCommand(WritePacket),
+        HandleResultSet(NewRawQueryResult<BinaryResult>),
+    }
 }
 
 /// Future that executes statement and resolves to `BinQueryResult`.
@@ -46,22 +43,12 @@ pub struct Execute {
     inner_stmt: Option<InnerStmt>,
 }
 
-impl Execute {
-    fn either_poll(&mut self) -> Result<Async<Out>> {
-        match self.step {
-            Step::Failed(ref mut error_kind) => Err(error_kind.take().unwrap().into()),
-            Step::SendLongData(ref mut fut) => {
-                Ok(Ready(Out::SendLongData(try_ready!(fut.poll()))))
-            },
-            Step::WriteCommand(ref mut fut) => {
-                Ok(Ready(Out::WriteCommand(try_ready!(fut.poll()))))
-            },
-            Step::HandleResultSet(ref mut fut) => {
-                let raw_query_result = try_ready!(fut.poll());
-                let bin_query_result = raw_query_result.into();
-                Ok(Ready(Out::HandleResultSet(bin_query_result)))
-            }
-        }
+fn bad(error: Error) -> Execute {
+    Execute {
+        step: Step::Failed(failed(error)),
+        row_data: vec![],
+        bitmap: vec![],
+        inner_stmt: None,
     }
 }
 
@@ -71,12 +58,7 @@ pub fn new_new(stmt: Stmt, params: Params) -> Execute {
     match params {
         Params::Empty => {
             if inner_stmt.num_params != 0 {
-                return Execute {
-                    step: Step::Failed(Some(ErrorKind::MismatchedStmtParams(inner_stmt.num_params, 0))),
-                    row_data: vec![],
-                    bitmap: vec![],
-                    inner_stmt: None,
-                };
+                return bad(ErrorKind::MismatchedStmtParams(inner_stmt.num_params, 0).into());
             }
 
             data = Vec::with_capacity(4 + 1 + 4);
@@ -86,13 +68,8 @@ pub fn new_new(stmt: Stmt, params: Params) -> Execute {
         },
         Params::Positional(params) => {
             if inner_stmt.num_params != params.len() as u16 {
-                return Execute {
-                    step: Step::Failed(Some(ErrorKind::MismatchedStmtParams(inner_stmt.num_params,
-                                                                            params.len() as u16))),
-                    row_data: vec![],
-                    bitmap: vec![],
-                    inner_stmt: None,
-                };
+                return bad(ErrorKind::MismatchedStmtParams(inner_stmt.num_params,
+                                                           params.len() as u16).into());
             }
 
             let to_payload_result = if let Some(ref sparams) = inner_stmt.params {
@@ -120,23 +97,13 @@ pub fn new_new(stmt: Stmt, params: Params) -> Execute {
                     write_data(&mut data, inner_stmt.statement_id, bitmap, row_data, params, sparams);
                 },
                 Err(err) => {
-                    return Execute {
-                        step: Step::Failed(Some(err.into_kind())),
-                        row_data: vec![],
-                        bitmap: vec![],
-                        inner_stmt: None,
-                    };
+                    return bad(err);
                 }
             }
         },
         Params::Named(_) => {
             if let None = inner_stmt.named_params {
-                return Execute {
-                    step: Step::Failed(Some(ErrorKind::NamedParamsForPositionalQuery)),
-                    row_data: vec![],
-                    bitmap: vec![],
-                    inner_stmt: None,
-                };
+                return bad(ErrorKind::NamedParamsForPositionalQuery.into());
             }
             let result = {
                 let named_params = inner_stmt.named_params.as_ref().unwrap();
@@ -148,16 +115,12 @@ pub fn new_new(stmt: Stmt, params: Params) -> Execute {
                     return new_new(new_stmt(inner_stmt, conn), positional_params)
                 },
                 Err(err) => {
-                    return Execute {
-                        step: Step::Failed(Some(err.into_kind())),
-                        row_data: vec![],
-                        bitmap: vec![],
-                        inner_stmt: None,
-                    };
+                    return bad(err);
                 }
             }
         }
     }
+
     let future = conn.write_command_data(Command::COM_STMT_EXECUTE, data);
     Execute {
         step: Step::WriteCommand(future),
@@ -197,7 +160,10 @@ impl Future for Execute {
                 self.step = Step::HandleResultSet(new_raw_query_result);
                 self.poll()
             },
-            Out::HandleResultSet(query_result) => Ok(Ready(query_result)),
+            Out::HandleResultSet(raw_query_result) => {
+                Ok(Ready(raw_query_result.into()))
+            },
+            Out::Failed(_) => unreachable!(),
         }
     }
 }
