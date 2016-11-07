@@ -10,54 +10,30 @@ use consts;
 use errors::*;
 use lib_futures::Async;
 use lib_futures::Async::Ready;
+use lib_futures::Failed;
+use lib_futures::failed;
 use lib_futures::Future;
 use lib_futures::Poll;
-use proto::Packet;
 use proto::PacketType;
 use std::mem;
 
 
-enum Step {
-    Failed,
-    WriteCommand(WritePacket),
-    ReadCommandResponse(ReadPacket),
-    ReadParamOrColumn(ReadPacket),
-}
-
-enum Out {
-    WriteCommand(Conn),
-    ReadCommandResponse((Conn, Packet)),
-    ReadParamOrColumn((Conn, Packet)),
+steps! {
+    Prepare {
+        Failed(Failed<(), Error>),
+        WriteCommand(WritePacket),
+        ReadCommandResponse(ReadPacket),
+        ReadParamOrColumn(ReadPacket),
+    }
 }
 
 /// Future that resolves to prepared `Stmt`.
 pub struct Prepare {
     step: Step,
-    error: Option<Error>,
     params: Vec<Column>,
     columns: Vec<Column>,
     named_params: Option<Vec<String>>,
     stmt: Option<InnerStmt>,
-}
-
-impl Prepare {
-    fn either_poll(&mut self) -> Result<Async<Out>> {
-        match self.step {
-            Step::Failed => Err(self.error.take().unwrap()),
-            Step::WriteCommand(ref mut fut) => {
-                let val = try_ready!(fut.poll());
-                Ok(Ready(Out::WriteCommand(val)))
-            },
-            Step::ReadCommandResponse(ref mut fut) => {
-                let val = try_ready!(fut.poll());
-                Ok(Ready(Out::ReadCommandResponse(val)))
-            },
-            Step::ReadParamOrColumn(ref mut fut) => {
-                let val = try_ready!(fut.poll());
-                Ok(Ready(Out::ReadParamOrColumn(val)))
-            },
-        }
-    }
 }
 
 pub fn new(conn: Conn, query: &str) -> Prepare {
@@ -67,7 +43,6 @@ pub fn new(conn: Conn, query: &str) -> Prepare {
             let future = conn.write_command_data(consts::Command::COM_STMT_PREPARE, &*query);
             Prepare {
                 step: Step::WriteCommand(future),
-                error: None,
                 named_params: named_params,
                 params: Vec::new(),
                 columns: Vec::new(),
@@ -76,8 +51,7 @@ pub fn new(conn: Conn, query: &str) -> Prepare {
         },
         Err(err) => {
             Prepare {
-                step: Step::Failed,
-                error: Some(err),
+                step: Step::Failed(failed(err)),
                 named_params: None,
                 params: Vec::default(),
                 columns: Vec::default(),
@@ -132,6 +106,7 @@ impl Future for Prepare {
                     Ok(Ready(stmt))
                 }
             },
+            Out::Failed(_) => unreachable!(),
         }
     }
 }
