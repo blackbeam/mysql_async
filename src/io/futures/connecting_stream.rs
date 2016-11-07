@@ -15,9 +15,11 @@ use tokio::net::TcpStreamNew;
 use tokio::reactor::Handle;
 
 
-enum Step {
-    WaitForStream(TcpStreamNew),
-    Fail(Failed<TcpStream, Error>),
+steps! {
+    ConnectingStream {
+        WaitForStream(TcpStreamNew),
+        Fail(Failed<(), Error>),
+    }
 }
 
 /// Future that resolves to a `Stream` connected to a MySql server.
@@ -40,20 +42,11 @@ where S: ToSocketAddrs,
             let err = io::Error::new(io::ErrorKind::InvalidInput,
                                      "could not resolve to any address");
             ConnectingStream {
-                step: Step::Fail(failed(Error::from(err))),
+                step: Step::Fail(failed(err.into())),
             }
         },
         Err(err) => ConnectingStream {
-            step: Step::Fail(failed(Error::from(err))),
-        }
-    }
-}
-
-impl ConnectingStream {
-    fn either_poll(&mut self) -> Result<Async<TcpStream>> {
-        match self.step {
-            Step::WaitForStream(ref mut fut) => Ok(Ready(try_ready!(fut.poll()))),
-            Step::Fail(ref mut fut) => Ok(Ready(try_ready!(fut.poll()))),
+            step: Step::Fail(failed(err.into())),
         }
     }
 }
@@ -65,14 +58,15 @@ impl Future for ConnectingStream
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.either_poll()) {
-            stream => {
+            Out::WaitForStream(stream) => {
                 Ok(Ready(Stream {
                     closed: false,
                     next_packet: Some(NewPacket::empty().parse()),
                     buf: Some(VecDeque::new()),
                     endpoint: Some(stream)
                 }))
-            }
+            },
+            Out::Fail(_) => unreachable!(),
         }
     }
 }
