@@ -23,17 +23,17 @@ enum Out<R> {
     Collect((ResultSet<R, BinQueryResult>, Stmt))
 }
 
-pub struct StmtFirst<R> {
+pub struct First<R> {
     step: Step<R>,
 }
 
-pub fn new<R: FromRow>(stmt: Stmt, params: Params) -> StmtFirst<R> {
-    StmtFirst {
+pub fn new<R: FromRow>(stmt: Stmt, params: Params) -> First<R> {
+    First {
         step: Step::Execute(stmt.execute(params)),
     }
 }
 
-impl<R: FromRow> StmtFirst<R> {
+impl<R: FromRow> First<R> {
     fn either_poll(&mut self) -> Result<Async<Out<R>>> {
         match self.step {
             Step::Execute(ref mut fut) => Ok(Ready(Out::Execute(try_ready!(fut.poll())))),
@@ -42,7 +42,7 @@ impl<R: FromRow> StmtFirst<R> {
     }
 }
 
-impl<R: FromRow> Future for StmtFirst<R> {
+impl<R: FromRow> Future for First<R> {
     type Item = (Option<R>, Stmt);
     type Error = Error;
 

@@ -135,8 +135,11 @@ pub use self::conn::Conn;
 
 #[doc(inline)]
 pub use self::conn::futures::query_result::{
-    TextQueryResult,
+    BinaryResult,
     BinQueryResult,
+    ResultSet,
+    TextQueryResult,
+    TextResult,
 };
 
 #[doc(inline)]
@@ -178,23 +181,27 @@ pub use self::value::{
 
 /// Futures used in this crate
 pub mod futures {
+    #[doc(inline)] pub use conn::futures::BatchExec;
     #[doc(inline)] pub use conn::futures::Disconnect;
     #[doc(inline)] pub use conn::futures::First;
+    #[doc(inline)] pub use conn::futures::FirstExec;
     #[doc(inline)] pub use conn::futures::NewConn;
     #[doc(inline)] pub use conn::futures::Ping;
     #[doc(inline)] pub use conn::futures::Prepare;
+    #[doc(inline)] pub use conn::futures::PrepExec;
     #[doc(inline)] pub use conn::futures::Query;
     #[doc(inline)] pub use conn::futures::Reset;
-    #[doc(inline)] pub use conn::futures::query_result::BinaryResult;
-    #[doc(inline)] pub use conn::futures::query_result::ResultSet;
-    #[doc(inline)] pub use conn::futures::query_result::TextResult;
     #[doc(inline)] pub use conn::futures::query_result::futures::Collect;
     #[doc(inline)] pub use conn::futures::query_result::futures::CollectAll;
+    #[doc(inline)] pub use conn::futures::query_result::futures::DropResult;
     #[doc(inline)] pub use conn::futures::query_result::futures::ForEach;
     #[doc(inline)] pub use conn::futures::query_result::futures::Map;
     #[doc(inline)] pub use conn::futures::query_result::futures::Reduce;
+    #[doc(inline)] pub use conn::pool::futures::DisconnectPool;
     #[doc(inline)] pub use conn::pool::futures::GetConn;
+    #[doc(inline)] pub use conn::stmt::futures::Batch;
     #[doc(inline)] pub use conn::stmt::futures::Execute;
+    #[doc(inline)] pub use conn::stmt::futures::First as StmtFirst;
 }
 
 /// Traits used in this crate
