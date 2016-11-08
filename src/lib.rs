@@ -68,7 +68,6 @@
 //!     }).and_then(|result| {
 //!         // Collect payments
 //!         result.map(|row| {
-//!             println!("{:#?}", row);
 //!             let (customer_id, amount, account_name) = my::from_row(row);
 //!             Payment {
 //!                 customer_id: customer_id,
