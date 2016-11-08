@@ -3,6 +3,11 @@ name = "mysql_async"
 version = "0.1.0"
 authors = ["blackbeam <aikorsky@gmail.com>"]
 license = "MIT/Apache-2.0"
+description = "Tokio based asynchronous MySql client library."
+documentation = "http://blackbeam.org/mysql_async/mysql_async/"
+repository = "https://github.com/blackbeam/mysql_async"
+readme = "README.md"
+keywords = ["mysql", "database", "asynchronous", "async"]
 
 [lib]
 name = "mysql_async"
