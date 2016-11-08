@@ -12,7 +12,7 @@ mysql = "<desired version>"
 
 ### Example
 
-See crate documentation.
+See crate [documentation](http://blackbeam.org/mysql_async/mysql_async/).
 
 ### License
 
