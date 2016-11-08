@@ -19,6 +19,14 @@ macro_rules! steps {
 }
 
 /// This macro allows you to pass named params to a prepared statement.
+///
+/// #### Example
+/// ```ignore
+/// conn.prep_exec("SELECT :param1, :param2, :param1", params! {
+///     "param1" => "foo",
+///     "param2" => "bar",
+/// });
+/// ```
 #[macro_export]
 macro_rules! params {
     ($($name:expr => $value:expr),*) => (
