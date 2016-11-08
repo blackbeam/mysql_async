@@ -2,6 +2,7 @@
 name = "mysql_async"
 version = "0.1.0"
 authors = ["blackbeam <aikorsky@gmail.com>"]
+license = "MIT/Apache-2.0"
 
 [lib]
 name = "mysql_async"
