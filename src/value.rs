@@ -69,6 +69,7 @@ lazy_static! {
     };
 }
 
+/// Value of a MySql column.
 #[derive(Clone, PartialEq, PartialOrd, Debug)]
 pub enum Value {
     NULL,
@@ -894,6 +895,7 @@ where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
     }
 }
 
+/// Parameters of a statement.
 #[derive(PartialEq, Clone, Debug)]
 pub enum Params {
     Empty,
