@@ -23,6 +23,9 @@ enum Out<R> {
     Collect((ResultSet<R, BinQueryResult>, Stmt))
 }
 
+/// This future will execute statement, take first row of result and resolve to `Option<R>`.
+///
+/// It will call `from_row::<R>(row)` internally.
 pub struct First<R> {
     step: Step<R>,
 }

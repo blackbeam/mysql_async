@@ -5,6 +5,7 @@ use lib_futures::Future;
 use lib_futures::Poll;
 
 
+/// This future will take connection from a pool and resolve to `Conn`.
 pub struct GetConn {
     pool: Pool,
 }

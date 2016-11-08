@@ -18,6 +18,7 @@ steps! {
     }
 }
 
+/// This future will prepare statement, execute it and resolve to `BinQueryResult`.
 pub struct PrepExec {
     step: Step,
     params: Params,

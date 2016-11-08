@@ -21,6 +21,9 @@ steps! {
     }
 }
 
+/// Future that performs batch execution of a statement and resolves to `Stmt`.
+///
+/// All results will be dropped.
 pub struct Batch {
     step: Step,
     params_vec: Vec<Params>,

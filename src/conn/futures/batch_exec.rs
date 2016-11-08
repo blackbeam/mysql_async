@@ -21,6 +21,9 @@ steps! {
     }
 }
 
+/// Future that prepares statement, performs batch execution and resolves to `Conn`.
+///
+/// All results will be dropped.
 pub struct BatchExec {
     step: Step,
     params_vec: Vec<Params>,
@@ -38,8 +41,7 @@ pub fn new<Q, P>(conn: Conn, query: Q, params_vec: Vec<P>) -> BatchExec
     }
 }
 
-impl Future for BatchExec
-{
+impl Future for BatchExec {
     type Item = Conn;
     type Error = Error;
 

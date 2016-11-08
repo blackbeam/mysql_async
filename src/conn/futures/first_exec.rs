@@ -20,6 +20,9 @@ enum Out<R> {
     First((Option<R>, Stmt)),
 }
 
+/// This future will execute statement, get first row of result and resolve to `Option<R>`.
+///
+/// It will call `from_row::<R>(row)` internally.
 pub struct FirstExec<R> {
     step: Step<R>,
     params: Option<Params>,
