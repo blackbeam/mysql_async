@@ -124,7 +124,8 @@ impl Pool {
         if conn.has_result.is_some() {
             self.inner_mut().dropping.push(conn.drop_result());
         } else {
-            if self.inner_ref().idle.len() >= self.min {
+            let idle_len = self.inner_ref().idle.len();
+            if idle_len >= self.min {
                 self.inner_mut().disconnecting.push(conn.disconnect());
             } else {
                 self.inner_mut().idle.push(conn);
@@ -173,7 +174,8 @@ impl Pool {
         // Handle dirty connections.
         handle!(dropping {
             Ok(Ready(conn)) => {
-                if self.inner_ref().closed {
+                let closed = self.inner_ref().closed;
+                if closed {
                     self.inner_mut().disconnecting.push(conn.disconnect());
                 } else {
                     self.return_conn(conn);
@@ -186,7 +188,8 @@ impl Pool {
         // Handle connecting connections.
         handle!(new {
             Ok(Ready(conn)) => {
-                if self.inner_ref().closed {
+                let closed = self.inner_ref().closed;
+                if closed {
                     self.inner_mut().disconnecting.push(conn.disconnect());
                 } else {
                     self.return_conn(conn);
@@ -217,13 +220,17 @@ impl Pool {
 
         match self.take_conn() {
             Some(conn) => Ok(Ready(conn)),
-            None => if self.inner_ref().new.len() == 0 && self.inner_ref().idle.len() < self.max {
-                let new_conn = Conn::new(self.opts.clone(), &self.handle);
-                self.inner_mut().new.push(new_conn);
-                self.poll()
-            } else {
-                Ok(NotReady)
-            }
+            None => {
+                let new_len = self.inner_ref().new.len();
+                let idle_len = self.inner_ref().idle.len();
+                if new_len == 0 && idle_len < self.max {
+                    let new_conn = Conn::new(self.opts.clone(), &self.handle);
+                    self.inner_mut().new.push(new_conn);
+                    self.poll()
+                } else {
+                    Ok(NotReady)
+                }
+            },
         }
     }
 }
