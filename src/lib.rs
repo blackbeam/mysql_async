@@ -166,15 +166,11 @@ pub use self::proto::{
 
 #[doc(inline)]
 pub use self::value::{
-    ConvIr,
-    FromRow,
-    FromValue,
     from_row,
     from_row_opt,
     from_value,
     from_value_opt,
     Params,
-    ToValue,
     Value,
 };
 
@@ -208,6 +204,10 @@ pub mod prelude {
     #[doc(inline)] pub use conn::futures::query_result::QueryResult;
     #[doc(inline)] pub use conn::futures::query_result::ResultKind;
     #[doc(inline)] pub use conn::futures::query_result::UnconsumedQueryResult;
+    #[doc(inline)] pub use value::ConvIr;
+    #[doc(inline)] pub use value::FromRow;
+    #[doc(inline)] pub use value::FromValue;
+    #[doc(inline)] pub use value::ToValue;
 }
 
 #[cfg(test)]

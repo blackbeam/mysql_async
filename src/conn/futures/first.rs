@@ -10,7 +10,7 @@ use lib_futures::Async::Ready;
 use lib_futures::Future;
 use lib_futures::Poll;
 use from_row;
-use FromRow;
+use prelude::FromRow;
 use Row;
 use std::marker::PhantomData;
 
