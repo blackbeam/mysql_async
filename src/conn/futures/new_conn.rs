@@ -126,6 +126,7 @@ impl Future for NewConn {
                             id: self.id,
                             has_result: None,
                             pool: None,
+                            in_transaction: false,
                         };
                         self.step = Step::ReadMaxAllowedPacket(conn.read_max_allowed_packet());
                         self.poll()

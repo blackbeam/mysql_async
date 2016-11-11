@@ -79,6 +79,9 @@ error_chain! {
         PoolDisconnected {
             description("Pool was disconnected")
         }
+        ReadOnlyTransNotSupported {
+            description("`SET TRANSACTION READ (ONLY|WRITE)' is not supported in your MySQL version")
+        }
     }
 }
 

@@ -10,6 +10,9 @@ use conn::futures::*;
 use conn::futures::query_result::ResultKind;
 use conn::pool::Pool;
 use conn::stmt::InnerStmt;
+use conn::transaction::IsolationLevel;
+use conn::transaction::futures::new_start_transaction;
+use conn::transaction::futures::StartTransaction;
 use consts;
 use io::Stream;
 use lib_futures::stream::Stream as FuturesStream;
@@ -27,6 +30,7 @@ pub mod futures;
 pub mod named_params;
 pub mod pool;
 pub mod stmt;
+pub mod transaction;
 
 
 /// Mysql connection
@@ -45,6 +49,7 @@ pub struct Conn {
     warnings: u16,
     pool: Option<Pool>,
     has_result: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>,
+    in_transaction: bool,
 }
 
 impl Conn {
@@ -64,6 +69,7 @@ impl Conn {
             warnings: Default::default(),
             pool: Default::default(),
             has_result: Default::default(),
+            in_transaction: false,
         })
     }
 
@@ -155,7 +161,17 @@ impl Conn {
         new_disconnect(self.write_command_data(consts::Command::COM_QUIT, &[]))
     }
 
-    /// Return future that reads result from a server and resolves to `Conn`.
+    // TODO: Connection in transaction should be handled in pool.
+    /// Returns future that starts transaction and resolves to `Transaction`.
+    pub fn start_transaction(self,
+                             consistent_snapshot: bool,
+                             isolation_level: Option<IsolationLevel>,
+                             readonly: Option<bool>) -> StartTransaction
+    {
+        new_start_transaction(self, consistent_snapshot, isolation_level, readonly)
+    }
+
+    /// Returns future that reads result from a server and resolves to `Conn`.
     fn drop_result(mut self) -> DropResult {
         let has_result = self.has_result.take();
         new_drop_result(self, has_result)
