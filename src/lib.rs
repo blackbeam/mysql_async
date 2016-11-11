@@ -83,9 +83,11 @@
 //!                 account_name: account_name,
 //!             }
 //!         })
-//!     }).map(|(payments, _ /* conn */)| {
-//!         // Drop connection
-//!         payments
+//!     }).and_then(|(payments, _ /* conn */)| {
+//!         // Destructor of connection will return it to the pool
+//!         // But pool should be disconnected explicitly because it is
+//!         // asynchronous procedure.
+//!         pool.disconnect().map(|_| payments)
 //!     });
 //!
 //!     let loaded_payments = lp.run(future).unwrap();
