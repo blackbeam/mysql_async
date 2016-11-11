@@ -15,6 +15,9 @@ use lib_futures::Poll;
 
 
 /// Future that drops result and resolves to wrapped `Conn` or `Stmt`.
+///
+/// Note that it resolves to `Stmt` for result of `Conn::(prep|first)_exec` because it's result is
+/// `BinQueryResult`. You can call `unwrap()` on `Stmt` to get wrapped `Conn`.
 pub struct DropResult<T> {
     query_result: Option<T>,
 }
