@@ -104,4 +104,11 @@ impl Transaction {
 
         self.conn.first_exec(query, params).map(map)
     }
+
+    pub fn batch_exec<Q, P>(self, query: Q, params_vec: Vec<P>) -> TransBatchExec
+        where Q: AsRef<str>,
+              P: Into<Params>,
+    {
+        self.conn.batch_exec(query, params_vec).map(Transaction::new_raw)
+    }
 }

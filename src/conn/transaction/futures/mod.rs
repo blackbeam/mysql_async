@@ -7,6 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use conn::Conn;
+use conn::futures::BatchExec;
 use conn::futures::First;
 use conn::futures::FirstExec;
 use conn::futures::PrepExec;
@@ -31,6 +32,7 @@ pub use self::rollback::new as new_rollback;
 pub use self::start_transaction::StartTransaction;
 pub use self::start_transaction::new as new_start_transaction;
 
+pub type TransBatchExec = Map<BatchExec, fn(Conn) -> Transaction>;
 pub type TransFirst<R> = Map<First<R>, fn((Option<R>, Conn)) -> (Option<R>, Transaction)>;
 pub type TransFirstExec<R> = Map<FirstExec<R>, fn((Option<R>, Conn)) -> (Option<R>, Transaction)>;
 pub type TransPrepExec = Map<PrepExec, fn(BinQueryResult) -> self::query_result::TransBinQueryResult>;
