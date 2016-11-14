@@ -92,4 +92,16 @@ impl Transaction {
     pub fn prep_exec<Q: AsRef<str>, P: Into<Params>>(self, query: Q, params: P) -> TransPrepExec {
         self.conn.prep_exec(query, params).map(new_bin)
     }
+
+    pub fn first_exec<R, Q, P>(self, query: Q, params: P) -> TransFirstExec<R>
+        where R: FromRow,
+              Q: AsRef<str>,
+              P: Into<Params>
+    {
+        fn map<R: FromRow>((row, conn): (Option<R>, Conn)) -> (Option<R>, Transaction) {
+            (row, Transaction::new_raw(conn))
+        }
+
+        self.conn.first_exec(query, params).map(map)
+    }
 }
