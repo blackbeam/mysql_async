@@ -11,6 +11,7 @@ use lib_futures::Future;
 use self::futures::*;
 use self::futures::query_result::*;
 use std::fmt;
+use value::FromRow;
 use value::Params;
 
 
@@ -75,6 +76,17 @@ impl Transaction {
 
     pub fn query<Q: AsRef<str>>(self, query: Q) -> TransQuery {
         self.conn.query(query).map(new_text)
+    }
+
+    pub fn first<R, Q>(self, query: Q) -> TransFirst<R>
+        where R: FromRow,
+              Q: AsRef<str>,
+    {
+        fn map<R: FromRow>((row, conn): (Option<R>, Conn)) -> (Option<R>, Transaction) {
+            (row, Transaction::new_raw(conn))
+        }
+
+        self.conn.first(query).map(map)
     }
 
     pub fn prep_exec<Q: AsRef<str>, P: Into<Params>>(self, query: Q, params: P) -> TransPrepExec {

@@ -107,7 +107,7 @@ impl Conn {
     /// Returns future that resolves to a first row of result of a `query` execution (if any).
     pub fn first<R, Q>(self, query: Q) -> First<R>
     where Q: AsRef<str>,
-          R: FromRow + Send + 'static,
+          R: FromRow,
     {
         new_first(self.query(query))
     }

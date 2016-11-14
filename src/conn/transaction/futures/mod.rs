@@ -6,10 +6,13 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use conn::Conn;
+use conn::futures::First;
 use conn::futures::PrepExec;
 use conn::futures::Query;
 use conn::futures::query_result::BinQueryResult;
 use conn::futures::query_result::TextQueryResult;
+use conn::transaction::Transaction;
 use lib_futures::Map;
 
 
@@ -27,5 +30,6 @@ pub use self::rollback::new as new_rollback;
 pub use self::start_transaction::StartTransaction;
 pub use self::start_transaction::new as new_start_transaction;
 
+pub type TransFirst<R> = Map<First<R>, fn((Option<R>, Conn)) -> (Option<R>, Transaction)>;
 pub type TransPrepExec = Map<PrepExec, fn(BinQueryResult) -> self::query_result::TransBinQueryResult>;
 pub type TransQuery = Map<Query, fn(TextQueryResult) -> self::query_result::TransTextQueryResult>;
