@@ -567,14 +567,11 @@ mod test {
             transaction.query("INSERT INTO t.tmp VALUES (3, 'baz'), (4, 'quux')")
                 .and_then(|result| result.drop_result())
         }).and_then(|transaction| {
-            transaction.query("SELECT COUNT(*) FROM t.tmp").and_then(|result| {
+            transaction.prep_exec("SELECT COUNT(*) FROM t.tmp", ()).and_then(|result| {
                 result.collect::<(usize,)>()
-            }).map(|(set, next_result)| {
+            }).map(|(set, transaction)| {
                 assert_eq!(set.0[0], (4,));
-                match next_result {
-                    Left(_) => unreachable!(),
-                    Right(transaction) => transaction,
-                }
+                transaction
             })
         }).and_then(|transaction| {
             transaction.rollback()

@@ -11,8 +11,11 @@ use lib_futures::Future;
 use self::futures::*;
 use self::futures::query_result::*;
 use std::fmt;
+use value::Params;
+
 
 pub mod futures;
+
 
 /// Transaction isolation level.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -72,5 +75,9 @@ impl Transaction {
 
     pub fn query<Q: AsRef<str>>(self, query: Q) -> TransQuery {
         self.conn.query(query).map(new_text)
+    }
+
+    pub fn prep_exec<Q: AsRef<str>, P: Into<Params>>(self, query: Q, params: P) -> TransPrepExec {
+        self.conn.prep_exec(query, params).map(new_bin)
     }
 }

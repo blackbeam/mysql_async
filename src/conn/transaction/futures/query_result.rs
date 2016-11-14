@@ -7,6 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use conn::transaction::Transaction;
+use conn::futures::query_result::BinQueryResult;
 use conn::futures::query_result::InnerQueryResult;
 use conn::futures::query_result::QueryResult;
 use conn::futures::query_result::QueryResultOutput;
@@ -19,6 +20,56 @@ use lib_futures::Async::Ready;
 use proto::Row;
 use proto::OkPacket;
 
+
+//
+// TransBinQueryResult
+//
+
+pub struct TransBinQueryResult(BinQueryResult);
+
+pub fn new_bin(query_result: BinQueryResult) -> TransBinQueryResult {
+    TransBinQueryResult(query_result)
+}
+
+impl QueryResult for TransBinQueryResult {}
+
+impl UnconsumedQueryResult for TransBinQueryResult {
+    type Output = Transaction;
+}
+
+impl QueryResultOutput for Transaction {
+    type Result = TransBinQueryResult;
+    type Output = Transaction;
+
+    fn into_next_or_output(self, prev: TransBinQueryResult) -> (Self::Result,
+                                                                Either<Self::Result, Self::Output>)
+    {
+        (prev, Right(self))
+    }
+}
+
+impl InnerQueryResult for TransBinQueryResult {
+    #[doc(hidden)]
+    fn poll(&mut self) -> Result<Async<Either<Row, <Self as UnconsumedQueryResult>::Output>>>
+        where Self: UnconsumedQueryResult,
+    {
+        let result = try_ready!(self.0.poll());
+        match result {
+            Left(row) => Ok(Ready(Left(row))),
+            Right(stmt) => Ok(Ready(Right(Transaction::new_raw(stmt.unwrap())))),
+        }
+    }
+
+    #[doc(hidden)]
+    fn ok_packet_ref(&self) -> Option<&OkPacket> {
+        self.0.ok_packet_ref()
+    }
+}
+
+
+//
+// TransTextQueryResult
+//
 
 pub struct TransTextQueryResult(TextQueryResult);
 
