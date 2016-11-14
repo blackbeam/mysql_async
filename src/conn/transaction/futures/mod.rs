@@ -6,9 +6,15 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use conn::futures::Query;
+use conn::futures::query_result::TextQueryResult;
+use lib_futures::Map;
+
+
 mod commit;
 mod rollback;
 mod start_transaction;
+pub mod query_result;
 
 pub use self::commit::Commit;
 pub use self::commit::new as new_commit;
@@ -18,3 +24,5 @@ pub use self::rollback::new as new_rollback;
 
 pub use self::start_transaction::StartTransaction;
 pub use self::start_transaction::new as new_start_transaction;
+
+pub type TransQuery = Map<Query, fn(TextQueryResult) -> self::query_result::TransTextQueryResult>;

@@ -219,7 +219,7 @@ impl Conn {
 mod test {
     use opts::OptsBuilder;
     use env_logger;
-    use either::Left;
+    use either::*;
     use prelude::*;
     use lib_futures::Future;
 
@@ -540,6 +540,54 @@ mod test {
 
         let output = lp.run(fut).unwrap();
         assert_eq!(output, (2,));
+    }
+
+    #[test]
+    fn should_run_transactions() {
+        let mut lp = Core::new().unwrap();
+
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
+            conn.query("CREATE TEMPORARY TABLE t.tmp (id INT, name TEXT)")
+                .and_then(|result| result.drop_result())
+        }).and_then(|conn| {
+            conn.start_transaction(false, None, None)
+        }).and_then(|transaction| {
+            transaction.query("INSERT INTO t.tmp VALUES (1, 'foo'), (2, 'bar')")
+                .and_then(|result| result.drop_result())
+        }).and_then(|transaction| {
+            transaction.commit()
+        }).and_then(|conn| {
+            conn.first::<(usize, ), _>("SELECT COUNT(*) FROM t.tmp").map(|(result, conn)| {
+                assert_eq!(result, Some((2, )));
+                conn
+            })
+        }).and_then(|conn| {
+            conn.start_transaction(false, None, None)
+        }).and_then(|transaction| {
+            transaction.query("INSERT INTO t.tmp VALUES (3, 'baz'), (4, 'quux')")
+                .and_then(|result| result.drop_result())
+        }).and_then(|transaction| {
+            transaction.query("SELECT COUNT(*) FROM t.tmp").and_then(|result| {
+                result.collect::<(usize,)>()
+            }).map(|(set, next_result)| {
+                assert_eq!(set.0[0], (4,));
+                match next_result {
+                    Left(_) => unreachable!(),
+                    Right(transaction) => transaction,
+                }
+            })
+        }).and_then(|transaction| {
+            transaction.rollback()
+        }).and_then(|conn| {
+            conn.first::<(usize, ), _>("SELECT COUNT(*) FROM t.tmp").map(|(result, conn)| {
+                assert_eq!(result, Some((2, )));
+                conn
+            })
+        }).and_then(|conn| {
+            conn.disconnect()
+        });
+
+        lp.run(fut).unwrap();
     }
 
     #[cfg(feature = "nightly")]

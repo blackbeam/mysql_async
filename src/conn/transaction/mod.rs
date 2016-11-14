@@ -7,13 +7,9 @@
 // modified, or distributed except according to those terms.
 
 use conn::Conn;
-use conn::futures::Query;
-use conn::futures::query_result::futures::DropResult;
-use conn::futures::query_result::TextQueryResult;
-use conn::futures::query_result::UnconsumedQueryResult;
 use lib_futures::Future;
-use lib_futures::Map;
 use self::futures::*;
+use self::futures::query_result::*;
 use std::fmt;
 
 pub mod futures;
@@ -72,5 +68,9 @@ impl Transaction {
     /// Returns future that rolls back transaction and resolves to `Conn`.
     pub fn rollback(self) -> Rollback {
         new_rollback(self)
+    }
+
+    pub fn query<Q: AsRef<str>>(self, query: Q) -> TransQuery {
+        self.conn.query(query).map(new_text)
     }
 }
