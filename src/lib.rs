@@ -152,13 +152,18 @@ pub use self::conn::futures::query_result::{
 };
 
 #[doc(inline)]
-pub use self::conn::pool::{
-    Pool,
-};
+pub use self::conn::pool::Pool;
 
 #[doc(inline)]
-pub use self::conn::stmt::{
-    Stmt,
+pub use self::conn::stmt::Stmt;
+
+#[doc(inline)]
+pub use self::conn::transaction::Transaction;
+
+#[doc(inline)]
+pub use self::conn::transaction::futures::query_result::{
+    TransBinQueryResult,
+    TransTextQueryResult,
 };
 
 #[doc(inline)]
@@ -207,6 +212,14 @@ pub mod futures {
     #[doc(inline)] pub use conn::stmt::futures::Batch;
     #[doc(inline)] pub use conn::stmt::futures::Execute;
     #[doc(inline)] pub use conn::stmt::futures::First as StmtFirst;
+    #[doc(inline)] pub use conn::transaction::futures::Commit;
+    #[doc(inline)] pub use conn::transaction::futures::Rollback;
+    #[doc(inline)] pub use conn::transaction::futures::StartTransaction;
+    #[doc(inline)] pub use conn::transaction::futures::TransBatchExec;
+    #[doc(inline)] pub use conn::transaction::futures::TransFirst;
+    #[doc(inline)] pub use conn::transaction::futures::TransFirstExec;
+    #[doc(inline)] pub use conn::transaction::futures::TransPrepExec;
+    #[doc(inline)] pub use conn::transaction::futures::TransQuery;
 }
 
 /// Traits used in this crate

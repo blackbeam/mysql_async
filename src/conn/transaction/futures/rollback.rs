@@ -22,6 +22,7 @@ type DropTextResultFn = fn(TextQueryResult) -> DropResult<TextQueryResult>;
 type CleanConnFn = fn(Conn) -> Conn;
 type DropTextResult = AndThen<Query, DropResult<TextQueryResult>, DropTextResultFn>;
 
+/// Future that rolls back transaction and resolves to `Conn`.
 pub struct Rollback {
     fut: Map<DropTextResult, CleanConnFn>,
 }

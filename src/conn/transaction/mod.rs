@@ -38,6 +38,7 @@ impl fmt::Display for IsolationLevel {
     }
 }
 
+/// Wrapper for in-transaction connection.
 pub struct Transaction {
     conn: Conn,
 }
@@ -74,10 +75,14 @@ impl Transaction {
         new_rollback(self)
     }
 
+    /// Returns future that executes query and resolves to `TransTextQueryResult`.
     pub fn query<Q: AsRef<str>>(self, query: Q) -> TransQuery {
         self.conn.query(query).map(new_text)
     }
 
+    /// Returns future that executes query and resolves to `(Option<R>, Transaction)`.
+    ///
+    /// Where `Option<R>` is the first row of a query execution result (if any).
     pub fn first<R, Q>(self, query: Q) -> TransFirst<R>
         where R: FromRow,
               Q: AsRef<str>,
@@ -89,10 +94,14 @@ impl Transaction {
         self.conn.first(query).map(map)
     }
 
+    /// Returns future that prepares and executes statement and resolves to `TransBinQueryResult`.
     pub fn prep_exec<Q: AsRef<str>, P: Into<Params>>(self, query: Q, params: P) -> TransPrepExec {
         self.conn.prep_exec(query, params).map(new_bin)
     }
 
+    /// Returns future that prepares and executes statement and resolves to `(Option<R>, Transaction)`.
+    ///
+    /// Where `Option<R>` is the first row of a statement execution result (if any).
     pub fn first_exec<R, Q, P>(self, query: Q, params: P) -> TransFirstExec<R>
         where R: FromRow,
               Q: AsRef<str>,
@@ -105,6 +114,9 @@ impl Transaction {
         self.conn.first_exec(query, params).map(map)
     }
 
+    /// Returns future that prepares and executes statement and resolves to `Transaction`.
+    ///
+    /// All results will be dropped.
     pub fn batch_exec<Q, P>(self, query: Q, params_vec: Vec<P>) -> TransBatchExec
         where Q: AsRef<str>,
               P: Into<Params>,

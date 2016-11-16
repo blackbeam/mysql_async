@@ -25,6 +25,7 @@ use proto::OkPacket;
 // TransBinQueryResult
 //
 
+/// It is like `BinQueryResult` for transactions.
 pub struct TransBinQueryResult(BinQueryResult);
 
 pub fn new_bin(query_result: BinQueryResult) -> TransBinQueryResult {
@@ -71,6 +72,7 @@ impl InnerQueryResult for TransBinQueryResult {
 // TransTextQueryResult
 //
 
+/// It is like `TextQueryResult` for transactions.
 pub struct TransTextQueryResult(TextQueryResult);
 
 pub fn new_text(query_result: TextQueryResult) -> TransTextQueryResult {
