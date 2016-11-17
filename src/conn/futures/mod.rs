@@ -6,6 +6,10 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use conn::futures::query_result::futures::DropResult as DropQueryResult;
+use conn::futures::query_result::TextQueryResult;
+use lib_futures::AndThen;
+
 mod batch_exec;
 mod columns;
 mod disconnect;
@@ -75,3 +79,9 @@ pub use self::send_long_data::new as new_send_long_data;
 
 pub use self::write_packet::WritePacket;
 pub use self::write_packet::new as new_write_packet;
+
+pub type DropQuery = AndThen<
+    Query,
+    DropQueryResult<TextQueryResult>,
+    fn(TextQueryResult) -> DropQueryResult<TextQueryResult>
+>;

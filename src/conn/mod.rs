@@ -8,6 +8,7 @@
 
 use conn::futures::*;
 use conn::futures::query_result::ResultKind;
+use conn::futures::query_result::UnconsumedQueryResult;
 use conn::pool::Pool;
 use conn::stmt::InnerStmt;
 use conn::transaction::IsolationLevel;
@@ -15,6 +16,7 @@ use conn::transaction::futures::new_start_transaction;
 use conn::transaction::futures::StartTransaction;
 use consts;
 use io::Stream;
+use lib_futures::Future;
 use lib_futures::stream::Stream as FuturesStream;
 use opts::Opts;
 use proto::Column;
@@ -131,6 +133,11 @@ impl Conn {
         new_first(self.query(query))
     }
 
+    /// Returns future that performs query, drops result and resolves to `Conn`.
+    pub fn drop_query<Q: AsRef<str>>(self, query: Q) -> DropQuery {
+        self.query(query).and_then(UnconsumedQueryResult::drop_result)
+    }
+
     // TODO: Implement cache.
     /// Returns future that resolves to a `Stmt`.
     pub fn prepare<Q>(self, query: Q) -> Prepare
@@ -180,7 +187,6 @@ impl Conn {
         new_disconnect(self.write_command_data(consts::Command::COM_QUIT, &[]))
     }
 
-    // TODO: Connection in transaction should be handled in pool.
     /// Returns future that starts transaction and resolves to `Transaction`.
     pub fn start_transaction(self,
                              consistent_snapshot: bool,
@@ -188,6 +194,12 @@ impl Conn {
                              readonly: Option<bool>) -> StartTransaction
     {
         new_start_transaction(self, consistent_snapshot, isolation_level, readonly)
+    }
+
+    fn rollback_transaction(mut self) -> DropQuery {
+        assert!(self.in_transaction);
+        self.in_transaction = false;
+        self.drop_query("ROLLBACK")
     }
 
     /// Returns future that reads result from a server and resolves to `Conn`.
@@ -313,6 +325,24 @@ mod test {
         let result = lp.run(fut).unwrap();
         assert_eq!((String::from("hello"), 123), result[0]);
         assert_eq!((String::from("world"), 231), result[1]);
+    }
+
+    #[test]
+    fn should_drop_query() {
+        let mut lp = Core::new().unwrap();
+
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
+            conn.drop_query("CREATE TEMPORARY TABLE tmp (id int, name text)")
+        }).and_then(|conn| {
+            conn.drop_query("INSERT INTO tmp VALUES (1, 'foo')")
+        }).and_then(|conn| {
+            conn.first::<(u8,), _>("SELECT COUNT(*) FROM tmp")
+        }).and_then(|(result, conn)| {
+            conn.disconnect().map(move|_| result)
+        });
+
+        let result = lp.run(fut).unwrap();
+        assert_eq!(result, Some((1,)));
     }
 
     #[test]

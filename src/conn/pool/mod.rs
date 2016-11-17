@@ -8,6 +8,7 @@
 
 use conn::Conn;
 use conn::futures::Disconnect;
+use conn::futures::DropQuery;
 use conn::futures::DropResult;
 use conn::futures::NewConn;
 use errors::*;
@@ -34,6 +35,7 @@ pub struct Inner {
     idle: Vec<Conn>,
     disconnecting: Vec<Disconnect>,
     dropping: Vec<DropResult>,
+    rollback: Vec<DropQuery>,
 }
 
 #[derive(Clone)]
@@ -78,6 +80,7 @@ impl Pool {
                 idle: Vec::new(),
                 disconnecting: Vec::new(),
                 dropping: Vec::new(),
+                rollback: Vec::new(),
             })),
             min: pool_min,
             max: pool_max,
@@ -123,6 +126,8 @@ impl Pool {
         }
         if conn.has_result.is_some() {
             self.inner_mut().dropping.push(conn.drop_result());
+        } else if conn.in_transaction {
+            self.inner_mut().rollback.push(conn.rollback_transaction())
         } else {
             let idle_len = self.inner_ref().idle.len();
             if idle_len >= self.min {
@@ -158,7 +163,7 @@ impl Pool {
                     }
                 }
                 while let Some(i) = done_fut_idxs.pop() {
-                    self.inner_mut().$vec.swap_remove(i);
+                    let _ = self.inner_mut().$vec.swap_remove(i);
                 }
             });
         }
@@ -173,6 +178,20 @@ impl Pool {
 
         // Handle dirty connections.
         handle!(dropping {
+            Ok(Ready(conn)) => {
+                let closed = self.inner_ref().closed;
+                if closed {
+                    self.inner_mut().disconnecting.push(conn.disconnect());
+                } else {
+                    self.return_conn(conn);
+                }
+                handled = true;
+            },
+            Err(_) => {},
+        });
+
+        // Handle in-transaction connections
+        handle!(rollback {
             Ok(Ready(conn)) => {
                 let closed = self.inner_ref().closed;
                 if closed {
