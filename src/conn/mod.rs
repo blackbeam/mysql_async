@@ -7,9 +7,12 @@
 // modified, or distributed except according to those terms.
 
 use conn::futures::*;
+use conn::futures::query_result::BinQueryResult;
 use conn::futures::query_result::ResultKind;
 use conn::futures::query_result::UnconsumedQueryResult;
+use conn::futures::query_result::futures::DropResult as DropQueryResult;
 use conn::pool::Pool;
+use conn::stmt::Stmt;
 use conn::stmt::InnerStmt;
 use conn::transaction::IsolationLevel;
 use conn::transaction::futures::new_start_transaction;
@@ -164,6 +167,16 @@ impl Conn {
               R: FromRow,
     {
         new_first_exec(self, query, params)
+    }
+
+    /// Returns future that prepares and executes statement, drops result and resolves to `Conn`.
+    pub fn drop_exec<Q, P>(self, query: Q, params: P) -> DropExec
+        where Q: AsRef<str>,
+              P: Into<Params>,
+    {
+        self.prep_exec(query, params)
+            .and_then(UnconsumedQueryResult::drop_result as fn(BinQueryResult) -> DropQueryResult<BinQueryResult>)
+            .map(Stmt::unwrap as fn(Stmt) -> Conn)
     }
 
     /// Returns future that prepares statement, performs batch execution and resolves to `Conn`.

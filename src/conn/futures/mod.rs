@@ -6,9 +6,13 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use conn::Conn;
 use conn::futures::query_result::futures::DropResult as DropQueryResult;
+use conn::futures::query_result::BinQueryResult;
 use conn::futures::query_result::TextQueryResult;
+use conn::stmt::Stmt;
 use lib_futures::AndThen;
+use lib_futures::Map;
 
 mod batch_exec;
 mod columns;
@@ -84,4 +88,13 @@ pub type DropQuery = AndThen<
     Query,
     DropQueryResult<TextQueryResult>,
     fn(TextQueryResult) -> DropQueryResult<TextQueryResult>
+>;
+
+pub type DropExec = Map<
+    AndThen<
+        PrepExec,
+        DropQueryResult<BinQueryResult>,
+        fn(BinQueryResult) -> DropQueryResult<BinQueryResult>,
+    >,
+    fn(Stmt) -> Conn
 >;
