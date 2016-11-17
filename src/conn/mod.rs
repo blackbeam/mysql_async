@@ -21,6 +21,7 @@ use proto::Column;
 use proto::OkPacket;
 use value::FromRow;
 use value::Params;
+use std::fmt;
 use std::mem;
 use std::sync::Arc;
 use tokio::reactor::Handle;
@@ -34,7 +35,6 @@ pub mod transaction;
 
 
 /// Mysql connection
-#[derive(Debug)]
 pub struct Conn {
     stream: Option<Stream>,
     id: u32,
@@ -50,11 +50,28 @@ pub struct Conn {
     pool: Option<Pool>,
     has_result: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>,
     in_transaction: bool,
+    opts: Opts,
+    handle: Handle,
 }
+
+impl fmt::Debug for Conn {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Conn")
+            .field("connection id", &self.id)
+            .field("server version", &self.version)
+            .field("pool", &self.pool)
+            .field("has result", &self.has_result.is_some())
+            .field("in transaction", &self.in_transaction)
+            .field("options", &self.opts)
+            .finish()
+    }
+}
+
 
 impl Conn {
     /// Hacky way to move connection through &mut. `self` becomes unusable.
     fn take(&mut self) -> Conn {
+        let handle = self.handle.clone();
         mem::replace(self, Conn {
             stream: Default::default(),
             id: Default::default(),
@@ -70,6 +87,8 @@ impl Conn {
             pool: Default::default(),
             has_result: Default::default(),
             in_transaction: false,
+            opts: Default::default(),
+            handle: handle,
         })
     }
 
@@ -85,7 +104,7 @@ impl Conn {
             Stream::connect((addr, port), &handle)
         };
 
-        new_new_conn(future, opts)
+        new_new_conn(future, opts, handle)
     }
 
     /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
@@ -152,7 +171,7 @@ impl Conn {
 
     /// Returns future that resolves to a `Conn` with `COM_RESET_CONNECTION` executed on it.
     pub fn reset(self) -> Reset {
-        new_reset(self.write_command_data(consts::Command::COM_RESET_CONNECTION, &[]))
+        new_reset(self)
     }
 
     /// Returns future that consumes `Conn` and disconnects it from a server.

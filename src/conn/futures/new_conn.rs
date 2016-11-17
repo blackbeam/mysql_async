@@ -28,6 +28,7 @@ use proto::ErrPacket;
 use proto::HandshakePacket;
 use proto::HandshakeResponse;
 use proto::PacketType;
+use tokio::reactor::Handle;
 
 
 /// Future that resolves to a `Conn`.
@@ -38,6 +39,7 @@ pub struct NewConn {
     id: u32,
     version: (u16, u16, u16),
     init_len: usize,
+    handle: Handle,
 }
 
 steps! {
@@ -52,7 +54,7 @@ steps! {
     }
 }
 
-pub fn new(connecting_stream: ConnectingStream, opts: Opts) -> NewConn {
+pub fn new(connecting_stream: ConnectingStream, opts: Opts, handle: &Handle) -> NewConn {
     NewConn {
         init_len: opts.get_init().len(),
         opts: opts,
@@ -60,6 +62,7 @@ pub fn new(connecting_stream: ConnectingStream, opts: Opts) -> NewConn {
         status: consts::StatusFlags::empty(),
         id: 0,
         version: (0, 0, 0),
+        handle: handle.clone(),
     }
 }
 
@@ -127,6 +130,8 @@ impl Future for NewConn {
                             has_result: None,
                             pool: None,
                             in_transaction: false,
+                            opts: self.opts.clone(),
+                            handle: self.handle.clone(),
                         };
                         self.step = Step::ReadMaxAllowedPacket(conn.read_max_allowed_packet());
                         self.poll()
