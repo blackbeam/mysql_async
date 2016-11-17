@@ -236,9 +236,17 @@ pub mod prelude {
 #[cfg(test)]
 mod test_misc {
     use std::env;
+    use opts;
     lazy_static! {
         pub static ref DATABASE_URL: String = {
-            env::var("DATABASE_URL").unwrap_or("mysql://root:password@127.0.0.1:3307/".into())
+            if let Ok(url) = env::var("DATABASE_URL") {
+                if opts::Opts::from_url(&url).expect("DATABASE_URL invalid").get_db_name().expect("a database name is required").is_empty() {
+                    panic!("database name is empty");
+                }
+                url
+            } else {
+                "mysql://root:password@127.0.0.1:3307/mysql".into()
+            }
         };
     }
 }

@@ -547,27 +547,27 @@ mod test {
         let mut lp = Core::new().unwrap();
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
-            conn.query("CREATE TEMPORARY TABLE t.tmp (id INT, name TEXT)")
+            conn.query("CREATE TEMPORARY TABLE tmp (id INT, name TEXT)")
                 .and_then(|result| result.drop_result())
         }).and_then(|conn| {
             conn.start_transaction(false, None, None)
         }).and_then(|transaction| {
-            transaction.query("INSERT INTO t.tmp VALUES (1, 'foo'), (2, 'bar')")
+            transaction.query("INSERT INTO tmp VALUES (1, 'foo'), (2, 'bar')")
                 .and_then(|result| result.drop_result())
         }).and_then(|transaction| {
             transaction.commit()
         }).and_then(|conn| {
-            conn.first::<(usize, ), _>("SELECT COUNT(*) FROM t.tmp").map(|(result, conn)| {
+            conn.first::<(usize, ), _>("SELECT COUNT(*) FROM tmp").map(|(result, conn)| {
                 assert_eq!(result, Some((2, )));
                 conn
             })
         }).and_then(|conn| {
             conn.start_transaction(false, None, None)
         }).and_then(|transaction| {
-            transaction.query("INSERT INTO t.tmp VALUES (3, 'baz'), (4, 'quux')")
+            transaction.query("INSERT INTO tmp VALUES (3, 'baz'), (4, 'quux')")
                 .and_then(|result| result.drop_result())
         }).and_then(|transaction| {
-            transaction.prep_exec("SELECT COUNT(*) FROM t.tmp", ()).and_then(|result| {
+            transaction.prep_exec("SELECT COUNT(*) FROM tmp", ()).and_then(|result| {
                 result.collect::<(usize,)>()
             }).map(|(set, transaction)| {
                 assert_eq!(set.0[0], (4,));
@@ -576,7 +576,7 @@ mod test {
         }).and_then(|transaction| {
             transaction.rollback()
         }).and_then(|conn| {
-            conn.first::<(usize, ), _>("SELECT COUNT(*) FROM t.tmp").map(|(result, conn)| {
+            conn.first::<(usize, ), _>("SELECT COUNT(*) FROM tmp").map(|(result, conn)| {
                 assert_eq!(result, Some((2, )));
                 conn
             })
