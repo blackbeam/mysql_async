@@ -84,12 +84,14 @@ pub use self::send_long_data::new as new_send_long_data;
 pub use self::write_packet::WritePacket;
 pub use self::write_packet::new as new_write_packet;
 
+/// Future that executes query, drops result and resolves to `Conn`.
 pub type DropQuery = AndThen<
     Query,
     DropQueryResult<TextQueryResult>,
     fn(TextQueryResult) -> DropQueryResult<TextQueryResult>
 >;
 
+/// Future that executes statement, drops result and resolves to `Conn`.
 pub type DropExec = Map<
     AndThen<
         PrepExec,

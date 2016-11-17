@@ -193,6 +193,8 @@ pub use self::value::{
 pub mod futures {
     #[doc(inline)] pub use conn::futures::BatchExec;
     #[doc(inline)] pub use conn::futures::Disconnect;
+    #[doc(inline)] pub use conn::futures::DropExec;
+    #[doc(inline)] pub use conn::futures::DropQuery;
     #[doc(inline)] pub use conn::futures::First;
     #[doc(inline)] pub use conn::futures::FirstExec;
     #[doc(inline)] pub use conn::futures::NewConn;
