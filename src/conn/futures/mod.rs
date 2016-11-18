@@ -100,3 +100,9 @@ pub type DropExec = Map<
     >,
     fn(Stmt) -> Conn
 >;
+
+/// Future that resolves to `Conn` with `wait_timeout` stored in it.
+pub type ReadWaitTimeout = Map<
+    First<(u32,)>,
+    fn((Option<(u32,)>, Conn)) -> Conn,
+>;

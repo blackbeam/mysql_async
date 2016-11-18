@@ -12,6 +12,7 @@ use lib_futures::Async::Ready;
 use lib_futures::Future;
 use lib_futures::Poll;
 use io;
+use time::SteadyTime;
 
 
 /// Futures that sends packet to a server and resolves to `Conn`.
@@ -37,6 +38,7 @@ impl Future for WritePacket {
                 let mut conn = self.conn.take().unwrap();
                 conn.seq_id = seq_id;
                 conn.stream = Some(stream);
+                conn.last_io = SteadyTime::now();
                 Ok(Ready(conn))
             }
         }

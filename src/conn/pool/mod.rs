@@ -24,6 +24,8 @@ use std::cell::RefCell;
 use std::cell::RefMut;
 use std::rc::Rc;
 use tokio::reactor::Handle;
+use time::Duration;
+use time::SteadyTime;
 
 
 pub mod futures;
@@ -112,8 +114,6 @@ impl Pool {
     fn take_conn(&mut self) -> Option<Conn> {
         let maybe_conn = self.inner_mut().idle.pop();
         maybe_conn.map(|mut conn| {
-            // TODO: Add some kind of health check
-            // TODO: Execute init after reconnect
             conn.pool = Some(self.clone());
             conn
         })
@@ -124,6 +124,13 @@ impl Pool {
         if self.inner_ref().closed {
             return;
         }
+
+        let idle_duration: Duration = SteadyTime::now() - conn.last_io;
+        if idle_duration.num_seconds() > conn.wait_timeout as i64 {
+            self.inner_mut().disconnecting.push(conn.disconnect());
+            return;
+        }
+
         if conn.has_result.is_some() {
             self.inner_mut().dropping.push(conn.drop_result());
         } else if conn.in_transaction {

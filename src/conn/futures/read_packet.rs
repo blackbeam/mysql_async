@@ -18,6 +18,7 @@ use proto::ErrPacket;
 use proto::OkPacket;
 use proto::Packet;
 use proto::PacketType;
+use time::SteadyTime;
 
 
 /// Future that resolves to a pair of `Conn` and `Packet` which was read from it.
@@ -66,7 +67,9 @@ impl Future for ReadPacket {
                             packet
                         }
                     };
-                    Ok(Ready((self.conn.take().unwrap(), packet)))
+                    let mut conn = self.conn.take().unwrap();
+                    conn.last_io = SteadyTime::now();
+                    Ok(Ready((conn, packet)))
                 },
                 None => Err(ErrorKind::ConnectionClosed.into()),
             },

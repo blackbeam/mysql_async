@@ -8,10 +8,11 @@
 
 use Conn;
 use conn::futures::Query;
+use conn::futures::ReadMaxAllowedPacket;
+use conn::futures::ReadWaitTimeout;
 use conn::futures::query_result::futures::CollectAll;
 use conn::futures::query_result::TextQueryResult;
 use conn::futures::query_result::UnconsumedQueryResult;
-use conn::futures::read_max_allowed_packet::ReadMaxAllowedPacket;
 use consts;
 use errors::*;
 use io::futures::ConnectingStream;
@@ -28,6 +29,7 @@ use proto::ErrPacket;
 use proto::HandshakePacket;
 use proto::HandshakeResponse;
 use proto::PacketType;
+use time::SteadyTime;
 use tokio::reactor::Handle;
 
 
@@ -49,6 +51,7 @@ steps! {
         WriteHandshake(WritePacket),
         ReadResponse(StreamFuture<Stream>),
         ReadMaxAllowedPacket(ReadMaxAllowedPacket),
+        ReadWaitTimeout(ReadWaitTimeout),
         Query(Query),
         CollectAll(CollectAll<TextQueryResult>),
     }
@@ -132,6 +135,8 @@ impl Future for NewConn {
                             in_transaction: false,
                             opts: self.opts.clone(),
                             handle: self.handle.clone(),
+                            last_io: SteadyTime::now(),
+                            wait_timeout: 0,
                         };
                         self.step = Step::ReadMaxAllowedPacket(conn.read_max_allowed_packet());
                         self.poll()
@@ -140,6 +145,10 @@ impl Future for NewConn {
                 None => panic!("No handshake response!?"),
             },
             Out::ReadMaxAllowedPacket(conn) => {
+                self.step = Step::ReadWaitTimeout(conn.read_wait_timeout());
+                self.poll()
+            },
+            Out::ReadWaitTimeout(conn) => {
                 let step = match self.opts.get_init().get(self.opts.get_init().len() - self.init_len) {
                     Some(query) => Step::Query(conn.query(query)),
                     None => return Ok(Ready(conn)),

@@ -29,6 +29,7 @@ use value::Params;
 use std::fmt;
 use std::mem;
 use std::sync::Arc;
+use time::SteadyTime;
 use tokio::reactor::Handle;
 
 
@@ -57,6 +58,8 @@ pub struct Conn {
     in_transaction: bool,
     opts: Opts,
     handle: Handle,
+    last_io: SteadyTime,
+    wait_timeout: u32,
 }
 
 impl fmt::Debug for Conn {
@@ -94,6 +97,8 @@ impl Conn {
             in_transaction: false,
             opts: Default::default(),
             handle: handle,
+            last_io: SteadyTime::now(),
+            wait_timeout: 0,
         })
     }
 
@@ -115,6 +120,16 @@ impl Conn {
     /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
     fn read_max_allowed_packet(self) -> ReadMaxAllowedPacket {
         new_read_max_allowed_packet(self.first::<(u64,), _>("SELECT @@max_allowed_packet"))
+    }
+
+    /// Returns future that resolves to `Conn` with `wait_timeout` stored in it.
+    fn read_wait_timeout(self) -> ReadWaitTimeout {
+        fn map((maybe_wait_timeout, mut conn): (Option<(u32,)>, Conn)) -> Conn {
+            conn.wait_timeout = maybe_wait_timeout.unwrap_or((28800,)).0;
+            conn
+        }
+
+        self.first::<(u32,), _>("SELECT @@wait_timeout").map(map)
     }
 
     /// Returns future that resolves to `Conn` if `COM_PING` executed successfully.
