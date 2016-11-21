@@ -119,7 +119,12 @@ impl Conn {
 
     /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
     fn read_max_allowed_packet(self) -> ReadMaxAllowedPacket {
-        new_read_max_allowed_packet(self.first::<(u64,), _>("SELECT @@max_allowed_packet"))
+        fn map((maybe_max_allwed_packet, mut conn): (Option<(u64,)>, Conn)) -> Conn {
+            conn.max_allowed_packet = maybe_max_allwed_packet.unwrap_or((1024 * 1024 * 2,)).0;
+            conn
+        }
+
+        self.first::<(u64,), _>("SELECT @@max_allowed_packet").map(map)
     }
 
     /// Returns future that resolves to `Conn` with `wait_timeout` stored in it.

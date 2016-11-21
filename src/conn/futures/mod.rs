@@ -27,7 +27,6 @@ mod prepare;
 mod prep_exec;
 mod query;
 pub mod query_result;
-mod read_max_allowed_packet;
 mod read_packet;
 mod reset;
 mod send_long_data;
@@ -69,9 +68,6 @@ pub use self::prep_exec::new as new_prep_exec;
 pub use self::query::Query;
 pub use self::query::new_new as new_query;
 
-pub use self::read_max_allowed_packet::ReadMaxAllowedPacket;
-pub use self::read_max_allowed_packet::new as new_read_max_allowed_packet;
-
 pub use self::read_packet::ReadPacket;
 pub use self::read_packet::new as new_read_packet;
 
@@ -105,4 +101,10 @@ pub type DropExec = Map<
 pub type ReadWaitTimeout = Map<
     First<(u32,)>,
     fn((Option<(u32,)>, Conn)) -> Conn,
+>;
+
+/// Future that resolves to `Conn` with value of MySql's max_allowed_packet stored in it.
+pub type ReadMaxAllowedPacket = Map<
+    First<(u64,)>,
+    fn((Option<(u64,)>, Conn)) -> Conn,
 >;
