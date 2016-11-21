@@ -262,7 +262,7 @@ fn get_opts_db_name_from_url(url: &Url) -> Option<String> {
 }
 
 fn from_url_basic(url_str: &str) -> Result<(Opts, Vec<(String, String)>)> {
-    let url = try!(Url::parse(url_str));
+    let url = Url::parse(url_str)?;
     if url.scheme() != "mysql" {
         return Err(ErrorKind::UrlUnsupportedScheme(url.scheme().to_string()).into());
     }
@@ -289,7 +289,7 @@ fn from_url_basic(url_str: &str) -> Result<(Opts, Vec<(String, String)>)> {
 }
 
 fn from_url(url: &str) -> Result<Opts> {
-    let (mut opts, query_pairs) = try!(from_url_basic(url));
+    let (mut opts, query_pairs) = from_url_basic(url)?;
     for (key, value) in query_pairs {
         if key == "pool_min" {
             match usize::from_str(&*value) {

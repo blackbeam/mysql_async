@@ -93,16 +93,16 @@ pub fn write_lenenc_int<W>(writer: &mut W, x: u64) -> Result<()>
 where W: Write,
 {
     if x < 251 {
-        try!(writer.write_u8(x as u8));
+        writer.write_u8(x as u8)?;
     } else if x < 65_536 {
-        try!(writer.write_u8(0xFC));
-        try!(writer.write_uint::<LE>(x, 2))
+        writer.write_u8(0xFC)?;
+        writer.write_uint::<LE>(x, 2)?
     } else if x < 16_777_216 {
-        try!(writer.write_u8(0xFD));
-        try!(writer.write_uint::<LE>(x, 3))
+        writer.write_u8(0xFD)?;
+        writer.write_uint::<LE>(x, 3)?
     } else {
-        try!(writer.write_u8(0xFE));
-        try!(writer.write_uint::<LE>(x, 8))
+        writer.write_u8(0xFE)?;
+        writer.write_uint::<LE>(x, 8)?
     }
     Ok(())
 }
@@ -110,31 +110,31 @@ where W: Write,
 pub fn write_lenenc_bytes<W>(writer: &mut W, bytes: &[u8]) -> Result<()>
 where W: Write,
 {
-    try!(write_lenenc_int(writer, bytes.len() as u64));
-    try!(writer.write_all(bytes));
+    write_lenenc_int(writer, bytes.len() as u64)?;
+    writer.write_all(bytes)?;
     Ok(())
 }
 
 pub fn read_lenenc_int<R>(reader: &mut R) -> Result<u64>
 where R: io::Read,
 {
-    let head_byte = try!(reader.read_u8());
+    let head_byte = reader.read_u8()?;
     let length = match head_byte {
         0xfc => 2,
         0xfd => 3,
         0xfe => 8,
         x => return Ok(x as u64),
     };
-    let out = try!(reader.read_uint::<LE>(length));
+    let out = reader.read_uint::<LE>(length)?;
     Ok(out)
 }
 
 pub fn read_lenenc_bytes<R>(reader: &mut R) -> Result<Vec<u8>>
 where R: io::Read,
 {
-    let len = try!(read_lenenc_int(reader));
+    let len = read_lenenc_int(reader)?;
     let mut out = vec![0u8; len as usize];
-    try!(reader.read_exact(&mut *out));
+    reader.read_exact(&mut *out)?;
     Ok(out)
 }
 
@@ -161,51 +161,51 @@ pub fn read_bin_value<R>(reader: &mut R,
         ColumnType::MYSQL_TYPE_NEWDECIMAL |
         ColumnType::MYSQL_TYPE_GEOMETRY => {
             if num_flag {
-                Ok(Int(try!(reader.read_i64::<LE>())))
+                Ok(Int(reader.read_i64::<LE>()?))
             } else {
-                Ok(Bytes(try!(read_lenenc_bytes(reader))))
+                Ok(Bytes(read_lenenc_bytes(reader)?))
             }
         },
         ColumnType::MYSQL_TYPE_TINY => {
             if unsigned {
-                Ok(Int(try!(reader.read_u8()) as i64))
+                Ok(Int(reader.read_u8()? as i64))
             } else {
-                Ok(Int(try!(reader.read_i8()) as i64))
+                Ok(Int(reader.read_i8()? as i64))
             }
         },
         ColumnType::MYSQL_TYPE_SHORT |
         ColumnType::MYSQL_TYPE_YEAR => {
             if unsigned {
-                Ok(Int(try!(reader.read_u16::<LE>()) as i64))
+                Ok(Int(reader.read_u16::<LE>()? as i64))
             } else {
-                Ok(Int(try!(reader.read_i16::<LE>()) as i64))
+                Ok(Int(reader.read_i16::<LE>()? as i64))
             }
         },
         ColumnType::MYSQL_TYPE_LONG |
         ColumnType::MYSQL_TYPE_INT24 => {
             if unsigned {
-                Ok(Int(try!(reader.read_u32::<LE>()) as i64))
+                Ok(Int(reader.read_u32::<LE>()? as i64))
             } else {
-                Ok(Int(try!(reader.read_i32::<LE>()) as i64))
+                Ok(Int(reader.read_i32::<LE>()? as i64))
             }
         },
         ColumnType::MYSQL_TYPE_LONGLONG => {
             if unsigned {
-                Ok(UInt(try!(reader.read_u64::<LE>())))
+                Ok(UInt(reader.read_u64::<LE>()?))
             } else {
-                Ok(Int(try!(reader.read_i64::<LE>())))
+                Ok(Int(reader.read_i64::<LE>()?))
             }
         },
         ColumnType::MYSQL_TYPE_FLOAT => {
-            Ok(Float(try!(reader.read_f32::<LE>()) as f64))
+            Ok(Float(reader.read_f32::<LE>()? as f64))
         },
         ColumnType::MYSQL_TYPE_DOUBLE => {
-            Ok(Float(try!(reader.read_f64::<LE>())))
+            Ok(Float(reader.read_f64::<LE>()?))
         },
         ColumnType::MYSQL_TYPE_TIMESTAMP |
         ColumnType::MYSQL_TYPE_DATE |
         ColumnType::MYSQL_TYPE_DATETIME => {
-            let len = try!(reader.read_u8());
+            let len = reader.read_u8()?;
             let mut year = 0u16;
             let mut month = 0u8;
             let mut day = 0u8;
@@ -214,22 +214,22 @@ pub fn read_bin_value<R>(reader: &mut R,
             let mut second = 0u8;
             let mut micro_second = 0u32;
             if len >= 4u8 {
-                year = try!(reader.read_u16::<LE>());
-                month = try!(reader.read_u8());
-                day = try!(reader.read_u8());
+                year = reader.read_u16::<LE>()?;
+                month = reader.read_u8()?;
+                day = reader.read_u8()?;
             }
             if len >= 7u8 {
-                hour = try!(reader.read_u8());
-                minute = try!(reader.read_u8());
-                second = try!(reader.read_u8());
+                hour = reader.read_u8()?;
+                minute = reader.read_u8()?;
+                second = reader.read_u8()?;
             }
             if len == 11u8 {
-                micro_second = try!(reader.read_u32::<LE>());
+                micro_second = reader.read_u32::<LE>()?;
             }
             Ok(Date(year, month, day, hour, minute, second, micro_second))
         },
         ColumnType::MYSQL_TYPE_TIME => {
-            let len = try!(reader.read_u8());
+            let len = reader.read_u8()?;
             let mut is_negative = false;
             let mut days = 0u32;
             let mut hours = 0u8;
@@ -237,14 +237,14 @@ pub fn read_bin_value<R>(reader: &mut R,
             let mut seconds = 0u8;
             let mut micro_seconds = 0u32;
             if len >= 8u8 {
-                is_negative = try!(reader.read_u8()) == 1u8;
-                days = try!(reader.read_u32::<LE>());
-                hours = try!(reader.read_u8());
-                minutes = try!(reader.read_u8());
-                seconds = try!(reader.read_u8());
+                is_negative = reader.read_u8()? == 1u8;
+                days = reader.read_u32::<LE>()?;
+                hours = reader.read_u8()?;
+                minutes = reader.read_u8()?;
+                seconds = reader.read_u8()?;
             }
             if len == 12u8 {
-                micro_seconds = try!(reader.read_u32::<LE>());
+                micro_seconds = reader.read_u32::<LE>()?;
             }
             Ok(Time(is_negative, days, hours, minutes, seconds, micro_seconds))
         },

@@ -36,10 +36,10 @@ impl InnerStmt {
     // TODO: Consume payload?
     pub fn new(pld: &[u8], named_params: Option<Vec<String>>) -> Result<InnerStmt> {
         let mut reader = &pld[1..];
-        let statement_id = try!(reader.read_u32::<LE>());
-        let num_columns = try!(reader.read_u16::<LE>());
-        let num_params = try!(reader.read_u16::<LE>());
-        let warning_count = try!(reader.read_u16::<LE>());
+        let statement_id = reader.read_u32::<LE>()?;
+        let num_columns = reader.read_u16::<LE>()?;
+        let num_params = reader.read_u16::<LE>()?;
+        let warning_count = reader.read_u16::<LE>()?;
         Ok(InnerStmt {
             named_params: named_params,
             statement_id: statement_id,

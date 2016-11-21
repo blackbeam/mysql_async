@@ -211,7 +211,7 @@ impl<K: ResultKind + InnerResultKind> Stream for RawQueryResult<K> {
                     self.poll()
                 }
             } else {
-                let values = try!(K::read_values(packet, &self.columns));
+                let values = K::read_values(packet, &self.columns)?;
                 let row = Row::new(values, self.columns.clone());
                 self.step = Step::ReadPacket(conn.read_packet());
                 Ok(Ready(Some(Left(row))))

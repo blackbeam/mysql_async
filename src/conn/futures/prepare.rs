@@ -81,7 +81,7 @@ impl Future for Prepare {
             },
             Out::ReadCommandResponse((conn, packet)) => {
                 let named_params = self.named_params.take();
-                let inner_stmt = try!(InnerStmt::new(packet.as_ref(), named_params));
+                let inner_stmt = InnerStmt::new(packet.as_ref(), named_params)?;
                 if inner_stmt.num_params > 0 || inner_stmt.num_columns > 0 {
                     self.params = Vec::with_capacity(inner_stmt.num_params as usize);
                     self.columns = Vec::with_capacity(inner_stmt.num_columns as usize);

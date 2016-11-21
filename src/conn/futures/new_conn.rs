@@ -86,7 +86,7 @@ impl Future for NewConn {
                         return Err(ErrorKind::Server(err_packet.unwrap()).into());
                     }
                     let handshake = HandshakePacket::new(packet);
-                    self.version = try!(handshake.srv_ver_parsed());
+                    self.version = handshake.srv_ver_parsed()?;
                     self.id = handshake.conn_id();
                     self.status = handshake.status_flags()
                         .unwrap_or(consts::StatusFlags::empty());

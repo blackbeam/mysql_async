@@ -81,7 +81,7 @@ impl<K: ResultKind + ?Sized> Future for NewRawQueryResult<K> {
                 let query_result = new_raw_query_result::<K, _>(conn, vec![], ok_packet, self.inner_stmt.clone());
                 Ok(Ready(query_result))
             } else {
-                let column_count = try!(read_lenenc_int(&mut packet.as_ref()));
+                let column_count = read_lenenc_int(&mut packet.as_ref())?;
                 self.step = Step::ReadColumns(conn.read_result_set_columns(column_count));
                 self.poll()
             },

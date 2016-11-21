@@ -247,7 +247,7 @@ impl Pool {
             return Err(ErrorKind::PoolDisconnected.into());
         }
 
-        try!(self.handle_futures());
+        self.handle_futures()?;
 
         match self.take_conn() {
             Some(conn) => Ok(Ready(conn)),
