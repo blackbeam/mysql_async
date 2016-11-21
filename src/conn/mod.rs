@@ -216,8 +216,12 @@ impl Conn {
 
     /// Returns future that consumes `Conn` and disconnects it from a server.
     pub fn disconnect(mut self) -> Disconnect {
+        fn map(_: Conn) {
+            ()
+        }
+
         self.pool = None;
-        new_disconnect(self.write_command_data(consts::Command::COM_QUIT, &[]))
+        self.write_command_data(consts::Command::COM_QUIT, &[]).map(map)
     }
 
     /// Returns future that starts transaction and resolves to `Transaction`.

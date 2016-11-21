@@ -16,7 +16,6 @@ use lib_futures::Map;
 
 mod batch_exec;
 mod columns;
-mod disconnect;
 mod drop_result;
 mod first;
 mod first_exec;
@@ -37,9 +36,6 @@ pub use self::batch_exec::new as new_batch_exec;
 
 pub use self::columns::Columns;
 pub use self::columns::new as new_columns;
-
-pub use self::disconnect::Disconnect;
-pub use self::disconnect::new as new_disconnect;
 
 pub use self::drop_result::DropResult;
 pub use self::drop_result::new as new_drop_result;
@@ -95,6 +91,12 @@ pub type DropExec = Map<
         fn(BinQueryResult) -> DropQueryResult<BinQueryResult>,
     >,
     fn(Stmt) -> Conn
+>;
+
+/// Future that disconnects `Conn` from server and resolves to `()`.
+pub type Disconnect = Map<
+    WritePacket,
+    fn(Conn) -> (),
 >;
 
 /// Future that resolves to `Conn` with `wait_timeout` stored in it.
