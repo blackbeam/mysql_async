@@ -126,7 +126,12 @@ impl Pool {
         }
 
         let idle_duration: Duration = SteadyTime::now() - conn.last_io;
-        if idle_duration.num_seconds() > conn.wait_timeout as i64 {
+        let ttl = if let Some(conn_ttl) = self.opts.get_conn_ttl() {
+            conn_ttl as i64
+        } else {
+            conn.wait_timeout as i64
+        };
+        if idle_duration.num_seconds() > ttl {
             self.inner_mut().disconnecting.push(conn.disconnect());
             return;
         }

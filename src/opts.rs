@@ -45,11 +45,15 @@ pub struct Opts {
     // TODO: keepalive_timeout
     // TODO: local infile handler
 
-    /// Lower bound of opened connections for `Pool`.
+    /// Lower bound of opened connections for `Pool` (defaults to 10).
     pool_min: usize,
 
-    /// Upper bound of opened connections for `Pool`.
+    /// Upper bound of opened connections for `Pool` (defaults to 100).
     pool_max: usize,
+
+    /// Pool will close connection if time since last IO exceeds this value
+    /// (defaults to `wait_timeout`).
+    conn_ttl: Option<u32>,
 
     /// Commands to execute on each new database connection.
     init: Vec<String>,
@@ -105,14 +109,20 @@ impl Opts {
         self.init.as_ref()
     }
 
-    /// Lower bound of opened connections for `Pool`.
+    /// Lower bound of opened connections for `Pool` (defaults to 10).
     pub fn get_pool_min(&self) -> usize {
         self.pool_min
     }
 
-    /// Upper bound of opened connections for `Pool`.
+    /// Upper bound of opened connections for `Pool` (defaults to 100).
     pub fn get_pool_max(&self) -> usize {
         self.pool_max
+    }
+
+    /// Pool will close connection if time since last IO exceeds this value
+    /// (defaults to `wait_timeout`).
+    pub fn get_conn_ttl(&self) -> Option<u32> {
+        self.conn_ttl
     }
 }
 
@@ -127,6 +137,7 @@ impl Default for Opts {
             init: vec![],
             pool_min: 10,
             pool_max: 100,
+            conn_ttl: None,
         }
     }
 }
@@ -197,15 +208,22 @@ impl OptsBuilder {
         self
     }
 
-    /// Lower bound of opened connections for `Pool` (defaults to `10`. None to reset to default).
+    /// Lower bound of opened connections for `Pool` (defaults to `10`. `None` to reset to default).
     pub fn pool_min<T: Into<usize>>(&mut self, pool_min: Option<T>) -> &mut Self {
         self.opts.pool_min = pool_min.map(Into::into).unwrap_or(DEFAULT_MIN_CONNS);
         self
     }
 
-    /// Lower bound of opened connections for `Pool` (defaults to `100`. None to reset to default).
+    /// Lower bound of opened connections for `Pool` (defaults to `100`. `None` to reset to default).
     pub fn pool_max<T: Into<usize>>(&mut self, pool_max: Option<T>) -> &mut Self {
         self.opts.pool_max = pool_max.map(Into::into).unwrap_or(DEFAULT_MAX_CONNS);
+        self
+    }
+
+    /// Pool will close connection if time since last IO exceeds this value
+    /// (defaults to `wait_timeout`. `None` to reset to default).
+    pub fn conn_ttl<T: Into<u32>>(&mut self, conn_ttl: Option<T>) -> &mut Self {
+        self.opts.conn_ttl = conn_ttl.map(Into::into);
         self
     }
 }
@@ -282,6 +300,11 @@ fn from_url(url: &str) -> Result<Opts> {
             match usize::from_str(&*value) {
                 Ok(value) => opts.pool_max = value,
                 _ => return Err(ErrorKind::UrlInvalidParamValue("pool_max".into(), value).into()),
+            }
+        } else if key == "conn_ttl" {
+            match u32::from_str(&*value) {
+                Ok(value) => opts.conn_ttl = Some(value),
+                _ => return Err(ErrorKind::UrlInvalidParamValue("conn_ttl".into(), value).into()),
             }
         } else {
             return Err(ErrorKind::UrlUnknownParameter(key).into());
