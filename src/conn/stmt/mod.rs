@@ -52,7 +52,7 @@ impl InnerStmt {
     }
 }
 
-/// Prepered MySql statement.
+/// Prepared MySql statement.
 #[derive(Debug)]
 pub struct Stmt {
     stmt: InnerStmt,
