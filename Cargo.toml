@@ -1,22 +1,19 @@
 [package]
-name = "mysql_async"
-version = "0.2.0"
 authors = ["blackbeam <aikorsky@gmail.com>"]
-license = "MIT/Apache-2.0"
 description = "Tokio based asynchronous MySql client library."
 documentation = "http://blackbeam.org/mysql_async/mysql_async/"
-repository = "https://github.com/blackbeam/mysql_async"
-readme = "README.md"
 keywords = ["mysql", "database", "asynchronous", "async"]
-
-[lib]
+license = "MIT/Apache-2.0"
 name = "mysql_async"
-path = "src/lib.rs"
+readme = "README.md"
+repository = "https://github.com/blackbeam/mysql_async"
+version = "0.2.0"
 
 [dependencies]
 bitflags = "~0.7"
 byteorder = "~0.5.3"
 chrono = "~0.2"
+either = "~1.0.0"
 error-chain = "~0.5.0"
 fnv = "~1.0"
 futures = "~0.1.1"
@@ -25,15 +22,19 @@ log = "~0.3.6"
 sha1 = "~0.2.0"
 time = "~0.1"
 tokio-core = "~0.1.0"
+twox-hash = "~1.0.0"
 url = "^1.2.1"
-either = "~1.0.0"
 
 [dependencies.regex]
-version = "~0.1"
 default-features = false
+version = "~0.1"
 
 [dev-dependencies]
 env_logger = "~0.3.5"
 
 [features]
 nightly = []
+
+[lib]
+name = "mysql_async"
+path = "src/lib.rs"

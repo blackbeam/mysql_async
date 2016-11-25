@@ -26,11 +26,14 @@ use proto::Column;
 use proto::OkPacket;
 use value::FromRow;
 use value::Params;
+use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 use std::fmt;
 use std::mem;
 use std::sync::Arc;
 use time::SteadyTime;
 use tokio::reactor::Handle;
+use twox_hash::XxHash;
 
 
 pub mod futures;
@@ -60,6 +63,7 @@ pub struct Conn {
     handle: Handle,
     last_io: SteadyTime,
     wait_timeout: u32,
+    stmt_cache: HashMap<String, InnerStmt, BuildHasherDefault<XxHash>>,
 }
 
 impl fmt::Debug for Conn {
@@ -80,31 +84,33 @@ impl Conn {
     /// Hacky way to move connection through &mut. `self` becomes unusable.
     fn take(&mut self) -> Conn {
         let handle = self.handle.clone();
-        mem::replace(self, Conn {
-            stream: Default::default(),
-            id: Default::default(),
-            version: Default::default(),
-            seq_id: Default::default(),
-            last_command: consts::Command::COM_QUIT,
-            max_allowed_packet: Default::default(),
-            capabilities: consts::CapabilityFlags::empty(),
-            status: consts::StatusFlags::empty(),
-            last_insert_id: Default::default(),
-            affected_rows: Default::default(),
-            warnings: Default::default(),
-            pool: Default::default(),
-            has_result: Default::default(),
-            in_transaction: false,
-            opts: Default::default(),
-            handle: handle,
-            last_io: SteadyTime::now(),
-            wait_timeout: 0,
-        })
+        mem::replace(self,
+                     Conn {
+                         stream: Default::default(),
+                         id: Default::default(),
+                         version: Default::default(),
+                         seq_id: Default::default(),
+                         last_command: consts::Command::COM_QUIT,
+                         max_allowed_packet: Default::default(),
+                         capabilities: consts::CapabilityFlags::empty(),
+                         status: consts::StatusFlags::empty(),
+                         last_insert_id: Default::default(),
+                         affected_rows: Default::default(),
+                         warnings: Default::default(),
+                         pool: Default::default(),
+                         has_result: Default::default(),
+                         in_transaction: false,
+                         opts: Default::default(),
+                         handle: handle,
+                         last_io: SteadyTime::now(),
+                         wait_timeout: 0,
+                         stmt_cache: Default::default(),
+                     })
     }
 
     /// Returns future that resolves to `Conn`.
     pub fn new<O>(opts: O, handle: &Handle) -> NewConn
-        where O: Into<Opts>,
+        where O: Into<Opts>
     {
         let opts = opts.into();
 
@@ -150,8 +156,8 @@ impl Conn {
 
     /// Returns future that resolves to a first row of result of a `query` execution (if any).
     pub fn first<R, Q>(self, query: Q) -> First<R>
-    where Q: AsRef<str>,
-          R: FromRow,
+        where Q: AsRef<str>,
+              R: FromRow
     {
         new_first(self.query(query))
     }
@@ -161,7 +167,6 @@ impl Conn {
         self.query(query).and_then(UnconsumedQueryResult::drop_result)
     }
 
-    // TODO: Implement cache.
     /// Returns future that resolves to a `Stmt`.
     pub fn prepare<Q>(self, query: Q) -> Prepare
         where Q: AsRef<str>
@@ -173,7 +178,7 @@ impl Conn {
     /// `BinQueryResult`.
     pub fn prep_exec<Q, P>(self, query: Q, params: P) -> PrepExec
         where Q: AsRef<str>,
-              P: Into<Params>,
+              P: Into<Params>
     {
         new_prep_exec(self, query, params)
     }
@@ -184,7 +189,7 @@ impl Conn {
     pub fn first_exec<R, Q, P>(self, query: Q, params: P) -> FirstExec<R>
         where Q: AsRef<str>,
               P: Into<Params>,
-              R: FromRow,
+              R: FromRow
     {
         new_first_exec(self, query, params)
     }
@@ -192,10 +197,11 @@ impl Conn {
     /// Returns future that prepares and executes statement, drops result and resolves to `Conn`.
     pub fn drop_exec<Q, P>(self, query: Q, params: P) -> DropExec
         where Q: AsRef<str>,
-              P: Into<Params>,
+              P: Into<Params>
     {
         self.prep_exec(query, params)
-            .and_then(UnconsumedQueryResult::drop_result as fn(BinQueryResult) -> DropQueryResult<BinQueryResult>)
+            .and_then(UnconsumedQueryResult::drop_result as fn(BinQueryResult)
+                                                               -> DropQueryResult<BinQueryResult>)
             .map(Stmt::unwrap as fn(Stmt) -> Conn)
     }
 
@@ -204,7 +210,7 @@ impl Conn {
     /// All results will be dropped.
     pub fn batch_exec<Q, P>(self, query: Q, params_vec: Vec<P>) -> BatchExec
         where Q: AsRef<str>,
-              P: Into<Params>,
+              P: Into<Params>
     {
         new_batch_exec(self, query, params_vec)
     }
@@ -228,8 +234,8 @@ impl Conn {
     pub fn start_transaction(self,
                              consistent_snapshot: bool,
                              isolation_level: Option<IsolationLevel>,
-                             readonly: Option<bool>) -> StartTransaction
-    {
+                             readonly: Option<bool>)
+                             -> StartTransaction {
         new_start_transaction(self, consistent_snapshot, isolation_level, readonly)
     }
 
@@ -246,7 +252,9 @@ impl Conn {
     }
 
     /// Returns future that resolves to `RawQueryResult` of corresponding `K: ResultKind`.
-    fn handle_result_set<K: ResultKind>(self, inner_stmt: Option<InnerStmt>) -> NewRawQueryResult<K> {
+    fn handle_result_set<K: ResultKind>(self,
+                                        inner_stmt: Option<InnerStmt>)
+                                        -> NewRawQueryResult<K> {
         new_new_raw_query_result::<K>(self.read_packet(), inner_stmt)
     }
 
@@ -257,7 +265,7 @@ impl Conn {
 
     /// Returns future that writes comand and it's data to a server and resolves to `Conn`.
     fn write_command_data<D>(mut self, cmd: consts::Command, command_data: D) -> WritePacket
-    where D: AsRef<[u8]>,
+        where D: AsRef<[u8]>
     {
         let mut data = Vec::with_capacity(1 + command_data.as_ref().len());
         data.push(cmd as u8);
@@ -268,7 +276,7 @@ impl Conn {
 
     /// Returns future that writes packet to a server and resolves to `Conn`.
     fn write_packet<D>(mut self, data: D) -> WritePacket
-    where D: Into<Vec<u8>>,
+        where D: Into<Vec<u8>>
     {
         let stream = self.stream.take().unwrap();
         let future = stream.write_packet(data.into(), self.seq_id);
@@ -305,8 +313,8 @@ mod test {
         let mut lp = Core::new().unwrap();
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-        .and_then(|conn| conn.ping())
-        .and_then(|conn| conn.disconnect());
+            .and_then(|conn| conn.ping())
+            .and_then(|conn| conn.disconnect());
 
         lp.run(fut).unwrap();
     }
@@ -317,13 +325,10 @@ mod test {
 
         let mut opts_builder = OptsBuilder::from_opts(&**DATABASE_URL);
         opts_builder.init(vec!["SET @a = 42", "SET @b = 'foo'"]);
-        let fut = Conn::new(opts_builder, &lp.handle()).and_then(|conn| {
-            conn.query("SELECT @a, @b")
-        }).and_then(|query_result| {
-            query_result.collect::<(u8, String)>()
-        }).and_then(|(result_set, conn)| {
-            conn.right().unwrap().disconnect().map(|_| result_set)
-        });
+        let fut = Conn::new(opts_builder, &lp.handle())
+            .and_then(|conn| conn.query("SELECT @a, @b"))
+            .and_then(|query_result| query_result.collect::<(u8, String)>())
+            .and_then(|(result_set, conn)| conn.right().unwrap().disconnect().map(|_| result_set));
 
         let result = lp.run(fut).unwrap();
         assert_eq!(result.0, vec![(42, "foo".into())]);
@@ -333,9 +338,9 @@ mod test {
     fn should_reset_the_connection() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
-            conn.reset()
-        }).and_then(|conn| conn.disconnect());
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| conn.reset())
+            .and_then(|conn| conn.disconnect());
 
         lp.run(fut).unwrap();
     }
@@ -344,20 +349,21 @@ mod test {
     fn should_perform_queries() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
-            conn.query(r"
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| {
+                conn.query(r"
                 SELECT 'hello', 123
                 UNION ALL
                 SELECT 'world', 231
             ")
-        }).and_then(|query_result| {
-            query_result.reduce(vec![], |mut accum, row| {
-                accum.push(from_row(row));
-                accum
             })
-        }).and_then(|(result, conn)| {
-            conn.right().unwrap().disconnect().map(|_| result)
-        });
+            .and_then(|query_result| {
+                query_result.reduce(vec![], |mut accum, row| {
+                    accum.push(from_row(row));
+                    accum
+                })
+            })
+            .and_then(|(result, conn)| conn.right().unwrap().disconnect().map(|_| result));
 
         let result = lp.run(fut).unwrap();
         assert_eq!((String::from("hello"), 123), result[0]);
@@ -368,15 +374,11 @@ mod test {
     fn should_drop_query() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
-            conn.drop_query("CREATE TEMPORARY TABLE tmp (id int, name text)")
-        }).and_then(|conn| {
-            conn.drop_query("INSERT INTO tmp VALUES (1, 'foo')")
-        }).and_then(|conn| {
-            conn.first::<(u8,), _>("SELECT COUNT(*) FROM tmp")
-        }).and_then(|(result, conn)| {
-            conn.disconnect().map(move|_| result)
-        });
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| conn.drop_query("CREATE TEMPORARY TABLE tmp (id int, name text)"))
+            .and_then(|conn| conn.drop_query("INSERT INTO tmp VALUES (1, 'foo')"))
+            .and_then(|conn| conn.first::<(u8,), _>("SELECT COUNT(*) FROM tmp"))
+            .and_then(|(result, conn)| conn.disconnect().map(move |_| result));
 
         let result = lp.run(fut).unwrap();
         assert_eq!(result, Some((1,)));
@@ -386,28 +388,30 @@ mod test {
     fn should_handle_mutliresult_set() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
-            conn.query(r"
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| {
+                conn.query(r"
                 SELECT 'hello', 123
                 UNION ALL
                 SELECT 'world', 231;
                 SELECT 'foo', 255;
             ")
-        }).and_then(|query_result| {
-            query_result.collect_all()
-        }).and_then(|(sets, conn)| {
-            conn.disconnect().map(|_| sets)
-        });
+            })
+            .and_then(|query_result| query_result.collect_all())
+            .and_then(|(sets, conn)| conn.disconnect().map(|_| sets));
 
         let sets = lp.run(fut).unwrap();
         assert_eq!(sets.len(), 2);
         for (i, rows) in sets.into_iter().enumerate() {
             if i == 0 {
-                assert_eq!((String::from("hello"), 123), from_row(rows.as_ref()[0].clone()));
-                assert_eq!((String::from("world"), 231), from_row(rows.as_ref()[1].clone()));
+                assert_eq!((String::from("hello"), 123),
+                           from_row(rows.as_ref()[0].clone()));
+                assert_eq!((String::from("world"), 231),
+                           from_row(rows.as_ref()[1].clone()));
             }
             if i == 1 {
-                assert_eq!((String::from("foo"), 255), from_row(rows.as_ref()[0].clone()));
+                assert_eq!((String::from("foo"), 255),
+                           from_row(rows.as_ref()[0].clone()));
             }
         }
     }
@@ -416,18 +420,23 @@ mod test {
     fn should_map_resultset() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
-            conn.query(r"
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| {
+                conn.query(r"
                 SELECT 'hello', 123
                 UNION ALL
                 SELECT 'world', 231;
                 SELECT 'foo', 255;
             ")
-        }).and_then(|query_result| {
-            query_result.map(|row| from_row::<(String, u8)>(row))
-        }).and_then(|(out, next)| {
-            next.left().unwrap().collect_all().and_then(|(_, conn)| conn.disconnect()).map(|_| out)
-        });
+            })
+            .and_then(|query_result| query_result.map(|row| from_row::<(String, u8)>(row)))
+            .and_then(|(out, next)| {
+                next.left()
+                    .unwrap()
+                    .collect_all()
+                    .and_then(|(_, conn)| conn.disconnect())
+                    .map(|_| out)
+            });
 
         let sets = lp.run(fut).unwrap();
         assert_eq!(sets.len(), 2);
@@ -439,22 +448,29 @@ mod test {
     fn should_reduce_resultset() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
-            conn.query(r"
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| {
+                conn.query(r"
                 SELECT 5
                 UNION ALL
                 SELECT 6;
                 SELECT 'foo';
             ")
-        }).and_then(|query_result| {
-            query_result.reduce(0, |mut acc, row| {
-                let (val,) = from_row::<(u8,)>(row);
-                acc += val;
-                acc
             })
-        }).and_then(|(out, next)| {
-            next.left().unwrap().collect_all().and_then(|(_, conn)| conn.disconnect()).map(move|_| out)
-        });
+            .and_then(|query_result| {
+                query_result.reduce(0, |mut acc, row| {
+                    let (val,) = from_row::<(u8,)>(row);
+                    acc += val;
+                    acc
+                })
+            })
+            .and_then(|(out, next)| {
+                next.left()
+                    .unwrap()
+                    .collect_all()
+                    .and_then(|(_, conn)| conn.disconnect())
+                    .map(move |_| out)
+            });
 
         let result = lp.run(fut).unwrap();
         assert_eq!(result, 11);
@@ -466,30 +482,32 @@ mod test {
         let mut lp = Core::new().unwrap();
         let acc: RefCell<u8> = RefCell::new(1);
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
-            conn.query(r"
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| {
+                conn.query(r"
                 SELECT 2
                 UNION ALL
                 SELECT 3;
                 SELECT 5;
             ")
-        }).and_then(|query_result| {
-            query_result.for_each(|row| {
-                let (x,) = from_row(row);
-                *acc.borrow_mut() *= x;
             })
-        }).and_then(|maybe_next| {
-            if let Left(query_result) = maybe_next {
+            .and_then(|query_result| {
                 query_result.for_each(|row| {
                     let (x,) = from_row(row);
                     *acc.borrow_mut() *= x;
                 })
-            } else {
-                unreachable!();
-            }
-        }).and_then(|conn| {
-            conn.right().unwrap().disconnect()
-        });
+            })
+            .and_then(|maybe_next| {
+                if let Left(query_result) = maybe_next {
+                    query_result.for_each(|row| {
+                        let (x,) = from_row(row);
+                        *acc.borrow_mut() *= x;
+                    })
+                } else {
+                    unreachable!();
+                }
+            })
+            .and_then(|conn| conn.right().unwrap().disconnect());
 
         lp.run(fut).unwrap();
         assert_eq!(*acc.borrow(), 30);
@@ -500,16 +518,14 @@ mod test {
         let mut lp = Core::new().unwrap();
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-            .and_then(|conn| {
-                conn.prepare(r"SELECT ?")
-            }).and_then(|stmt| stmt.unwrap().disconnect());
+            .and_then(|conn| conn.prepare(r"SELECT ?"))
+            .and_then(|stmt| stmt.unwrap().disconnect());
 
         lp.run(fut).unwrap();
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-            .and_then(|conn| {
-                conn.prepare(r"SELECT :foo")
-            }).and_then(|stmt| stmt.unwrap().disconnect());
+            .and_then(|conn| conn.prepare(r"SELECT :foo"))
+            .and_then(|stmt| stmt.unwrap().disconnect());
 
         lp.run(fut).unwrap();
     }
@@ -519,70 +535,65 @@ mod test {
         let mut lp = Core::new().unwrap();
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-            .and_then(|conn| {
-                conn.prepare(r"SELECT ?")
-            }).and_then(|stmt| {
-                stmt.execute((42,))
-            }).and_then(|query_result| {
-                query_result.collect::<(u8,)>()
-            }).and_then(|(result_set, stmt)| {
+            .and_then(|conn| conn.prepare(r"SELECT ?"))
+            .and_then(|stmt| stmt.execute((42,)))
+            .and_then(|query_result| query_result.collect::<(u8,)>())
+            .and_then(|(result_set, stmt)| {
                 assert_eq!(result_set.as_ref(), [(42u8,)]);
                 stmt.execute(("foo",))
-            }).and_then(|query_result| {
-                query_result.map(|row| {
-                    from_row::<(String,)>(row)
-                })
-            }).and_then(|(mut rows, stmt)| {
+            })
+            .and_then(|query_result| query_result.map(|row| from_row::<(String,)>(row)))
+            .and_then(|(mut rows, stmt)| {
                 assert_eq!(rows.len(), 1);
                 assert_eq!(rows.pop(), Some(("foo".into(),)));
                 stmt.execute((8,))
-            }).and_then(|query_result| {
+            })
+            .and_then(|query_result| {
                 query_result.reduce(2, |acc, row| {
                     let (val,): (u8,) = from_row(row);
                     acc + val
                 })
-            }).and_then(|(output, stmt)| {
-                stmt.unwrap().disconnect().map(move|_| output)
-            });
+            })
+            .and_then(|(output, stmt)| stmt.unwrap().disconnect().map(move |_| output));
 
         let output = lp.run(fut).unwrap();
         assert_eq!(output, 10);
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-            .and_then(|conn| {
-                conn.prepare(r"SELECT :foo, :bar, :foo")
-            }).and_then(|stmt| {
-            stmt.execute(params! {
+            .and_then(|conn| conn.prepare(r"SELECT :foo, :bar, :foo"))
+            .and_then(|stmt| {
+                stmt.execute(params! {
                 "foo" => 2,
                 "bar" => 3,
             })
-        }).and_then(|query_result| {
-            query_result.collect::<(u8, u8, u8)>()
-        }).and_then(|(result_set, stmt)| {
-            assert_eq!(result_set.as_ref(), [(2, 3, 2)]);
-            stmt.execute(params! {
+            })
+            .and_then(|query_result| query_result.collect::<(u8, u8, u8)>())
+            .and_then(|(result_set, stmt)| {
+                assert_eq!(result_set.as_ref(), [(2, 3, 2)]);
+                stmt.execute(params! {
                 "foo" => "quux",
                 "bar" => "baz",
             })
-        }).and_then(|query_result| {
-            query_result.map(|row| {
-                from_row::<(String, String, String)>(row)
             })
-        }).and_then(|(mut rows, stmt)| {
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows.pop(), Some(("quux".into(), "baz".into(), "quux".into())));
-            stmt.execute(params! {
+            .and_then(|query_result| {
+                query_result.map(|row| from_row::<(String, String, String)>(row))
+            })
+            .and_then(|(mut rows, stmt)| {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows.pop(),
+                           Some(("quux".into(), "baz".into(), "quux".into())));
+                stmt.execute(params! {
                 "foo" => 2,
                 "bar" => 3,
             })
-        }).and_then(|query_result| {
-            query_result.reduce(0, |acc, row| {
-                let (a, b, c): (u8,u8,u8) = from_row(row);
-                acc + a + b + c
             })
-        }).and_then(|(output, stmt)| {
-            stmt.unwrap().disconnect().map(move|_| output)
-        });
+            .and_then(|query_result| {
+                query_result.reduce(0, |acc, row| {
+                    let (a, b, c): (u8, u8, u8) = from_row(row);
+                    acc + a + b + c
+                })
+            })
+            .and_then(|(output, stmt)| stmt.unwrap().disconnect().map(move |_| output));
 
         let output = lp.run(fut).unwrap();
         assert_eq!(output, 7);
@@ -593,19 +604,21 @@ mod test {
 
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
-            conn.prep_exec(r"SELECT :a, :b, :a", params! {
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| {
+                conn.prep_exec(r"SELECT :a, :b, :a",
+                               params! {
                 "a" => 2,
                 "b" => 3,
             })
-        }).and_then(|query_result| {
-            query_result.map(|row| {
-                let (a, b, c): (u8, u8, u8) = from_row(row);
-                a * b * c
             })
-        }).and_then(|(output, stmt)| {
-            stmt.unwrap().disconnect().map(move|_| output[0])
-        });
+            .and_then(|query_result| {
+                query_result.map(|row| {
+                    let (a, b, c): (u8, u8, u8) = from_row(row);
+                    a * b * c
+                })
+            })
+            .and_then(|(output, stmt)| stmt.unwrap().disconnect().map(move |_| output[0]));
 
         let output = lp.run(fut).unwrap();
         assert_eq!(output, 12u8);
@@ -615,60 +628,87 @@ mod test {
     fn should_first_exec_statement() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
-            conn.first_exec::<(u8,), _, _>(r"SELECT :a UNION ALL SELECT :b", params! {
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| {
+                conn.first_exec::<(u8,), _, _>(r"SELECT :a UNION ALL SELECT :b",
+                                               params! {
                 "a" => 2,
                 "b" => 3,
             })
-        }).and_then(|(row, conn)| {
-            conn.disconnect().map(move|_| row.unwrap())
-        });
+            })
+            .and_then(|(row, conn)| conn.disconnect().map(move |_| row.unwrap()));
 
         let output = lp.run(fut).unwrap();
         assert_eq!(output, (2,));
     }
 
     #[test]
+    fn should_use_statement_cache() {
+        let mut lp = Core::new().unwrap();
+
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| conn.drop_exec("SELECT ?", (42,)))
+            .and_then(|conn| {
+                conn.drop_exec("SELECT :foo, :bar", params! ("foo" => 42, "bar" => "baz"))
+            })
+            .and_then(|conn| conn.first_exec::<(u8,), _, _>("SELECT ?", (42,)))
+            .and_then(|(row, conn)| {
+                assert_eq!(row, Some((42,)));
+                conn.first_exec::<(u8, u8), _, _>("SELECT :baz, :quux",
+                                                  params!("baz" => 1, "quux" => 2))
+            })
+            .and_then(|(row, conn)| {
+                assert_eq!(row, Some((1, 2)));
+                assert_eq!(conn.stmt_cache.len(), 2);
+                conn.disconnect()
+            })
+            .map(|_| ());
+
+        lp.run(fut).unwrap();
+    }
+
+    #[test]
     fn should_run_transactions() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| {
-            conn.query("CREATE TEMPORARY TABLE tmp (id INT, name TEXT)")
-                .and_then(|result| result.drop_result())
-        }).and_then(|conn| {
-            conn.start_transaction(false, None, None)
-        }).and_then(|transaction| {
-            transaction.query("INSERT INTO tmp VALUES (1, 'foo'), (2, 'bar')")
-                .and_then(|result| result.drop_result())
-        }).and_then(|transaction| {
-            transaction.commit()
-        }).and_then(|conn| {
-            conn.first::<(usize, ), _>("SELECT COUNT(*) FROM tmp").map(|(result, conn)| {
-                assert_eq!(result, Some((2, )));
-                conn
+        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+            .and_then(|conn| {
+                conn.query("CREATE TEMPORARY TABLE tmp (id INT, name TEXT)")
+                    .and_then(|result| result.drop_result())
             })
-        }).and_then(|conn| {
-            conn.start_transaction(false, None, None)
-        }).and_then(|transaction| {
-            transaction.query("INSERT INTO tmp VALUES (3, 'baz'), (4, 'quux')")
-                .and_then(|result| result.drop_result())
-        }).and_then(|transaction| {
-            transaction.prep_exec("SELECT COUNT(*) FROM tmp", ()).and_then(|result| {
-                result.collect::<(usize,)>()
-            }).map(|(set, transaction)| {
-                assert_eq!(set.0[0], (4,));
-                transaction
+            .and_then(|conn| conn.start_transaction(false, None, None))
+            .and_then(|transaction| {
+                transaction.query("INSERT INTO tmp VALUES (1, 'foo'), (2, 'bar')")
+                    .and_then(|result| result.drop_result())
             })
-        }).and_then(|transaction| {
-            transaction.rollback()
-        }).and_then(|conn| {
-            conn.first::<(usize, ), _>("SELECT COUNT(*) FROM tmp").map(|(result, conn)| {
-                assert_eq!(result, Some((2, )));
-                conn
+            .and_then(|transaction| transaction.commit())
+            .and_then(|conn| {
+                conn.first::<(usize,), _>("SELECT COUNT(*) FROM tmp").map(|(result, conn)| {
+                    assert_eq!(result, Some((2,)));
+                    conn
+                })
             })
-        }).and_then(|conn| {
-            conn.disconnect()
-        });
+            .and_then(|conn| conn.start_transaction(false, None, None))
+            .and_then(|transaction| {
+                transaction.query("INSERT INTO tmp VALUES (3, 'baz'), (4, 'quux')")
+                    .and_then(|result| result.drop_result())
+            })
+            .and_then(|transaction| {
+                transaction.prep_exec("SELECT COUNT(*) FROM tmp", ())
+                    .and_then(|result| result.collect::<(usize,)>())
+                    .map(|(set, transaction)| {
+                        assert_eq!(set.0[0], (4,));
+                        transaction
+                    })
+            })
+            .and_then(|transaction| transaction.rollback())
+            .and_then(|conn| {
+                conn.first::<(usize,), _>("SELECT COUNT(*) FROM tmp").map(|(result, conn)| {
+                    assert_eq!(result, Some((2,)));
+                    conn
+                })
+            })
+            .and_then(|conn| conn.disconnect());
 
         lp.run(fut).unwrap();
     }
@@ -686,10 +726,7 @@ mod test {
             let mut lp = Core::new().unwrap();
 
             bencher.iter(|| {
-                let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-                    .and_then(|conn| {
-                        conn.ping()
-                    });
+                let fut = Conn::new(&**DATABASE_URL, &lp.handle()).and_then(|conn| conn.ping());
                 lp.run(fut).unwrap();
             })
         }

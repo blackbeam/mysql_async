@@ -35,7 +35,7 @@ pub struct Reset {
 }
 
 pub fn new(conn: Conn) -> Reset {
-    let (pool, step) = if conn.version > (5, 7 ,2) {
+    let (pool, step) = if conn.version > (5, 7, 2) {
         (None, Step::WritePacket(conn.write_command_data(COM_RESET_CONNECTION, &[])))
     } else {
         (conn.pool.clone(), Step::NewConn(Conn::new(conn.opts.clone(), &conn.handle)))
@@ -55,10 +55,10 @@ impl Future for Reset {
             Out::WritePacket(conn) => {
                 self.step = Step::ReadResponse(conn.read_packet());
                 self.poll()
-            },
+            }
             Out::ReadResponse((mut conn, packet)) => {
                 if packet.is(PacketType::Ok) {
-                    // TODO: Clear stmt cache
+                    conn.stmt_cache.clear();
                     conn.last_insert_id = 0;
                     conn.affected_rows = 0;
                     conn.warnings = 0;
@@ -66,11 +66,11 @@ impl Future for Reset {
                 } else {
                     Err(ErrorKind::UnexpectedPacket.into())
                 }
-            },
+            }
             Out::NewConn(mut conn) => {
                 conn.pool = self.pool.clone();
                 Ok(Ready(conn))
-            },
+            }
         }
     }
 }

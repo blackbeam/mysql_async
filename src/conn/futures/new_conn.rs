@@ -78,94 +78,102 @@ impl Future for NewConn {
             Out::ConnectingStream(stream) => {
                 self.step = Step::ReadHandshake(stream.into_future());
                 self.poll()
-            },
-            Out::ReadHandshake((maybe_packet, stream)) => match maybe_packet {
-                Some((packet, seq_id)) => {
-                    if packet.is(PacketType::Err) {
-                        let err_packet = ErrPacket::new(packet);
-                        return Err(ErrorKind::Server(err_packet.unwrap()).into());
-                    }
-                    let handshake = HandshakePacket::new(packet);
-                    self.version = handshake.srv_ver_parsed()?;
-                    self.id = handshake.conn_id();
-                    self.status = handshake.status_flags()
-                        .unwrap_or(consts::StatusFlags::empty());
-                    let handshake_response = HandshakeResponse::new(&handshake,
-                                                                    self.opts.get_user(),
-                                                                    self.opts.get_pass(),
-                                                                    self.opts.get_db_name());
-                    let future = stream.write_packet(handshake_response.as_ref().to_vec(),
-                                                     seq_id + 1);
-                    self.step = Step::WriteHandshake(future);
-                    self.poll()
-                },
-                None => panic!("No handshake!?"),
-            },
-            Out::WriteHandshake((stream, _)) => { // TODO: take seq_id to account
-                self.step = Step::ReadResponse(stream.into_future());
-                self.poll()
-            },
-            Out::ReadResponse((maybe_packet, stream)) => match maybe_packet {
-                Some((packet, seq_id)) => {
-                    if packet.is(PacketType::Err) {
-                        let err_packet = ErrPacket::new(packet).unwrap();
-                        return Err(ErrorKind::Server(err_packet).into());
-                    } else {
-                        let conn = Conn {
-                            last_command: consts::Command::COM_PING,
-                            capabilities: consts::CLIENT_PROTOCOL_41 |
-                                consts::CLIENT_SECURE_CONNECTION |
-                                consts::CLIENT_LONG_PASSWORD |
-                                consts::CLIENT_TRANSACTIONS |
-                                consts::CLIENT_LOCAL_FILES |
-                                consts::CLIENT_MULTI_STATEMENTS |
-                                consts::CLIENT_MULTI_RESULTS |
-                                consts::CLIENT_PS_MULTI_RESULTS,
-                            status: self.status,
-                            last_insert_id: 0,
-                            affected_rows: 0,
-                            stream: Some(stream),
-                            seq_id: seq_id,
-                            max_allowed_packet: 65536,
-                            warnings: 0,
-                            version: self.version,
-                            id: self.id,
-                            has_result: None,
-                            pool: None,
-                            in_transaction: false,
-                            opts: self.opts.clone(),
-                            handle: self.handle.clone(),
-                            last_io: SteadyTime::now(),
-                            wait_timeout: 0,
-                        };
-                        self.step = Step::ReadMaxAllowedPacket(conn.read_max_allowed_packet());
+            }
+            Out::ReadHandshake((maybe_packet, stream)) => {
+                match maybe_packet {
+                    Some((packet, seq_id)) => {
+                        if packet.is(PacketType::Err) {
+                            let err_packet = ErrPacket::new(packet);
+                            return Err(ErrorKind::Server(err_packet.unwrap()).into());
+                        }
+                        let handshake = HandshakePacket::new(packet);
+                        self.version = handshake.srv_ver_parsed()?;
+                        self.id = handshake.conn_id();
+                        self.status = handshake.status_flags()
+                            .unwrap_or(consts::StatusFlags::empty());
+                        let handshake_response = HandshakeResponse::new(&handshake,
+                                                                        self.opts.get_user(),
+                                                                        self.opts.get_pass(),
+                                                                        self.opts.get_db_name());
+                        let future =
+                            stream.write_packet(handshake_response.as_ref().to_vec(), seq_id + 1);
+                        self.step = Step::WriteHandshake(future);
                         self.poll()
                     }
-                },
-                None => panic!("No handshake response!?"),
-            },
+                    None => panic!("No handshake!?"),
+                }
+            }
+            Out::WriteHandshake((stream, _)) => {
+                // TODO: take seq_id to account
+                self.step = Step::ReadResponse(stream.into_future());
+                self.poll()
+            }
+            Out::ReadResponse((maybe_packet, stream)) => {
+                match maybe_packet {
+                    Some((packet, seq_id)) => {
+                        if packet.is(PacketType::Err) {
+                            let err_packet = ErrPacket::new(packet).unwrap();
+                            return Err(ErrorKind::Server(err_packet).into());
+                        } else {
+                            let conn = Conn {
+                                last_command: consts::Command::COM_PING,
+                                capabilities: consts::CLIENT_PROTOCOL_41 |
+                                              consts::CLIENT_SECURE_CONNECTION |
+                                              consts::CLIENT_LONG_PASSWORD |
+                                              consts::CLIENT_TRANSACTIONS |
+                                              consts::CLIENT_LOCAL_FILES |
+                                              consts::CLIENT_MULTI_STATEMENTS |
+                                              consts::CLIENT_MULTI_RESULTS |
+                                              consts::CLIENT_PS_MULTI_RESULTS,
+                                status: self.status,
+                                last_insert_id: 0,
+                                affected_rows: 0,
+                                stream: Some(stream),
+                                seq_id: seq_id,
+                                max_allowed_packet: 65536,
+                                warnings: 0,
+                                version: self.version,
+                                id: self.id,
+                                has_result: None,
+                                pool: None,
+                                in_transaction: false,
+                                opts: self.opts.clone(),
+                                handle: self.handle.clone(),
+                                last_io: SteadyTime::now(),
+                                wait_timeout: 0,
+                                stmt_cache: Default::default(),
+                            };
+                            self.step = Step::ReadMaxAllowedPacket(conn.read_max_allowed_packet());
+                            self.poll()
+                        }
+                    }
+                    None => panic!("No handshake response!?"),
+                }
+            }
             Out::ReadMaxAllowedPacket(conn) => {
                 self.step = Step::ReadWaitTimeout(conn.read_wait_timeout());
                 self.poll()
-            },
+            }
             Out::ReadWaitTimeout(conn) => {
-                let step = match self.opts.get_init().get(self.opts.get_init().len() - self.init_len) {
-                    Some(query) => Step::Query(conn.query(query)),
-                    None => return Ok(Ready(conn)),
-                };
+                let step =
+                    match self.opts.get_init().get(self.opts.get_init().len() - self.init_len) {
+                        Some(query) => Step::Query(conn.query(query)),
+                        None => return Ok(Ready(conn)),
+                    };
                 self.step = step;
                 self.init_len -= 1;
                 self.poll()
-            },
+            }
             Out::Query(query_result) => {
                 self.step = Step::CollectAll(query_result.collect_all());
                 self.poll()
-            },
+            }
             Out::CollectAll((_, conn)) => {
-                let step = match self.opts.get_init().get(self.opts.get_init().len() - self.init_len) {
-                    Some(query) => Step::Query(conn.query(query)),
-                    None => return Ok(Ready(conn)),
-                };
+                let step =
+                    match self.opts.get_init().get(self.opts.get_init().len() - self.init_len) {
+                        Some(query) => Step::Query(conn.query(query)),
+                        None => return Ok(Ready(conn)),
+                    };
                 self.step = step;
                 self.init_len -= 1;
                 self.poll()

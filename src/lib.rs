@@ -120,6 +120,7 @@ extern crate regex;
 extern crate sha1;
 pub extern crate time;
 extern crate tokio_core as tokio;
+extern crate twox_hash;
 extern crate url;
 
 #[cfg(test)]
@@ -143,13 +144,8 @@ mod scramble;
 pub use self::conn::Conn;
 
 #[doc(inline)]
-pub use self::conn::futures::query_result::{
-    BinaryResult,
-    BinQueryResult,
-    ResultSet,
-    TextQueryResult,
-    TextResult,
-};
+pub use self::conn::futures::query_result::{BinaryResult, BinQueryResult, ResultSet,
+                                            TextQueryResult, TextResult};
 
 #[doc(inline)]
 pub use self::conn::pool::Pool;
@@ -161,78 +157,99 @@ pub use self::conn::stmt::Stmt;
 pub use self::conn::transaction::Transaction;
 
 #[doc(inline)]
-pub use self::conn::transaction::futures::query_result::{
-    TransBinQueryResult,
-    TransTextQueryResult,
-};
+pub use self::conn::transaction::futures::query_result::{TransBinQueryResult, TransTextQueryResult};
 
 #[doc(inline)]
-pub use self::opts::{
-    Opts,
-    OptsBuilder,
-};
+pub use self::opts::{Opts, OptsBuilder};
 
 #[doc(inline)]
-pub use self::proto::{
-    Column,
-    ErrPacket,
-    Row,
-};
+pub use self::proto::{Column, ErrPacket, Row};
 
 #[doc(inline)]
-pub use self::value::{
-    from_row,
-    from_row_opt,
-    from_value,
-    from_value_opt,
-    Params,
-    Value,
-};
+pub use self::value::{from_row, from_row_opt, from_value, from_value_opt, Params, Value};
 
 /// Futures used in this crate
 pub mod futures {
-    #[doc(inline)] pub use conn::futures::BatchExec;
-    #[doc(inline)] pub use conn::futures::Disconnect;
-    #[doc(inline)] pub use conn::futures::DropExec;
-    #[doc(inline)] pub use conn::futures::DropQuery;
-    #[doc(inline)] pub use conn::futures::First;
-    #[doc(inline)] pub use conn::futures::FirstExec;
-    #[doc(inline)] pub use conn::futures::NewConn;
-    #[doc(inline)] pub use conn::futures::Ping;
-    #[doc(inline)] pub use conn::futures::Prepare;
-    #[doc(inline)] pub use conn::futures::PrepExec;
-    #[doc(inline)] pub use conn::futures::Query;
-    #[doc(inline)] pub use conn::futures::Reset;
-    #[doc(inline)] pub use conn::futures::query_result::futures::Collect;
-    #[doc(inline)] pub use conn::futures::query_result::futures::CollectAll;
-    #[doc(inline)] pub use conn::futures::query_result::futures::DropResult;
-    #[doc(inline)] pub use conn::futures::query_result::futures::ForEach;
-    #[doc(inline)] pub use conn::futures::query_result::futures::Map;
-    #[doc(inline)] pub use conn::futures::query_result::futures::Reduce;
-    #[doc(inline)] pub use conn::pool::futures::DisconnectPool;
-    #[doc(inline)] pub use conn::pool::futures::GetConn;
-    #[doc(inline)] pub use conn::stmt::futures::Batch;
-    #[doc(inline)] pub use conn::stmt::futures::Execute;
-    #[doc(inline)] pub use conn::stmt::futures::First as StmtFirst;
-    #[doc(inline)] pub use conn::transaction::futures::Commit;
-    #[doc(inline)] pub use conn::transaction::futures::Rollback;
-    #[doc(inline)] pub use conn::transaction::futures::StartTransaction;
-    #[doc(inline)] pub use conn::transaction::futures::TransBatchExec;
-    #[doc(inline)] pub use conn::transaction::futures::TransFirst;
-    #[doc(inline)] pub use conn::transaction::futures::TransFirstExec;
-    #[doc(inline)] pub use conn::transaction::futures::TransPrepExec;
-    #[doc(inline)] pub use conn::transaction::futures::TransQuery;
+    #[doc(inline)]
+    pub use conn::futures::BatchExec;
+    #[doc(inline)]
+    pub use conn::futures::Disconnect;
+    #[doc(inline)]
+    pub use conn::futures::DropExec;
+    #[doc(inline)]
+    pub use conn::futures::DropQuery;
+    #[doc(inline)]
+    pub use conn::futures::First;
+    #[doc(inline)]
+    pub use conn::futures::FirstExec;
+    #[doc(inline)]
+    pub use conn::futures::NewConn;
+    #[doc(inline)]
+    pub use conn::futures::Ping;
+    #[doc(inline)]
+    pub use conn::futures::Prepare;
+    #[doc(inline)]
+    pub use conn::futures::PrepExec;
+    #[doc(inline)]
+    pub use conn::futures::Query;
+    #[doc(inline)]
+    pub use conn::futures::Reset;
+    #[doc(inline)]
+    pub use conn::futures::query_result::futures::Collect;
+    #[doc(inline)]
+    pub use conn::futures::query_result::futures::CollectAll;
+    #[doc(inline)]
+    pub use conn::futures::query_result::futures::DropResult;
+    #[doc(inline)]
+    pub use conn::futures::query_result::futures::ForEach;
+    #[doc(inline)]
+    pub use conn::futures::query_result::futures::Map;
+    #[doc(inline)]
+    pub use conn::futures::query_result::futures::Reduce;
+    #[doc(inline)]
+    pub use conn::pool::futures::DisconnectPool;
+    #[doc(inline)]
+    pub use conn::pool::futures::GetConn;
+    #[doc(inline)]
+    pub use conn::stmt::futures::Batch;
+    #[doc(inline)]
+    pub use conn::stmt::futures::Execute;
+    #[doc(inline)]
+    pub use conn::stmt::futures::First as StmtFirst;
+    #[doc(inline)]
+    pub use conn::transaction::futures::Commit;
+    #[doc(inline)]
+    pub use conn::transaction::futures::Rollback;
+    #[doc(inline)]
+    pub use conn::transaction::futures::StartTransaction;
+    #[doc(inline)]
+    pub use conn::transaction::futures::TransBatchExec;
+    #[doc(inline)]
+    pub use conn::transaction::futures::TransFirst;
+    #[doc(inline)]
+    pub use conn::transaction::futures::TransFirstExec;
+    #[doc(inline)]
+    pub use conn::transaction::futures::TransPrepExec;
+    #[doc(inline)]
+    pub use conn::transaction::futures::TransQuery;
 }
 
 /// Traits used in this crate
 pub mod prelude {
-    #[doc(inline)] pub use conn::futures::query_result::QueryResult;
-    #[doc(inline)] pub use conn::futures::query_result::ResultKind;
-    #[doc(inline)] pub use conn::futures::query_result::UnconsumedQueryResult;
-    #[doc(inline)] pub use value::ConvIr;
-    #[doc(inline)] pub use value::FromRow;
-    #[doc(inline)] pub use value::FromValue;
-    #[doc(inline)] pub use value::ToValue;
+    #[doc(inline)]
+    pub use conn::futures::query_result::QueryResult;
+    #[doc(inline)]
+    pub use conn::futures::query_result::ResultKind;
+    #[doc(inline)]
+    pub use conn::futures::query_result::UnconsumedQueryResult;
+    #[doc(inline)]
+    pub use value::ConvIr;
+    #[doc(inline)]
+    pub use value::FromRow;
+    #[doc(inline)]
+    pub use value::FromValue;
+    #[doc(inline)]
+    pub use value::ToValue;
 }
 
 #[cfg(test)]
