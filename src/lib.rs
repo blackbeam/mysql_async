@@ -48,11 +48,11 @@
 //!         Payment { customer_id: 9, amount: 10, account_name: Some("bar".into()) },
 //!     ];
 //!
-//!     let pool = my::Pool::new("mysql://root:password@localhost:3307", &lp.handle());
+//!     let pool = my::Pool::new("mysql://root:password@localhost:3307/mysql", &lp.handle());
 //!     let future = pool.get_conn().and_then(|conn| {
 //!         // Create temporary table
 //!         conn.query(
-//!             r"CREATE TEMPORARY TABLE tmp.payment (
+//!             r"CREATE TEMPORARY TABLE payment (
 //!                 customer_id int not null,
 //!                 amount int not null,
 //!                 account_name text
@@ -68,11 +68,11 @@
 //!             }
 //!         }).collect();
 //!
-//!         conn.batch_exec(r"INSERT INTO tmp.payment (customer_id, amount, account_name)
+//!         conn.batch_exec(r"INSERT INTO payment (customer_id, amount, account_name)
 //!                         VALUES (:customer_id, :amount, :account_name)", params)
 //!     }).and_then(|conn| {
 //!         // Load payments from database.
-//!         conn.prep_exec("SELECT customer_id, amount, account_name FROM tmp.payment", ())
+//!         conn.prep_exec("SELECT customer_id, amount, account_name FROM payment", ())
 //!     }).and_then(|result| {
 //!         // Collect payments
 //!         result.map(|row| {

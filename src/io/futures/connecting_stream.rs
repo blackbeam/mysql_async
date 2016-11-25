@@ -14,6 +14,8 @@ use lib_futures::Failed;
 use lib_futures::failed;
 use lib_futures::Future;
 use lib_futures::Poll;
+use lib_futures::future::select_ok;
+use lib_futures::future::SelectOk;
 use proto::NewPacket;
 use std::collections::VecDeque;
 use std::io;
@@ -25,7 +27,7 @@ use tokio::reactor::Handle;
 
 steps! {
     ConnectingStream {
-        WaitForStream(TcpStreamNew),
+        WaitForStream(SelectOk<TcpStreamNew>),
         Fail(Failed<(), Error>),
     }
 }
@@ -40,17 +42,23 @@ pub fn new<S>(addr: S, handle: &Handle) -> ConnectingStream
 where S: ToSocketAddrs,
 {
     match addr.to_socket_addrs() {
-        Ok(addrs) => {
-            for addr in addrs {
-                let future = TcpStream::connect(&addr, handle);
-                return ConnectingStream {
-                    step: Step::WaitForStream(future),
-                }
+        Ok(addresses) => {
+            let mut streams = Vec::new();
+
+            for address in addresses {
+                streams.push(TcpStream::connect(&address, handle));
             }
-            let err = io::Error::new(io::ErrorKind::InvalidInput,
-                                     "could not resolve to any address");
-            ConnectingStream {
-                step: Step::Fail(failed(err.into())),
+
+            if streams.len() > 0 {
+                ConnectingStream {
+                    step: Step::WaitForStream(select_ok(streams)),
+                }
+            } else {
+                let err = io::Error::new(io::ErrorKind::InvalidInput,
+                                         "could not resolve to any address");
+                ConnectingStream {
+                    step: Step::Fail(failed(err.into())),
+                }
             }
         },
         Err(err) => ConnectingStream {
@@ -66,7 +74,7 @@ impl Future for ConnectingStream
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.either_poll()) {
-            Out::WaitForStream(stream) => {
+            Out::WaitForStream((stream, _)) => {
                 Ok(Ready(Stream {
                     closed: false,
                     next_packet: Some(NewPacket::empty().parse()),
