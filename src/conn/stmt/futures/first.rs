@@ -28,7 +28,7 @@ enum Step<R> {
 
 enum Out<R> {
     Execute(BinQueryResult),
-    Collect((ResultSet<R, BinQueryResult>, Stmt))
+    Collect((ResultSet<R, BinQueryResult>, Stmt)),
 }
 
 /// This future will execute statement, take first row of result and resolve to `Option<R>`.
@@ -39,9 +39,7 @@ pub struct First<R> {
 }
 
 pub fn new<R: FromRow>(stmt: Stmt, params: Params) -> First<R> {
-    First {
-        step: Step::Execute(stmt.execute(params)),
-    }
+    First { step: Step::Execute(stmt.execute(params)) }
 }
 
 impl<R: FromRow> First<R> {
@@ -70,7 +68,7 @@ impl<R: FromRow> Future for First<R> {
                     None
                 };
                 Ok(Ready((row, stmt)))
-            }
+            },
         }
     }
 }

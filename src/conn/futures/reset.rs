@@ -55,7 +55,7 @@ impl Future for Reset {
             Out::WritePacket(conn) => {
                 self.step = Step::ReadResponse(conn.read_packet());
                 self.poll()
-            }
+            },
             Out::ReadResponse((mut conn, packet)) => {
                 if packet.is(PacketType::Ok) {
                     conn.stmt_cache.clear();
@@ -66,11 +66,11 @@ impl Future for Reset {
                 } else {
                     Err(ErrorKind::UnexpectedPacket.into())
                 }
-            }
+            },
             Out::NewConn(mut conn) => {
                 conn.pool = self.pool.clone();
                 Ok(Ready(conn))
-            }
+            },
         }
     }
 }

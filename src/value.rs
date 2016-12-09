@@ -10,13 +10,7 @@ use consts;
 
 use errors::*;
 
-use proto::{
-    Column,
-    Row,
-    write_lenenc_bytes,
-    read_lenenc_bytes,
-    read_bin_value,
-};
+use proto::{Column, Row, write_lenenc_bytes, read_lenenc_bytes, read_bin_value};
 
 use std::str::FromStr;
 use std::str::from_utf8;
@@ -26,27 +20,14 @@ use std::collections::hash_map::Entry::Occupied;
 use std::hash::BuildHasherDefault as BldHshrDflt;
 use std::io::Write as stdWrite;
 use std::time::Duration;
-use time::{
-    Timespec,
-    Tm,
-    at,
-    now,
-    self,
-    strptime,
-};
+use time::{self, Timespec, Tm, at, now, strptime};
 
 use regex::Regex;
 
-use chrono::{
-    NaiveDate,
-    NaiveTime,
-    NaiveDateTime,
-    Datelike,
-    Timelike,
-};
+use chrono::{NaiveDate, NaiveTime, NaiveDateTime, Datelike, Timelike};
 
 use byteorder::LittleEndian as LE;
-use byteorder::{WriteBytesExt};
+use byteorder::WriteBytesExt;
 
 // TODO: Replace with XXHash?
 use fnv::FnvHasher;
@@ -88,7 +69,7 @@ pub enum Value {
     /// year, month, day, hour, minutes, seconds, micro seconds
     Date(u16, u8, u8, u8, u8, u8, u32),
     /// is negative, days, hours, minutes, seconds, micro seconds
-    Time(bool, u32, u8, u8, u8, u32)
+    Time(bool, u32, u8, u8, u8, u32),
 }
 
 impl Value {
@@ -107,8 +88,19 @@ impl Value {
             Value::UInt(x) => format!("{}", x),
             Value::Float(x) => format!("{}", x),
             Value::Date(y, m, d, 0, 0, 0, 0) => format!("'{:04}-{:02}-{:02}'", y, m, d),
-            Value::Date(y, m, d, h, i, s, 0) => format!("'{:04}-{:02}-{:02} {:02}:{:02}:{:02}'", y, m, d, h, i, s),
-            Value::Date(y, m, d, h, i, s, u) => format!("'{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:06}'", y, m, d, h, i, s, u),
+            Value::Date(y, m, d, h, i, s, 0) => {
+                format!("'{:04}-{:02}-{:02} {:02}:{:02}:{:02}'", y, m, d, h, i, s)
+            },
+            Value::Date(y, m, d, h, i, s, u) => {
+                format!("'{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:06}'",
+                        y,
+                        m,
+                        d,
+                        h,
+                        i,
+                        s,
+                        u)
+            },
             Value::Time(neg, d, h, i, s, 0) => {
                 if neg {
                     format!("'-{:03}:{:02}:{:02}'", d * 24 + h as u32, i, s)
@@ -118,13 +110,11 @@ impl Value {
             },
             Value::Time(neg, d, h, i, s, u) => {
                 if neg {
-                    format!("'-{:03}:{:02}:{:02}.{:06}'",
-                            d * 24 + h as u32, i, s, u)
+                    format!("'-{:03}:{:02}:{:02}.{:06}'", d * 24 + h as u32, i, s, u)
                 } else {
-                    format!("'{:03}:{:02}:{:02}.{:06}'",
-                            d * 24 + h as u32, i, s, u)
+                    format!("'{:03}:{:02}:{:02}.{:06}'", d * 24 + h as u32, i, s, u)
                 }
-            }
+            },
         }
     }
 
@@ -176,7 +166,7 @@ impl Value {
             Value::Time(_, 0u32, 0u8, 0u8, 0u8, 0u32) => writer.write_u8(0u8)?,
             Value::Time(neg, d, h, m, s, 0u32) => {
                 writer.write_u8(8u8)?;
-                writer.write_u8(if neg {1u8} else {0u8})?;
+                writer.write_u8(if neg { 1u8 } else { 0u8 })?;
                 writer.write_u32::<LE>(d)?;
                 writer.write_u8(h)?;
                 writer.write_u8(m)?;
@@ -184,13 +174,13 @@ impl Value {
             },
             Value::Time(neg, d, h, m, s, u) => {
                 writer.write_u8(12u8)?;
-                writer.write_u8(if neg {1u8} else {0u8})?;
+                writer.write_u8(if neg { 1u8 } else { 0u8 })?;
                 writer.write_u32::<LE>(d)?;
                 writer.write_u8(h)?;
                 writer.write_u8(m)?;
                 writer.write_u8(s)?;
                 writer.write_u32::<LE>(u)?;
-            }
+            },
         };
         Ok(writer)
     }
@@ -219,7 +209,7 @@ impl Value {
         let mut bitmap = Vec::with_capacity(bitmap_len);
         let mut values = Vec::with_capacity(columns.len());
         for i in 0..bitmap_len {
-            bitmap.push(pld[i+1]);
+            bitmap.push(pld[i + 1]);
         }
         let mut reader = &pld[1 + bitmap_len..];
         for i in 0..columns.len() {
@@ -238,7 +228,10 @@ impl Value {
 
     // (NULL-bitmap, values, ids of fields to send through send_long_data)
     #[doc(hidden)]
-    pub fn to_bin_payload(params: &[Column], values: &[Value], max_allowed_packet: usize) -> Result<(Vec<u8>, Vec<u8>, Option<Vec<u16>>)> {
+    pub fn to_bin_payload(params: &[Column],
+                          values: &[Value],
+                          max_allowed_packet: usize)
+                          -> Result<(Vec<u8>, Vec<u8>, Option<Vec<u16>>)> {
         let bitmap_len = (params.len() + 7) / 8;
         let mut large_ids = Vec::new();
         let mut writer = Vec::new();
@@ -257,7 +250,7 @@ impl Value {
                     } else {
                         large_ids.push(i);
                     }
-                }
+                },
             }
             i += 1;
         }
@@ -343,8 +336,9 @@ macro_rules! take_or_place {
 }
 
 impl<T, Ir> FromRow for T
-where Ir: ConvIr<T>,
-      T: FromValue<Intermediate=Ir> {
+    where Ir: ConvIr<T>,
+          T: FromValue<Intermediate = Ir>,
+{
     #[inline]
     fn from_row(row: Row) -> T {
         FromRow::from_row_opt(row).ok().expect("Could not convert row to T")
@@ -359,8 +353,9 @@ where Ir: ConvIr<T>,
 }
 
 impl<T1, Ir1> FromRow for (T1,)
-where Ir1: ConvIr<T1>,
-      T1: FromValue<Intermediate=Ir1> {
+    where Ir1: ConvIr<T1>,
+          T1: FromValue<Intermediate = Ir1>,
+{
     #[inline]
     fn from_row(row: Row) -> (T1,) {
         FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1,)")
@@ -370,10 +365,12 @@ where Ir1: ConvIr<T1>,
     }
 }
 
-impl<T1, Ir1,
-     T2, Ir2> FromRow for (T1, T2)
-where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
-      Ir2: ConvIr<T2>, T2: FromValue<Intermediate=Ir2> {
+impl<T1, Ir1, T2, Ir2> FromRow for (T1, T2)
+    where Ir1: ConvIr<T1>,
+          T1: FromValue<Intermediate = Ir1>,
+          Ir2: ConvIr<T2>,
+          T2: FromValue<Intermediate = Ir2>,
+{
     #[inline]
     fn from_row(row: Row) -> (T1, T2) {
         FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1,T2)")
@@ -388,12 +385,14 @@ where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
     }
 }
 
-impl<T1, Ir1,
-     T2, Ir2,
-     T3, Ir3,> FromRow for (T1, T2, T3)
-where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
-      Ir2: ConvIr<T2>, T2: FromValue<Intermediate=Ir2>,
-      Ir3: ConvIr<T3>, T3: FromValue<Intermediate=Ir3>, {
+impl<T1, Ir1, T2, Ir2, T3, Ir3> FromRow for (T1, T2, T3)
+    where Ir1: ConvIr<T1>,
+          T1: FromValue<Intermediate = Ir1>,
+          Ir2: ConvIr<T2>,
+          T2: FromValue<Intermediate = Ir2>,
+          Ir3: ConvIr<T3>,
+          T3: FromValue<Intermediate = Ir3>,
+{
     #[inline]
     fn from_row(row: Row) -> (T1, T2, T3) {
         FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1,T2,T3)")
@@ -405,22 +404,20 @@ where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
         let ir1 = take_or_place!(row, 0, T1);
         let ir2 = take_or_place!(row, 1, T2, [0, ir1]);
         let ir3 = take_or_place!(row, 2, T3, [0, ir1], [1, ir2]);
-        Ok((
-            ir1.commit(),
-            ir2.commit(),
-            ir3.commit(),
-        ))
+        Ok((ir1.commit(), ir2.commit(), ir3.commit()))
     }
 }
 
-impl<T1, Ir1,
-     T2, Ir2,
-     T3, Ir3,
-     T4, Ir4,> FromRow for (T1, T2, T3, T4)
-where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
-      Ir2: ConvIr<T2>, T2: FromValue<Intermediate=Ir2>,
-      Ir3: ConvIr<T3>, T3: FromValue<Intermediate=Ir3>,
-      Ir4: ConvIr<T4>, T4: FromValue<Intermediate=Ir4>, {
+impl<T1, Ir1, T2, Ir2, T3, Ir3, T4, Ir4> FromRow for (T1, T2, T3, T4)
+    where Ir1: ConvIr<T1>,
+          T1: FromValue<Intermediate = Ir1>,
+          Ir2: ConvIr<T2>,
+          T2: FromValue<Intermediate = Ir2>,
+          Ir3: ConvIr<T3>,
+          T3: FromValue<Intermediate = Ir3>,
+          Ir4: ConvIr<T4>,
+          T4: FromValue<Intermediate = Ir4>,
+{
     #[inline]
     fn from_row(row: Row) -> (T1, T2, T3, T4) {
         FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T4)")
@@ -433,25 +430,22 @@ where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
         let ir2 = take_or_place!(row, 1, T2, [0, ir1]);
         let ir3 = take_or_place!(row, 2, T3, [0, ir1], [1, ir2]);
         let ir4 = take_or_place!(row, 3, T4, [0, ir1], [1, ir2], [2, ir3]);
-        Ok((
-            ir1.commit(),
-            ir2.commit(),
-            ir3.commit(),
-            ir4.commit(),
-        ))
+        Ok((ir1.commit(), ir2.commit(), ir3.commit(), ir4.commit()))
     }
 }
 
-impl<T1, Ir1,
-     T2, Ir2,
-     T3, Ir3,
-     T4, Ir4,
-     T5, Ir5,> FromRow for (T1, T2, T3, T4, T5)
-where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
-      Ir2: ConvIr<T2>, T2: FromValue<Intermediate=Ir2>,
-      Ir3: ConvIr<T3>, T3: FromValue<Intermediate=Ir3>,
-      Ir4: ConvIr<T4>, T4: FromValue<Intermediate=Ir4>,
-      Ir5: ConvIr<T5>, T5: FromValue<Intermediate=Ir5>, {
+impl<T1, Ir1, T2, Ir2, T3, Ir3, T4, Ir4, T5, Ir5> FromRow for (T1, T2, T3, T4, T5)
+    where Ir1: ConvIr<T1>,
+          T1: FromValue<Intermediate = Ir1>,
+          Ir2: ConvIr<T2>,
+          T2: FromValue<Intermediate = Ir2>,
+          Ir3: ConvIr<T3>,
+          T3: FromValue<Intermediate = Ir3>,
+          Ir4: ConvIr<T4>,
+          T4: FromValue<Intermediate = Ir4>,
+          Ir5: ConvIr<T5>,
+          T5: FromValue<Intermediate = Ir5>,
+{
     #[inline]
     fn from_row(row: Row) -> (T1, T2, T3, T4, T5) {
         FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T5)")
@@ -465,35 +459,29 @@ where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
         let ir3 = take_or_place!(row, 2, T3, [0, ir1], [1, ir2]);
         let ir4 = take_or_place!(row, 3, T4, [0, ir1], [1, ir2], [2, ir3]);
         let ir5 = take_or_place!(row, 4, T5, [0, ir1], [1, ir2], [2, ir3], [3, ir4]);
-        Ok((
-            ir1.commit(),
-            ir2.commit(),
-            ir3.commit(),
-            ir4.commit(),
-            ir5.commit(),
-        ))
+        Ok((ir1.commit(), ir2.commit(), ir3.commit(), ir4.commit(), ir5.commit()))
     }
 }
 
-impl<T1, Ir1,
-     T2, Ir2,
-     T3, Ir3,
-     T4, Ir4,
-     T5, Ir5,
-     T6, Ir6,> FromRow for (T1, T2, T3, T4, T5, T6)
-where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
-      Ir2: ConvIr<T2>, T2: FromValue<Intermediate=Ir2>,
-      Ir3: ConvIr<T3>, T3: FromValue<Intermediate=Ir3>,
-      Ir4: ConvIr<T4>, T4: FromValue<Intermediate=Ir4>,
-      Ir5: ConvIr<T5>, T5: FromValue<Intermediate=Ir5>,
-      Ir6: ConvIr<T6>, T6: FromValue<Intermediate=Ir6>, {
+impl<T1, Ir1, T2, Ir2, T3, Ir3, T4, Ir4, T5, Ir5, T6, Ir6> FromRow for (T1, T2, T3, T4, T5, T6)
+    where Ir1: ConvIr<T1>,
+          T1: FromValue<Intermediate = Ir1>,
+          Ir2: ConvIr<T2>,
+          T2: FromValue<Intermediate = Ir2>,
+          Ir3: ConvIr<T3>,
+          T3: FromValue<Intermediate = Ir3>,
+          Ir4: ConvIr<T4>,
+          T4: FromValue<Intermediate = Ir4>,
+          Ir5: ConvIr<T5>,
+          T5: FromValue<Intermediate = Ir5>,
+          Ir6: ConvIr<T6>,
+          T6: FromValue<Intermediate = Ir6>,
+{
     #[inline]
     fn from_row(row: Row) -> (T1, T2, T3, T4, T5, T6) {
         FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T6)")
     }
-    fn from_row_opt(mut row: Row) ->
-        Result<(T1, T2, T3, T4, T5, T6)>
-    {
+    fn from_row_opt(mut row: Row) -> Result<(T1, T2, T3, T4, T5, T6)> {
         if row.len() != 6 {
             return Err(ErrorKind::FromRow(row).into());
         }
@@ -503,38 +491,32 @@ where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
         let ir4 = take_or_place!(row, 3, T4, [0, ir1], [1, ir2], [2, ir3]);
         let ir5 = take_or_place!(row, 4, T5, [0, ir1], [1, ir2], [2, ir3], [3, ir4]);
         let ir6 = take_or_place!(row, 5, T6, [0, ir1], [1, ir2], [2, ir3], [3, ir4], [4, ir5]);
-        Ok((
-            ir1.commit(),
-            ir2.commit(),
-            ir3.commit(),
-            ir4.commit(),
-            ir5.commit(),
-            ir6.commit(),
-        ))
+        Ok((ir1.commit(), ir2.commit(), ir3.commit(), ir4.commit(), ir5.commit(), ir6.commit()))
     }
 }
 
-impl<T1, Ir1,
-     T2, Ir2,
-     T3, Ir3,
-     T4, Ir4,
-     T5, Ir5,
-     T6, Ir6,
-     T7, Ir7,> FromRow for (T1, T2, T3, T4, T5, T6, T7)
-where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
-      Ir2: ConvIr<T2>, T2: FromValue<Intermediate=Ir2>,
-      Ir3: ConvIr<T3>, T3: FromValue<Intermediate=Ir3>,
-      Ir4: ConvIr<T4>, T4: FromValue<Intermediate=Ir4>,
-      Ir5: ConvIr<T5>, T5: FromValue<Intermediate=Ir5>,
-      Ir6: ConvIr<T6>, T6: FromValue<Intermediate=Ir6>,
-      Ir7: ConvIr<T7>, T7: FromValue<Intermediate=Ir7>, {
+impl<T1, Ir1, T2, Ir2, T3, Ir3, T4, Ir4, T5, Ir5, T6, Ir6, T7, Ir7> FromRow
+    for (T1, T2, T3, T4, T5, T6, T7)
+    where Ir1: ConvIr<T1>,
+          T1: FromValue<Intermediate = Ir1>,
+          Ir2: ConvIr<T2>,
+          T2: FromValue<Intermediate = Ir2>,
+          Ir3: ConvIr<T3>,
+          T3: FromValue<Intermediate = Ir3>,
+          Ir4: ConvIr<T4>,
+          T4: FromValue<Intermediate = Ir4>,
+          Ir5: ConvIr<T5>,
+          T5: FromValue<Intermediate = Ir5>,
+          Ir6: ConvIr<T6>,
+          T6: FromValue<Intermediate = Ir6>,
+          Ir7: ConvIr<T7>,
+          T7: FromValue<Intermediate = Ir7>,
+{
     #[inline]
     fn from_row(row: Row) -> (T1, T2, T3, T4, T5, T6, T7) {
         FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T7)")
     }
-    fn from_row_opt(mut row: Row) ->
-        Result<(T1, T2, T3, T4, T5, T6, T7)>
-    {
+    fn from_row_opt(mut row: Row) -> Result<(T1, T2, T3, T4, T5, T6, T7)> {
         if row.len() != 7 {
             return Err(ErrorKind::FromRow(row).into());
         }
@@ -544,43 +526,49 @@ where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
         let ir4 = take_or_place!(row, 3, T4, [0, ir1], [1, ir2], [2, ir3]);
         let ir5 = take_or_place!(row, 4, T5, [0, ir1], [1, ir2], [2, ir3], [3, ir4]);
         let ir6 = take_or_place!(row, 5, T6, [0, ir1], [1, ir2], [2, ir3], [3, ir4], [4, ir5]);
-        let ir7 = take_or_place!(row, 6, T7,
-            [0, ir1], [1, ir2], [2, ir3], [3, ir4], [4, ir5], [5, ir6]);
-        Ok((
-            ir1.commit(),
+        let ir7 = take_or_place!(row,
+                                 6,
+                                 T7,
+                                 [0, ir1],
+                                 [1, ir2],
+                                 [2, ir3],
+                                 [3, ir4],
+                                 [4, ir5],
+                                 [5, ir6]);
+        Ok((ir1.commit(),
             ir2.commit(),
             ir3.commit(),
             ir4.commit(),
             ir5.commit(),
             ir6.commit(),
-            ir7.commit(),
-        ))
+            ir7.commit()))
     }
 }
 
-impl<T1, Ir1,
-     T2, Ir2,
-     T3, Ir3,
-     T4, Ir4,
-     T5, Ir5,
-     T6, Ir6,
-     T7, Ir7,
-     T8, Ir8,> FromRow for (T1, T2, T3, T4, T5, T6, T7, T8)
-where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
-      Ir2: ConvIr<T2>, T2: FromValue<Intermediate=Ir2>,
-      Ir3: ConvIr<T3>, T3: FromValue<Intermediate=Ir3>,
-      Ir4: ConvIr<T4>, T4: FromValue<Intermediate=Ir4>,
-      Ir5: ConvIr<T5>, T5: FromValue<Intermediate=Ir5>,
-      Ir6: ConvIr<T6>, T6: FromValue<Intermediate=Ir6>,
-      Ir7: ConvIr<T7>, T7: FromValue<Intermediate=Ir7>,
-      Ir8: ConvIr<T8>, T8: FromValue<Intermediate=Ir8>, {
+impl<T1, Ir1, T2, Ir2, T3, Ir3, T4, Ir4, T5, Ir5, T6, Ir6, T7, Ir7, T8, Ir8> FromRow
+    for (T1, T2, T3, T4, T5, T6, T7, T8)
+    where Ir1: ConvIr<T1>,
+          T1: FromValue<Intermediate = Ir1>,
+          Ir2: ConvIr<T2>,
+          T2: FromValue<Intermediate = Ir2>,
+          Ir3: ConvIr<T3>,
+          T3: FromValue<Intermediate = Ir3>,
+          Ir4: ConvIr<T4>,
+          T4: FromValue<Intermediate = Ir4>,
+          Ir5: ConvIr<T5>,
+          T5: FromValue<Intermediate = Ir5>,
+          Ir6: ConvIr<T6>,
+          T6: FromValue<Intermediate = Ir6>,
+          Ir7: ConvIr<T7>,
+          T7: FromValue<Intermediate = Ir7>,
+          Ir8: ConvIr<T8>,
+          T8: FromValue<Intermediate = Ir8>,
+{
     #[inline]
     fn from_row(row: Row) -> (T1, T2, T3, T4, T5, T6, T7, T8) {
         FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T8)")
     }
-    fn from_row_opt(mut row: Row) ->
-        Result<(T1, T2, T3, T4, T5, T6, T7, T8)>
-    {
+    fn from_row_opt(mut row: Row) -> Result<(T1, T2, T3, T4, T5, T6, T7, T8)> {
         if row.len() != 8 {
             return Err(ErrorKind::FromRow(row).into());
         }
@@ -590,24 +578,33 @@ where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
         let ir4 = take_or_place!(row, 3, T4, [0, ir1], [1, ir2], [2, ir3]);
         let ir5 = take_or_place!(row, 4, T5, [0, ir1], [1, ir2], [2, ir3], [3, ir4]);
         let ir6 = take_or_place!(row, 5, T6, [0, ir1], [1, ir2], [2, ir3], [3, ir4], [4, ir5]);
-        let ir7 = take_or_place!(
-            row, 6, T7,
-            [0, ir1], [1, ir2], [2, ir3], [3, ir4], [4, ir5], [5, ir6]
-        );
-        let ir8 = take_or_place!(
-            row, 7, T8,
-            [0, ir1], [1, ir2], [2, ir3], [3, ir4], [4, ir5], [5, ir6], [6, ir7]
-        );
-        Ok((
-            ir1.commit(),
+        let ir7 = take_or_place!(row,
+                                 6,
+                                 T7,
+                                 [0, ir1],
+                                 [1, ir2],
+                                 [2, ir3],
+                                 [3, ir4],
+                                 [4, ir5],
+                                 [5, ir6]);
+        let ir8 = take_or_place!(row,
+                                 7,
+                                 T8,
+                                 [0, ir1],
+                                 [1, ir2],
+                                 [2, ir3],
+                                 [3, ir4],
+                                 [4, ir5],
+                                 [5, ir6],
+                                 [6, ir7]);
+        Ok((ir1.commit(),
             ir2.commit(),
             ir3.commit(),
             ir4.commit(),
             ir5.commit(),
             ir6.commit(),
             ir7.commit(),
-            ir8.commit(),
-        ))
+            ir8.commit()))
     }
 }
 
@@ -917,7 +914,7 @@ impl Params {
             Params::Named(mut map) => {
                 let mut params: Vec<Value> = Vec::with_capacity(named_params.len());
                 'params: for (i, name) in named_params.clone().into_iter().enumerate() {
-                    if ! map.contains_key(&name) {
+                    if !map.contains_key(&name) {
                         return Err(ErrorKind::MissingNamedParameter(name.clone()).into());
                     }
                     match map.entry(name.clone()) {
@@ -1008,18 +1005,63 @@ macro_rules! into_params_impl {
     );
 }
 
-into_params_impl!([A,a]);
-into_params_impl!([A,a],[B,b]);
-into_params_impl!([A,a],[B,b],[C,c]);
-into_params_impl!([A,a],[B,b],[C,c],[D,d]);
-into_params_impl!([A,a],[B,b],[C,c],[D,d],[E,e]);
-into_params_impl!([A,a],[B,b],[C,c],[D,d],[E,e],[F,f]);
-into_params_impl!([A,a],[B,b],[C,c],[D,d],[E,e],[F,f],[G,g]);
-into_params_impl!([A,a],[B,b],[C,c],[D,d],[E,e],[F,f],[G,g],[H,h]);
-into_params_impl!([A,a],[B,b],[C,c],[D,d],[E,e],[F,f],[G,g],[H,h],[I,i]);
-into_params_impl!([A,a],[B,b],[C,c],[D,d],[E,e],[F,f],[G,g],[H,h],[I,i],[J,j]);
-into_params_impl!([A,a],[B,b],[C,c],[D,d],[E,e],[F,f],[G,g],[H,h],[I,i],[J,j],[K,k]);
-into_params_impl!([A,a],[B,b],[C,c],[D,d],[E,e],[F,f],[G,g],[H,h],[I,i],[J,j],[K,k],[L,l]);
+into_params_impl!([A, a]);
+into_params_impl!([A, a], [B, b]);
+into_params_impl!([A, a], [B, b], [C, c]);
+into_params_impl!([A, a], [B, b], [C, c], [D, d]);
+into_params_impl!([A, a], [B, b], [C, c], [D, d], [E, e]);
+into_params_impl!([A, a], [B, b], [C, c], [D, d], [E, e], [F, f]);
+into_params_impl!([A, a], [B, b], [C, c], [D, d], [E, e], [F, f], [G, g]);
+into_params_impl!([A, a],
+                  [B, b],
+                  [C, c],
+                  [D, d],
+                  [E, e],
+                  [F, f],
+                  [G, g],
+                  [H, h]);
+into_params_impl!([A, a],
+                  [B, b],
+                  [C, c],
+                  [D, d],
+                  [E, e],
+                  [F, f],
+                  [G, g],
+                  [H, h],
+                  [I, i]);
+into_params_impl!([A, a],
+                  [B, b],
+                  [C, c],
+                  [D, d],
+                  [E, e],
+                  [F, f],
+                  [G, g],
+                  [H, h],
+                  [I, i],
+                  [J, j]);
+into_params_impl!([A, a],
+                  [B, b],
+                  [C, c],
+                  [D, d],
+                  [E, e],
+                  [F, f],
+                  [G, g],
+                  [H, h],
+                  [I, i],
+                  [J, j],
+                  [K, k]);
+into_params_impl!([A, a],
+                  [B, b],
+                  [C, c],
+                  [D, d],
+                  [E, e],
+                  [F, f],
+                  [G, g],
+                  [H, h],
+                  [I, i],
+                  [J, j],
+                  [K, k],
+                  [L, l]);
 
 pub trait ToValue {
     fn to_value(&self) -> Value;
@@ -1102,7 +1144,7 @@ impl From<f64> for Value {
 
 impl From<bool> for Value {
     fn from(x: bool) -> Value {
-        Value::Int(if x {1} else {0})
+        Value::Int(if x { 1 } else { 0 })
     }
 }
 
@@ -1136,15 +1178,13 @@ impl From<NaiveDateTime> for Value {
         if 1000 > x.year() || x.year() > 9999 {
             panic!("Year `{}` not in supported range [1000, 9999]", x.year())
         }
-        Value::Date(
-            x.year() as u16,
-            x.month() as u8,
-            x.day() as u8,
-            x.hour() as u8,
-            x.minute() as u8,
-            x.second() as u8,
-            x.nanosecond() / 1000,
-        )
+        Value::Date(x.year() as u16,
+                    x.month() as u8,
+                    x.day() as u8,
+                    x.hour() as u8,
+                    x.minute() as u8,
+                    x.second() as u8,
+                    x.nanosecond() / 1000)
     }
 }
 
@@ -1153,42 +1193,31 @@ impl From<NaiveDate> for Value {
         if 1000 > x.year() || x.year() > 9999 {
             panic!("Year `{}` not in supported range [1000, 9999]", x.year())
         }
-        Value::Date(
-            x.year() as u16,
-            x.month() as u8,
-            x.day() as u8,
-            0,
-            0,
-            0,
-            0
-        )
+        Value::Date(x.year() as u16, x.month() as u8, x.day() as u8, 0, 0, 0, 0)
     }
 }
 
 impl From<NaiveTime> for Value {
     fn from(x: NaiveTime) -> Value {
-        Value::Time(
-            false,
-            0,
-            x.hour() as u8,
-            x.minute() as u8,
-            x.second() as u8,
-            x.nanosecond() / 1000,
-        )
+        Value::Time(false,
+                    0,
+                    x.hour() as u8,
+                    x.minute() as u8,
+                    x.second() as u8,
+                    x.nanosecond() / 1000)
     }
 }
 
 impl From<Timespec> for Value {
     fn from(x: Timespec) -> Value {
         let t = at(x);
-        Value::Date(
-             t.tm_year as u16 + 1_900,
-             (t.tm_mon + 1) as u8,
-             t.tm_mday as u8,
-             t.tm_hour as u8,
-             t.tm_min as u8,
-             t.tm_sec as u8,
-             t.tm_nsec as u32 / 1000)
+        Value::Date(t.tm_year as u16 + 1_900,
+                    (t.tm_mon + 1) as u8,
+                    t.tm_mday as u8,
+                    t.tm_hour as u8,
+                    t.tm_min as u8,
+                    t.tm_sec as u8,
+                    t.tm_nsec as u32 / 1000)
     }
 }
 
@@ -1202,7 +1231,12 @@ impl From<Duration> for Value {
         secs_total -= (minutes as u64) * 60;
         let hours = ((secs_total % (60 * 60 * 24)) / (60 * 60)) as u8;
         secs_total -= (hours as u64) * 60 * 60;
-        Value::Time(false, (secs_total / (60 * 60 * 24)) as u32, hours, minutes, seconds, micros)
+        Value::Time(false,
+                    (secs_total / (60 * 60 * 24)) as u32,
+                    hours,
+                    minutes,
+                    seconds,
+                    micros)
     }
 }
 
@@ -1418,28 +1452,33 @@ pub struct OptionIr<T> {
 }
 
 impl<T, Ir> ConvIr<Option<T>> for OptionIr<Ir>
-where T: FromValue<Intermediate=Ir>,
-      Ir: ConvIr<T> {
+    where T: FromValue<Intermediate = Ir>,
+          Ir: ConvIr<T>,
+{
     fn new(v: Value) -> Result<OptionIr<Ir>> {
         match v {
-            Value::NULL => Ok(OptionIr {
-                value: Some(Value::NULL),
-                ir: None,
-            }),
+            Value::NULL => {
+                Ok(OptionIr {
+                    value: Some(Value::NULL),
+                    ir: None,
+                })
+            },
             v => {
                 match T::get_intermediate(v) {
-                    Ok(ir) => Ok(OptionIr {
-                        value: None,
-                        ir: Some(ir),
-                    }),
-                    Err(error) => match error.into_kind() {
-                        ErrorKind::FromValue(v) => {
-                            Err(ErrorKind::FromValue(v).into())
-                        },
-                        _ => unreachable!(),
+                    Ok(ir) => {
+                        Ok(OptionIr {
+                            value: None,
+                            ir: Some(ir),
+                        })
+                    },
+                    Err(error) => {
+                        match error.into_kind() {
+                            ErrorKind::FromValue(v) => Err(ErrorKind::FromValue(v).into()),
+                            _ => unreachable!(),
+                        }
                     },
                 }
-            }
+            },
         }
     }
     fn commit(self) -> Option<T> {
@@ -1452,19 +1491,23 @@ where T: FromValue<Intermediate=Ir>,
         let OptionIr { value, ir } = self;
         match value {
             Some(v) => v,
-            None => match ir {
-                Some(ir) => ir.rollback(),
-                None => unreachable!(),
-            }
+            None => {
+                match ir {
+                    Some(ir) => ir.rollback(),
+                    None => unreachable!(),
+                }
+            },
         }
     }
 }
 
 impl<T> FromValue for Option<T>
-where T: FromValue {
+    where T: FromValue,
+{
     type Intermediate = OptionIr<T::Intermediate>;
     fn from_value(v: Value) -> Option<T> {
-        <Self as FromValue>::from_value_opt(v).ok()
+        <Self as FromValue>::from_value_opt(v)
+            .ok()
             .expect("Could not retrieve Option<T> from Value")
     }
 }
@@ -1499,9 +1542,11 @@ impl FromValue for Value {
 impl ConvIr<String> for StringIr {
     fn new(v: Value) -> Result<StringIr> {
         match v {
-            Value::Bytes(bytes) => match from_utf8(&*bytes) {
-                Ok(_) => Ok(StringIr { bytes: bytes }),
-                Err(_) => Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
+            Value::Bytes(bytes) => {
+                match from_utf8(&*bytes) {
+                    Ok(_) => Ok(StringIr { bytes: bytes }),
+                    Err(_) => Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
+                }
             },
             v => Err(ErrorKind::FromValue(v).into()),
         }
@@ -1517,21 +1562,27 @@ impl ConvIr<String> for StringIr {
 impl ConvIr<i64> for ParseIr<i64> {
     fn new(v: Value) -> Result<ParseIr<i64>> {
         match v {
-            Value::Int(x) => Ok(ParseIr {
-                value: Value::Int(x),
-                output: x,
-            }),
-            Value::UInt(x) if x <= ::std::i64::MAX as u64 => Ok(ParseIr {
-                value: Value::UInt(x),
-                output: x as i64,
-            }),
+            Value::Int(x) => {
+                Ok(ParseIr {
+                    value: Value::Int(x),
+                    output: x,
+                })
+            },
+            Value::UInt(x) if x <= ::std::i64::MAX as u64 => {
+                Ok(ParseIr {
+                    value: Value::UInt(x),
+                    output: x as i64,
+                })
+            },
             Value::Bytes(bytes) => {
                 let val = from_utf8(&*bytes).ok().and_then(|x| i64::from_str(x).ok());
                 match val {
-                    Some(x) => Ok(ParseIr {
-                        value: Value::Bytes(bytes),
-                        output: x,
-                    }),
+                    Some(x) => {
+                        Ok(ParseIr {
+                            value: Value::Bytes(bytes),
+                            output: x,
+                        })
+                    },
                     None => Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
                 }
             },
@@ -1549,21 +1600,27 @@ impl ConvIr<i64> for ParseIr<i64> {
 impl ConvIr<u64> for ParseIr<u64> {
     fn new(v: Value) -> Result<ParseIr<u64>> {
         match v {
-            Value::Int(x) if x >= 0 => Ok(ParseIr {
-                value: Value::Int(x),
-                output: x as u64,
-            }),
-            Value::UInt(x) => Ok(ParseIr {
-                value: Value::UInt(x),
-                output: x,
-            }),
+            Value::Int(x) if x >= 0 => {
+                Ok(ParseIr {
+                    value: Value::Int(x),
+                    output: x as u64,
+                })
+            },
+            Value::UInt(x) => {
+                Ok(ParseIr {
+                    value: Value::UInt(x),
+                    output: x,
+                })
+            },
             Value::Bytes(bytes) => {
                 let val = from_utf8(&*bytes).ok().and_then(|x| u64::from_str(x).ok());
                 match val {
-                    Some(x) => Ok(ParseIr {
-                        value: Value::Bytes(bytes),
-                        output: x,
-                    }),
+                    Some(x) => {
+                        Ok(ParseIr {
+                            value: Value::Bytes(bytes),
+                            output: x,
+                        })
+                    },
                     _ => Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
                 }
             },
@@ -1590,10 +1647,12 @@ impl ConvIr<f32> for ParseIr<f32> {
             Value::Bytes(bytes) => {
                 let val = from_utf8(&*bytes).ok().and_then(|x| f32::from_str(x).ok());
                 match val {
-                    Some(x) => Ok(ParseIr {
-                        value: Value::Bytes(bytes),
-                        output: x,
-                    }),
+                    Some(x) => {
+                        Ok(ParseIr {
+                            value: Value::Bytes(bytes),
+                            output: x,
+                        })
+                    },
                     None => Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
                 }
             },
@@ -1611,17 +1670,21 @@ impl ConvIr<f32> for ParseIr<f32> {
 impl ConvIr<f64> for ParseIr<f64> {
     fn new(v: Value) -> Result<ParseIr<f64>> {
         match v {
-            Value::Float(x) => Ok(ParseIr {
-                value: Value::Float(x),
-                output: x,
-            }),
+            Value::Float(x) => {
+                Ok(ParseIr {
+                    value: Value::Float(x),
+                    output: x,
+                })
+            },
             Value::Bytes(bytes) => {
                 let val = from_utf8(&*bytes).ok().and_then(|x| f64::from_str(x).ok());
                 match val {
-                    Some(x) => Ok(ParseIr {
-                        value: Value::Bytes(bytes),
-                        output: x,
-                    }),
+                    Some(x) => {
+                        Ok(ParseIr {
+                            value: Value::Bytes(bytes),
+                            output: x,
+                        })
+                    },
                     _ => Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
                 }
             },
@@ -1639,25 +1702,33 @@ impl ConvIr<f64> for ParseIr<f64> {
 impl ConvIr<bool> for ParseIr<bool> {
     fn new(v: Value) -> Result<ParseIr<bool>> {
         match v {
-            Value::Int(0) => Ok(ParseIr {
-                value: Value::Int(0),
-                output: false,
-            }),
-            Value::Int(1) => Ok(ParseIr {
-                value: Value::Int(1),
-                output: true,
-            }),
+            Value::Int(0) => {
+                Ok(ParseIr {
+                    value: Value::Int(0),
+                    output: false,
+                })
+            },
+            Value::Int(1) => {
+                Ok(ParseIr {
+                    value: Value::Int(1),
+                    output: true,
+                })
+            },
             Value::Bytes(bytes) => {
                 if bytes.len() == 1 {
                     match bytes[0] {
-                        0x30 => Ok(ParseIr {
-                            value: Value::Bytes(bytes),
-                            output: false,
-                        }),
-                        0x31 => Ok(ParseIr {
-                            value: Value::Bytes(bytes),
-                            output: true,
-                        }),
+                        0x30 => {
+                            Ok(ParseIr {
+                                value: Value::Bytes(bytes),
+                                output: false,
+                            })
+                        },
+                        0x31 => {
+                            Ok(ParseIr {
+                                value: Value::Bytes(bytes),
+                                output: true,
+                            })
+                        },
                         _ => Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
                     }
                 } else {
@@ -1678,9 +1749,7 @@ impl ConvIr<bool> for ParseIr<bool> {
 impl ConvIr<Vec<u8>> for BytesIr {
     fn new(v: Value) -> Result<BytesIr> {
         match v {
-            Value::Bytes(bytes) => Ok(BytesIr {
-                bytes: bytes,
-            }),
+            Value::Bytes(bytes) => Ok(BytesIr { bytes: bytes }),
             v => Err(ErrorKind::FromValue(v).into()),
         }
     }
@@ -1693,37 +1762,43 @@ impl ConvIr<Vec<u8>> for BytesIr {
 }
 
 impl ConvIr<Timespec> for ParseIr<Timespec> {
-    fn new (v: Value) -> Result<ParseIr<Timespec>> {
+    fn new(v: Value) -> Result<ParseIr<Timespec>> {
         match v {
-            Value::Date(y, m, d, h, i, s, u) => Ok(ParseIr {
-                value: Value::Date(y, m, d, h, i, s, u),
-                output: Tm {
-                    tm_year: y as i32 - 1_900,
-                    tm_mon: m as i32 - 1,
-                    tm_mday: d as i32,
-                    tm_hour: h as i32,
-                    tm_min: i as i32,
-                    tm_sec: s as i32,
-                    tm_nsec: u as i32 * 1_000,
-                    tm_utcoff: *TM_UTCOFF,
-                    tm_wday: 0,
-                    tm_yday: 0,
-                    tm_isdst: *TM_ISDST,
-                }.to_timespec()
-            }),
+            Value::Date(y, m, d, h, i, s, u) => {
+                Ok(ParseIr {
+                    value: Value::Date(y, m, d, h, i, s, u),
+                    output: Tm {
+                            tm_year: y as i32 - 1_900,
+                            tm_mon: m as i32 - 1,
+                            tm_mday: d as i32,
+                            tm_hour: h as i32,
+                            tm_min: i as i32,
+                            tm_sec: s as i32,
+                            tm_nsec: u as i32 * 1_000,
+                            tm_utcoff: *TM_UTCOFF,
+                            tm_wday: 0,
+                            tm_yday: 0,
+                            tm_isdst: *TM_ISDST,
+                        }
+                        .to_timespec(),
+                })
+            },
             Value::Bytes(bytes) => {
-                let val = from_utf8(&*bytes).ok().and_then(|s| {
-                    strptime(s, "%Y-%m-%d %H:%M:%S").or(strptime(s, "%Y-%m-%d")).ok()
-                }).map(|mut tm| {
-                    tm.tm_utcoff = *TM_UTCOFF;
-                    tm.tm_isdst = *TM_ISDST;
-                    tm.to_timespec()
-                });
+                let val = from_utf8(&*bytes)
+                    .ok()
+                    .and_then(|s| strptime(s, "%Y-%m-%d %H:%M:%S").or(strptime(s, "%Y-%m-%d")).ok())
+                    .map(|mut tm| {
+                        tm.tm_utcoff = *TM_UTCOFF;
+                        tm.tm_isdst = *TM_ISDST;
+                        tm.to_timespec()
+                    });
                 match val {
-                    Some(timespec) => Ok(ParseIr {
-                        value: Value::Bytes(bytes),
-                        output: timespec,
-                    }),
+                    Some(timespec) => {
+                        Ok(ParseIr {
+                            value: Value::Bytes(bytes),
+                            output: timespec,
+                        })
+                    },
                     None => Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
                 }
             },
@@ -1739,7 +1814,7 @@ impl ConvIr<Timespec> for ParseIr<Timespec> {
 }
 
 impl ConvIr<NaiveDateTime> for ParseIr<NaiveDateTime> {
-    fn new (v: Value) -> Result<ParseIr<NaiveDateTime>> {
+    fn new(v: Value) -> Result<ParseIr<NaiveDateTime>> {
         let result: ::std::result::Result<_, Error> = match v {
             Value::Date(y, m, d, h, i, s, u) => {
                 let date = NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32);
@@ -1778,7 +1853,7 @@ impl ConvIr<NaiveDateTime> for ParseIr<NaiveDateTime> {
 }
 
 impl ConvIr<NaiveDate> for ParseIr<NaiveDate> {
-    fn new (v: Value) -> Result<ParseIr<NaiveDate>> {
+    fn new(v: Value) -> Result<ParseIr<NaiveDate>> {
         let result: ::std::result::Result<_, Error> = match v {
             Value::Date(y, m, d, h, i, s, u) => {
                 let date = NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32);
@@ -1819,54 +1894,46 @@ fn parse_mysql_datetime_string(bytes: &[u8]) -> Option<(u32, u32, u32, u32, u32,
     if bytes.len() == 0 {
         return None;
     }
-    from_utf8(&*bytes).ok().and_then(|s| {
-        let s_ref = s.as_ref();
-        DATETIME_RE_YMD_HMS.captures(s_ref)
-        .or_else(|| {
-            DATETIME_RE_YMD.captures(s_ref)
-        }).or_else(|| {
-            DATETIME_RE_YMD_HMS_NS.captures(s_ref)
+    from_utf8(&*bytes)
+        .ok()
+        .and_then(|s| {
+            let s_ref = s.as_ref();
+            DATETIME_RE_YMD_HMS.captures(s_ref)
+                .or_else(|| DATETIME_RE_YMD.captures(s_ref))
+                .or_else(|| DATETIME_RE_YMD_HMS_NS.captures(s_ref))
         })
-    }).map(|capts| {
-        let year = capts.at(1).unwrap().parse::<u32>().unwrap();
-        let month = capts.at(2).unwrap().parse::<u32>().unwrap();
-        let day = capts.at(3).unwrap().parse::<u32>().unwrap();
-        let (hour, minute, second, micros) = if capts.len() > 4 {
-            let hour = capts.at(4).unwrap().parse::<u32>().unwrap();
-            let minute = capts.at(5).unwrap().parse::<u32>().unwrap();
-            let second = capts.at(6).unwrap().parse::<u32>().unwrap();
-            let micros = if capts.len() == 8 {
-                let micros_str = capts.at(7).unwrap();
-                let mut left_zero_cnt = 0;
-                for b in micros_str.bytes() {
-                    if b == b'0' {
-                        left_zero_cnt += 1;
-                    } else {
-                        break;
+        .map(|capts| {
+            let year = capts.at(1).unwrap().parse::<u32>().unwrap();
+            let month = capts.at(2).unwrap().parse::<u32>().unwrap();
+            let day = capts.at(3).unwrap().parse::<u32>().unwrap();
+            let (hour, minute, second, micros) = if capts.len() > 4 {
+                let hour = capts.at(4).unwrap().parse::<u32>().unwrap();
+                let minute = capts.at(5).unwrap().parse::<u32>().unwrap();
+                let second = capts.at(6).unwrap().parse::<u32>().unwrap();
+                let micros = if capts.len() == 8 {
+                    let micros_str = capts.at(7).unwrap();
+                    let mut left_zero_cnt = 0;
+                    for b in micros_str.bytes() {
+                        if b == b'0' {
+                            left_zero_cnt += 1;
+                        } else {
+                            break;
+                        }
                     }
-                }
-                let mut micros = micros_str.parse::<u32>().unwrap();
-                for _ in 0..(6 - left_zero_cnt - (micros_str.len() - left_zero_cnt)) {
-                    micros *= 10;
-                }
-                micros
+                    let mut micros = micros_str.parse::<u32>().unwrap();
+                    for _ in 0..(6 - left_zero_cnt - (micros_str.len() - left_zero_cnt)) {
+                        micros *= 10;
+                    }
+                    micros
+                } else {
+                    0
+                };
+                (hour, minute, second, micros)
             } else {
-                0
+                (0, 0, 0, 0)
             };
-            (hour, minute, second, micros)
-        } else {
-            (0, 0, 0, 0)
-        };
-        (
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            micros,
-        )
-    })
+            (year, month, day, hour, minute, second, micros)
+        })
 }
 
 /// Returns (is_neg, hours, minutes, seconds, microseconds)
@@ -1878,40 +1945,39 @@ fn parse_mysql_time_string(mut bytes: &[u8]) -> Option<(bool, u32, u32, u32, u32
     if is_neg {
         bytes = &bytes[1..];
     }
-    from_utf8(bytes).ok().and_then(|time_str| {
-        let t_ref = time_str.as_ref();
-        TIME_RE_HHH_MM_SS.captures(t_ref)
-        .or_else(|| {
-            TIME_RE_HHH_MM_SS_MS.captures(t_ref)
-        }).or_else(|| {
-            TIME_RE_HH_MM_SS.captures(t_ref)
-        }).or_else(|| {
-            TIME_RE_HH_MM_SS_MS.captures(t_ref)
+    from_utf8(bytes)
+        .ok()
+        .and_then(|time_str| {
+            let t_ref = time_str.as_ref();
+            TIME_RE_HHH_MM_SS.captures(t_ref)
+                .or_else(|| TIME_RE_HHH_MM_SS_MS.captures(t_ref))
+                .or_else(|| TIME_RE_HH_MM_SS.captures(t_ref))
+                .or_else(|| TIME_RE_HH_MM_SS_MS.captures(t_ref))
         })
-    }).map(|capts| {
-        let hours = capts.at(1).unwrap().parse::<u32>().unwrap();
-        let minutes = capts.at(2).unwrap().parse::<u32>().unwrap();
-        let seconds = capts.at(3).unwrap().parse::<u32>().unwrap();
-        let microseconds = if capts.len() == 5 {
-            let micros_str = capts.at(4).unwrap();
-            let mut left_zero_cnt = 0;
-            for b in micros_str.bytes() {
-                if b == b'0' {
-                    left_zero_cnt += 1;
-                } else {
-                    break;
+        .map(|capts| {
+            let hours = capts.at(1).unwrap().parse::<u32>().unwrap();
+            let minutes = capts.at(2).unwrap().parse::<u32>().unwrap();
+            let seconds = capts.at(3).unwrap().parse::<u32>().unwrap();
+            let microseconds = if capts.len() == 5 {
+                let micros_str = capts.at(4).unwrap();
+                let mut left_zero_cnt = 0;
+                for b in micros_str.bytes() {
+                    if b == b'0' {
+                        left_zero_cnt += 1;
+                    } else {
+                        break;
+                    }
                 }
-            }
-            let mut micros = capts.at(4).unwrap().parse::<u32>().unwrap();
-            for _ in 0..(6 - left_zero_cnt - (micros_str.len() - left_zero_cnt)) {
-                micros *= 10;
-            }
-            micros
-        } else {
-            0
-        };
-        (is_neg, hours, minutes, seconds, microseconds)
-    })
+                let mut micros = capts.at(4).unwrap().parse::<u32>().unwrap();
+                for _ in 0..(6 - left_zero_cnt - (micros_str.len() - left_zero_cnt)) {
+                    micros *= 10;
+                }
+                micros
+            } else {
+                0
+            };
+            (is_neg, hours, minutes, seconds, microseconds)
+        })
 }
 
 impl ConvIr<NaiveTime> for ParseIr<NaiveTime> {
@@ -1929,7 +1995,7 @@ impl ConvIr<NaiveTime> for ParseIr<NaiveTime> {
                     Err(ErrorKind::FromValue(Value::Bytes(bytes)).into())
                 }
             },
-            v => Err(ErrorKind::FromValue(v).into())
+            v => Err(ErrorKind::FromValue(v).into()),
         };
 
         let (time, value) = result?;
@@ -1956,10 +2022,8 @@ impl ConvIr<Duration> for ParseIr<Duration> {
         match v {
             Value::Time(false, days, hours, minutes, seconds, microseconds) => {
                 let nanos = (microseconds as u32) * 1000;
-                let secs = seconds as u64
-                         + minutes as u64 * 60
-                         + hours as u64 * 60 * 60
-                         + days as u64 * 60 * 60 * 24;
+                let secs = seconds as u64 + minutes as u64 * 60 + hours as u64 * 60 * 60 +
+                           days as u64 * 60 * 60 * 24;
                 Ok(ParseIr {
                     value: Value::Time(false, days, hours, minutes, seconds, microseconds),
                     output: Duration::new(secs, nanos),
@@ -1969,9 +2033,7 @@ impl ConvIr<Duration> for ParseIr<Duration> {
                 let duration = match parse_mysql_time_string(&*val_bytes) {
                     Some((false, hours, minutes, seconds, microseconds)) => {
                         let nanos = microseconds * 1000;
-                        let secs = seconds as u64
-                                 + minutes as u64 * 60
-                                 + hours as u64 * 60 * 60;
+                        let secs = seconds as u64 + minutes as u64 * 60 + hours as u64 * 60 * 60;
                         Duration::new(secs, nanos)
                     },
                     _ => return Err(ErrorKind::FromValue(Value::Bytes(val_bytes)).into()),
@@ -1996,23 +2058,23 @@ impl ConvIr<time::Duration> for ParseIr<time::Duration> {
     fn new(v: Value) -> Result<ParseIr<time::Duration>> {
         match v {
             Value::Time(is_neg, days, hours, minutes, seconds, microseconds) => {
-                let duration = time::Duration::days(days as i64)
-                             + time::Duration::hours(hours as i64)
-                             + time::Duration::minutes(minutes as i64)
-                             + time::Duration::seconds(seconds as i64)
-                             + time::Duration::microseconds(microseconds as i64);
+                let duration = time::Duration::days(days as i64) +
+                               time::Duration::hours(hours as i64) +
+                               time::Duration::minutes(minutes as i64) +
+                               time::Duration::seconds(seconds as i64) +
+                               time::Duration::microseconds(microseconds as i64);
                 Ok(ParseIr {
                     value: Value::Time(is_neg, days, hours, minutes, seconds, microseconds),
-                    output: if is_neg { -duration } else { duration }
+                    output: if is_neg { -duration } else { duration },
                 })
             },
             Value::Bytes(val_bytes) => {
                 let duration = match parse_mysql_time_string(&*val_bytes) {
                     Some((is_neg, hours, minutes, seconds, microseconds)) => {
-                        let duration = time::Duration::hours(hours as i64)
-                                     + time::Duration::minutes(minutes as i64)
-                                     + time::Duration::seconds(seconds as i64)
-                                     + time::Duration::microseconds(microseconds as i64);
+                        let duration = time::Duration::hours(hours as i64) +
+                                       time::Duration::minutes(minutes as i64) +
+                                       time::Duration::seconds(seconds as i64) +
+                                       time::Duration::microseconds(microseconds as i64);
                         if is_neg { -duration } else { duration }
                     },
                     _ => return Err(ErrorKind::FromValue(Value::Bytes(val_bytes)).into()),

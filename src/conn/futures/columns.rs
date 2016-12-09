@@ -49,7 +49,7 @@ impl Future for Columns {
                     self.future = conn.read_packet();
                     self.poll()
                 }
-            }
+            },
         }
     }
 }

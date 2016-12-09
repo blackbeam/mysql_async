@@ -78,7 +78,7 @@ impl Future for NewConn {
             Out::ConnectingStream(stream) => {
                 self.step = Step::ReadHandshake(stream.into_future());
                 self.poll()
-            }
+            },
             Out::ReadHandshake((maybe_packet, stream)) => {
                 match maybe_packet {
                     Some((packet, seq_id)) => {
@@ -99,15 +99,15 @@ impl Future for NewConn {
                             stream.write_packet(handshake_response.as_ref().to_vec(), seq_id + 1);
                         self.step = Step::WriteHandshake(future);
                         self.poll()
-                    }
+                    },
                     None => panic!("No handshake!?"),
                 }
-            }
+            },
             Out::WriteHandshake((stream, _)) => {
                 // TODO: take seq_id to account
                 self.step = Step::ReadResponse(stream.into_future());
                 self.poll()
-            }
+            },
             Out::ReadResponse((maybe_packet, stream)) => {
                 match maybe_packet {
                     Some((packet, seq_id)) => {
@@ -146,14 +146,14 @@ impl Future for NewConn {
                             self.step = Step::ReadMaxAllowedPacket(conn.read_max_allowed_packet());
                             self.poll()
                         }
-                    }
+                    },
                     None => panic!("No handshake response!?"),
                 }
-            }
+            },
             Out::ReadMaxAllowedPacket(conn) => {
                 self.step = Step::ReadWaitTimeout(conn.read_wait_timeout());
                 self.poll()
-            }
+            },
             Out::ReadWaitTimeout(conn) => {
                 let step =
                     match self.opts.get_init().get(self.opts.get_init().len() - self.init_len) {
@@ -163,11 +163,11 @@ impl Future for NewConn {
                 self.step = step;
                 self.init_len -= 1;
                 self.poll()
-            }
+            },
             Out::Query(query_result) => {
                 self.step = Step::CollectAll(query_result.collect_all());
                 self.poll()
-            }
+            },
             Out::CollectAll((_, conn)) => {
                 let step =
                     match self.opts.get_init().get(self.opts.get_init().len() - self.init_len) {
@@ -177,7 +177,7 @@ impl Future for NewConn {
                 self.step = step;
                 self.init_len -= 1;
                 self.poll()
-            }
+            },
         }
     }
 }

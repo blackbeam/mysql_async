@@ -110,7 +110,7 @@ impl Conn {
 
     /// Returns future that resolves to `Conn`.
     pub fn new<O>(opts: O, handle: &Handle) -> NewConn
-        where O: Into<Opts>
+        where O: Into<Opts>,
     {
         let opts = opts.into();
 
@@ -157,7 +157,7 @@ impl Conn {
     /// Returns future that resolves to a first row of result of a `query` execution (if any).
     pub fn first<R, Q>(self, query: Q) -> First<R>
         where Q: AsRef<str>,
-              R: FromRow
+              R: FromRow,
     {
         new_first(self.query(query))
     }
@@ -169,7 +169,7 @@ impl Conn {
 
     /// Returns future that resolves to a `Stmt`.
     pub fn prepare<Q>(self, query: Q) -> Prepare
-        where Q: AsRef<str>
+        where Q: AsRef<str>,
     {
         new_prepare(self, query.as_ref())
     }
@@ -178,7 +178,7 @@ impl Conn {
     /// `BinQueryResult`.
     pub fn prep_exec<Q, P>(self, query: Q, params: P) -> PrepExec
         where Q: AsRef<str>,
-              P: Into<Params>
+              P: Into<Params>,
     {
         new_prep_exec(self, query, params)
     }
@@ -189,7 +189,7 @@ impl Conn {
     pub fn first_exec<R, Q, P>(self, query: Q, params: P) -> FirstExec<R>
         where Q: AsRef<str>,
               P: Into<Params>,
-              R: FromRow
+              R: FromRow,
     {
         new_first_exec(self, query, params)
     }
@@ -197,7 +197,7 @@ impl Conn {
     /// Returns future that prepares and executes statement, drops result and resolves to `Conn`.
     pub fn drop_exec<Q, P>(self, query: Q, params: P) -> DropExec
         where Q: AsRef<str>,
-              P: Into<Params>
+              P: Into<Params>,
     {
         self.prep_exec(query, params)
             .and_then(UnconsumedQueryResult::drop_result as fn(BinQueryResult)
@@ -210,7 +210,7 @@ impl Conn {
     /// All results will be dropped.
     pub fn batch_exec<Q, P>(self, query: Q, params_vec: Vec<P>) -> BatchExec
         where Q: AsRef<str>,
-              P: Into<Params>
+              P: Into<Params>,
     {
         new_batch_exec(self, query, params_vec)
     }
@@ -265,7 +265,7 @@ impl Conn {
 
     /// Returns future that writes comand and it's data to a server and resolves to `Conn`.
     fn write_command_data<D>(mut self, cmd: consts::Command, command_data: D) -> WritePacket
-        where D: AsRef<[u8]>
+        where D: AsRef<[u8]>,
     {
         let mut data = Vec::with_capacity(1 + command_data.as_ref().len());
         data.push(cmd as u8);
@@ -276,7 +276,7 @@ impl Conn {
 
     /// Returns future that writes packet to a server and resolves to `Conn`.
     fn write_packet<D>(mut self, data: D) -> WritePacket
-        where D: Into<Vec<u8>>
+        where D: Into<Vec<u8>>,
     {
         let stream = self.stream.take().unwrap();
         let future = stream.write_packet(data.into(), self.seq_id);

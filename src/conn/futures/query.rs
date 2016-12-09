@@ -30,9 +30,7 @@ pub struct Query {
 }
 
 pub fn new_new(write_packet: WritePacket) -> Query {
-    Query {
-        step: Step::WriteCommandData(write_packet),
-    }
+    Query { step: Step::WriteCommandData(write_packet) }
 }
 
 impl Future for Query {
@@ -45,9 +43,7 @@ impl Future for Query {
                 self.step = Step::HandleResultSet(conn.handle_result_set(None));
                 self.poll()
             },
-            Out::HandleResultSet(raw_query_result) => {
-                Ok(Ready(raw_query_result.into()))
-            }
+            Out::HandleResultSet(raw_query_result) => Ok(Ready(raw_query_result.into())),
         }
     }
 }

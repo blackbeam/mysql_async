@@ -34,8 +34,8 @@ pub struct DropResult {
 }
 
 pub fn new(conn: Conn,
-           has_result: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>) -> DropResult
-{
+           has_result: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>)
+           -> DropResult {
     let step = if let Some((cols, ok_packet, inner_stmt)) = has_result {
         if let Some(inner_stmt) = inner_stmt {
             let raw_result = new_raw::<BinaryResult, _>(conn, cols, ok_packet, Some(inner_stmt));
@@ -47,9 +47,7 @@ pub fn new(conn: Conn,
     } else {
         Step::Done(done(Ok(conn)))
     };
-    DropResult {
-        step: step,
-    }
+    DropResult { step: step }
 }
 
 impl Future for DropResult {

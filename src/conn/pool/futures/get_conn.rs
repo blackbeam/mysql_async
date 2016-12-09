@@ -19,9 +19,7 @@ pub struct GetConn {
 }
 
 pub fn new(pool: &Pool) -> GetConn {
-    GetConn {
-        pool: pool.clone(),
-    }
+    GetConn { pool: pool.clone() }
 }
 
 impl Future for GetConn {

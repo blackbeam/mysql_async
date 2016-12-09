@@ -153,9 +153,10 @@ pub struct RawQueryResult<K: ResultKind + ?Sized> {
 pub fn new_raw<K: ?Sized, T>(mut conn: Conn,
                              cols: T,
                              ok_packet: Option<OkPacket>,
-                             inner_stmt: Option<InnerStmt>) -> RawQueryResult<K>
-where T: Into<Arc<Vec<Column>>>,
-      K: ResultKind,
+                             inner_stmt: Option<InnerStmt>)
+                             -> RawQueryResult<K>
+    where T: Into<Arc<Vec<Column>>>,
+          K: ResultKind,
 {
     let cols = cols.into();
     let step = if cols.len() == 0 {
@@ -185,12 +186,8 @@ impl<K: ResultKind> RawQueryResult<K> {
                 let val = try_ready!(fut.poll());
                 Ok(Ready(Some(Out::NextResult(val))))
             },
-            Step::Done(_) => {
-                Ok(Ready(Some(Out::Done)))
-            },
-            Step::Consumed => {
-                Ok(Ready(None))
-            },
+            Step::Done(_) => Ok(Ready(Some(Out::Done))),
+            Step::Consumed => Ok(Ready(None)),
         }
     }
 }
@@ -201,20 +198,23 @@ impl<K: ResultKind + InnerResultKind> Stream for RawQueryResult<K> {
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match try_ready!(self.either_poll()) {
-            Some(Out::ReadPacket((mut conn, packet))) => if packet.is(PacketType::Eof) {
-                if conn.status.contains(consts::SERVER_MORE_RESULTS_EXISTS) {
-                    self.step = Step::NextResult(conn.handle_result_set::<K>(self.inner_stmt.clone()));
-                    self.poll()
+            Some(Out::ReadPacket((mut conn, packet))) => {
+                if packet.is(PacketType::Eof) {
+                    if conn.status.contains(consts::SERVER_MORE_RESULTS_EXISTS) {
+                        self.step =
+                            Step::NextResult(conn.handle_result_set::<K>(self.inner_stmt.clone()));
+                        self.poll()
+                    } else {
+                        conn.has_result = None;
+                        self.step = Step::Done(conn);
+                        self.poll()
+                    }
                 } else {
-                    conn.has_result = None;
-                    self.step = Step::Done(conn);
-                    self.poll()
+                    let values = K::read_values(packet, &self.columns)?;
+                    let row = Row::new(values, self.columns.clone());
+                    self.step = Step::ReadPacket(conn.read_packet());
+                    Ok(Ready(Some(Left(row))))
                 }
-            } else {
-                let values = K::read_values(packet, &self.columns)?;
-                let row = Row::new(values, self.columns.clone());
-                self.step = Step::ReadPacket(conn.read_packet());
-                Ok(Ready(Some(Left(row))))
             },
             Some(Out::NextResult(query_result)) => {
                 let output = K::handle_next_query_result(query_result);
@@ -247,17 +247,18 @@ pub trait QueryResultOutput {
     /// A way to generically extract possible next result and output of query result output.
     ///
     /// Returns (previous result, Either<next result, output>)
-    fn into_next_or_output(self, prev: Self::Result) -> (Self::Result,
-                                                         Either<Self::Result, Self::Output>);
+    fn into_next_or_output(self,
+                           prev: Self::Result)
+                           -> (Self::Result, Either<Self::Result, Self::Output>);
 }
 
 impl QueryResultOutput for Stmt {
     type Result = BinQueryResult;
     type Output = Stmt;
 
-    fn into_next_or_output(self, prev: BinQueryResult) -> (Self::Result,
-                                                           Either<Self::Result, Self::Output>)
-    {
+    fn into_next_or_output(self,
+                           prev: BinQueryResult)
+                           -> (Self::Result, Either<Self::Result, Self::Output>) {
         (prev, Right(self))
     }
 }
@@ -266,9 +267,9 @@ impl QueryResultOutput for Either<TextQueryResult, Conn> {
     type Result = TextQueryResult;
     type Output = Conn;
 
-    fn into_next_or_output(self, prev: TextQueryResult) -> (Self::Result,
-                                                            Either<Self::Result, Self::Output>)
-    {
+    fn into_next_or_output(self,
+                           prev: TextQueryResult)
+                           -> (Self::Result, Either<Self::Result, Self::Output>) {
         (prev, self)
     }
 }
@@ -332,8 +333,7 @@ pub trait UnconsumedQueryResult: InnerQueryResult {
 /// Inner methods of `QueryResult`.
 pub trait InnerQueryResult: QueryResult {
     /// Polls another row of this query result.
-    fn poll(&mut self) -> Result<Async<Either<Row, Self::Output>>>
-    where Self: UnconsumedQueryResult;
+    fn poll(&mut self) -> Result<Async<Either<Row, Self::Output>>> where Self: UnconsumedQueryResult;
 
     fn ok_packet_ref(&self) -> Option<&OkPacket>;
 }
@@ -342,49 +342,49 @@ pub trait InnerQueryResult: QueryResult {
 pub trait QueryResult {
     /// Affected rows value returned by a server, if any.
     fn affected_rows(&self) -> Option<u64>
-        where Self: InnerQueryResult
+        where Self: InnerQueryResult,
     {
         self.ok_packet_ref().map(OkPacket::affected_rows)
     }
 
     /// Last insert id value returned by a server, if any.
     fn last_insert_id(&self) -> Option<u64>
-        where Self: InnerQueryResult
+        where Self: InnerQueryResult,
     {
         self.ok_packet_ref().map(OkPacket::last_insert_id)
     }
 
     /// Warnings count value returned by a server, if any.
     fn warnings(&self) -> Option<u16>
-        where Self: InnerQueryResult
+        where Self: InnerQueryResult,
     {
         self.ok_packet_ref().map(OkPacket::warnings)
     }
 
     /// Bytes of info string returned by a server, if any.
     fn info_bytes(&self) -> Option<&[u8]>
-        where Self: InnerQueryResult
+        where Self: InnerQueryResult,
     {
         self.ok_packet_ref().map(OkPacket::info_bytes)
     }
 
     /// Info bytes lossy converted to UTF-8, if any.
     fn info(&self) -> Option<Cow<str>>
-        where Self: InnerQueryResult
+        where Self: InnerQueryResult,
     {
         self.ok_packet_ref().map(OkPacket::info)
     }
 
     /// Bytes of session state changed value returned by a server, if any.
     fn session_state_changes_bytes(&self) -> Option<&[u8]>
-        where Self: InnerQueryResult
+        where Self: InnerQueryResult,
     {
         self.ok_packet_ref().and_then(OkPacket::session_state_changes_bytes)
     }
 
     /// Session state changed value lossy converted to UTF-8, if any.
     fn session_state_changes(&self) -> Option<Cow<str>>
-        where Self: InnerQueryResult
+        where Self: InnerQueryResult,
     {
         self.ok_packet_ref().and_then(OkPacket::session_state_changes)
     }
@@ -403,7 +403,7 @@ impl From<RawQueryResult<TextResult>> for TextQueryResult {
 impl QueryResult for TextQueryResult {}
 
 impl UnconsumedQueryResult for TextQueryResult {
-    type Output = < TextResult as ResultKind >::Output;
+    type Output = <TextResult as ResultKind>::Output;
 }
 
 impl InnerQueryResult for TextQueryResult {
@@ -432,7 +432,7 @@ impl From<RawQueryResult<BinaryResult>> for BinQueryResult {
 impl QueryResult for BinQueryResult {}
 
 impl UnconsumedQueryResult for BinQueryResult {
-    type Output = < BinaryResult as ResultKind >::Output;
+    type Output = <BinaryResult as ResultKind>::Output;
 }
 
 impl InnerQueryResult for BinQueryResult {

@@ -56,7 +56,8 @@ impl Future for Batch {
                 self.step = Step::DropResult(result.drop_result());
                 self.poll()
             },
-            Out::Done(stmt) | Out::DropResult(stmt) => {
+            Out::Done(stmt) |
+            Out::DropResult(stmt) => {
                 let current = self.current;
                 self.current += 1;
                 let params = match self.params_vec.get_mut(current) {

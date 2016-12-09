@@ -77,36 +77,21 @@ pub use self::write_packet::WritePacket;
 pub use self::write_packet::new as new_write_packet;
 
 /// Future that executes query, drops result and resolves to `Conn`.
-pub type DropQuery = AndThen<
-    Query,
-    DropQueryResult<TextQueryResult>,
-    fn(TextQueryResult) -> DropQueryResult<TextQueryResult>
->;
+pub type DropQuery = AndThen<Query,
+                             DropQueryResult<TextQueryResult>,
+                             fn(TextQueryResult) -> DropQueryResult<TextQueryResult>>;
 
 /// Future that executes statement, drops result and resolves to `Conn`.
-pub type DropExec = Map<
-    AndThen<
-        PrepExec,
-        DropQueryResult<BinQueryResult>,
-        fn(BinQueryResult) -> DropQueryResult<BinQueryResult>,
-    >,
-    fn(Stmt) -> Conn
->;
+pub type DropExec = Map<AndThen<PrepExec,
+                                DropQueryResult<BinQueryResult>,
+                                fn(BinQueryResult) -> DropQueryResult<BinQueryResult>>,
+                        fn(Stmt) -> Conn>;
 
 /// Future that disconnects `Conn` from server and resolves to `()`.
-pub type Disconnect = Map<
-    WritePacket,
-    fn(Conn) -> (),
->;
+pub type Disconnect = Map<WritePacket, fn(Conn) -> ()>;
 
 /// Future that resolves to `Conn` with `wait_timeout` stored in it.
-pub type ReadWaitTimeout = Map<
-    First<(u32,)>,
-    fn((Option<(u32,)>, Conn)) -> Conn,
->;
+pub type ReadWaitTimeout = Map<First<(u32,)>, fn((Option<(u32,)>, Conn)) -> Conn>;
 
 /// Future that resolves to `Conn` with value of MySql's max_allowed_packet stored in it.
-pub type ReadMaxAllowedPacket = Map<
-    First<(u64,)>,
-    fn((Option<(u64,)>, Conn)) -> Conn,
->;
+pub type ReadMaxAllowedPacket = Map<First<(u64,)>, fn((Option<(u64,)>, Conn)) -> Conn>;

@@ -47,9 +47,7 @@ impl Transaction {
     /// Creates transaction
     fn new(mut conn: Conn) -> Transaction {
         conn.in_transaction = true;
-        Transaction {
-            conn: conn,
-        }
+        Transaction { conn: conn }
     }
 
     /// Cleans connection
@@ -60,9 +58,7 @@ impl Transaction {
 
     /// Will create transaction without affecting conn.in_transaction
     fn new_raw(conn: Conn) -> Transaction {
-        Transaction {
-            conn: conn,
-        }
+        Transaction { conn: conn }
     }
 
     /// Returns future that commits transaction and resolves to `Conn`.
@@ -105,7 +101,7 @@ impl Transaction {
     pub fn first_exec<R, Q, P>(self, query: Q, params: P) -> TransFirstExec<R>
         where R: FromRow,
               Q: AsRef<str>,
-              P: Into<Params>
+              P: Into<Params>,
     {
         fn map<R: FromRow>((row, conn): (Option<R>, Conn)) -> (Option<R>, Transaction) {
             (row, Transaction::new_raw(conn))

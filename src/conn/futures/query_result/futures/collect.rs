@@ -36,9 +36,9 @@ pub fn new_new<R, T>(query_result: T) -> Collect<R, T> {
 }
 
 impl<R, T> Future for Collect<R, T>
-where R: FromRow,
-      T: InnerQueryResult,
-      T: UnconsumedQueryResult,
+    where R: FromRow,
+          T: InnerQueryResult,
+          T: UnconsumedQueryResult,
 {
     type Item = (ResultSet<R, T>, T::Output);
     type Error = Error;
@@ -53,7 +53,7 @@ where R: FromRow,
                 let query_result = self.query_result.take().unwrap();
                 let vec = mem::replace(&mut self.vec, Vec::new());
                 Ok(Ready((ResultSet(vec, query_result), output)))
-            }
+            },
         }
     }
 }

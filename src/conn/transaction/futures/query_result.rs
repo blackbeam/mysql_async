@@ -21,7 +21,6 @@ use proto::Row;
 use proto::OkPacket;
 
 
-//
 // TransBinQueryResult
 //
 
@@ -42,9 +41,9 @@ impl QueryResultOutput for Transaction {
     type Result = TransBinQueryResult;
     type Output = Transaction;
 
-    fn into_next_or_output(self, prev: TransBinQueryResult) -> (Self::Result,
-                                                                Either<Self::Result, Self::Output>)
-    {
+    fn into_next_or_output(self,
+                           prev: TransBinQueryResult)
+                           -> (Self::Result, Either<Self::Result, Self::Output>) {
         (prev, Right(self))
     }
 }
@@ -68,7 +67,6 @@ impl InnerQueryResult for TransBinQueryResult {
 }
 
 
-//
 // TransTextQueryResult
 //
 
@@ -108,9 +106,9 @@ impl QueryResultOutput for Either<TransTextQueryResult, Transaction> {
     type Result = TransTextQueryResult;
     type Output = Transaction;
 
-    fn into_next_or_output(self, prev: TransTextQueryResult) -> (Self::Result,
-                                                                 Either<Self::Result, Self::Output>)
-    {
+    fn into_next_or_output(self,
+                           prev: TransTextQueryResult)
+                           -> (Self::Result, Either<Self::Result, Self::Output>) {
         (prev, self)
     }
 }

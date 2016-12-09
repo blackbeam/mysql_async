@@ -37,9 +37,9 @@ pub fn new_new<A, F, T>(query_result: T, init: A, fun: F) -> Reduce<A, F, T>
 }
 
 impl<A, F, T> Future for Reduce<A, F, T>
-where F: FnMut(A, Row) -> A,
-      T: InnerQueryResult,
-      T: UnconsumedQueryResult,
+    where F: FnMut(A, Row) -> A,
+          T: InnerQueryResult,
+          T: UnconsumedQueryResult,
 {
     type Item = (A, T::Output);
     type Error = Error;

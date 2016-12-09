@@ -36,9 +36,9 @@ pub fn new_new<T: Sized>(query_result: T) -> CollectAll<T> {
 }
 
 impl<T> Future for CollectAll<T>
-where T: InnerQueryResult,
-      T: UnconsumedQueryResult,
-      T::Output: QueryResultOutput<Result=T>,
+    where T: InnerQueryResult,
+          T: UnconsumedQueryResult,
+          T::Output: QueryResultOutput<Result = T>,
 {
     type Item = (Vec<ResultSet<Row, T>>, <T::Output as QueryResultOutput>::Output);
     type Error = Error;
@@ -64,7 +64,7 @@ where T: InnerQueryResult,
                         Ok(Ready((vec, out)))
                     },
                 }
-            }
+            },
         }
     }
 }

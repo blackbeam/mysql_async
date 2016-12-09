@@ -46,8 +46,8 @@ pub struct NewRawQueryResult<K: ResultKind + ?Sized> {
 }
 
 pub fn new<K: ResultKind + ?Sized>(read_packet: ReadPacket,
-                                   inner_stmt: Option<InnerStmt>) -> NewRawQueryResult<K>
-{
+                                   inner_stmt: Option<InnerStmt>)
+                                   -> NewRawQueryResult<K> {
     NewRawQueryResult {
         step: Step::ReadPacket(read_packet),
         inner_stmt: inner_stmt,
@@ -76,17 +76,23 @@ impl<K: ResultKind + ?Sized> Future for NewRawQueryResult<K> {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.either_poll()) {
-            Out::ReadPacket((conn, packet)) => if packet.is(PacketType::Ok) {
-                let ok_packet = OkPacket::new(packet, conn.capabilities);
-                let query_result = new_raw_query_result::<K, _>(conn, vec![], ok_packet, self.inner_stmt.clone());
-                Ok(Ready(query_result))
-            } else {
-                let column_count = read_lenenc_int(&mut packet.as_ref())?;
-                self.step = Step::ReadColumns(conn.read_result_set_columns(column_count));
-                self.poll()
+            Out::ReadPacket((conn, packet)) => {
+                if packet.is(PacketType::Ok) {
+                    let ok_packet = OkPacket::new(packet, conn.capabilities);
+                    let query_result = new_raw_query_result::<K, _>(conn,
+                                                                    vec![],
+                                                                    ok_packet,
+                                                                    self.inner_stmt.clone());
+                    Ok(Ready(query_result))
+                } else {
+                    let column_count = read_lenenc_int(&mut packet.as_ref())?;
+                    self.step = Step::ReadColumns(conn.read_result_set_columns(column_count));
+                    self.poll()
+                }
             },
             Out::ReadColumns((conn, columns)) => {
-                let query_result = new_raw_query_result::<K, _>(conn, columns, None, self.inner_stmt.clone());
+                let query_result =
+                    new_raw_query_result::<K, _>(conn, columns, None, self.inner_stmt.clone());
                 Ok(Ready(query_result))
             },
         }

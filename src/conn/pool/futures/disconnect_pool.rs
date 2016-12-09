@@ -23,9 +23,7 @@ pub struct DisconnectPool {
 }
 
 pub fn new(pool: Pool) -> DisconnectPool {
-    DisconnectPool {
-        pool: pool,
-    }
+    DisconnectPool { pool: pool }
 }
 
 impl Future for DisconnectPool {

@@ -46,28 +46,28 @@ pub struct SendLongData {
 impl SendLongData {
     fn next_chunk(&mut self, max_allowed_packet: usize) -> Option<Vec<u8>> {
         let chunk_meta = match self.ids.pop() {
-            Some(id) => match self.params[id as usize] {
-                Bytes(ref x) => {
-                    let stmt_id = self.inner_stmt.as_ref().unwrap().statement_id;
-                    let mut chunks = x.chunks(max_allowed_packet - 8);
-                    match chunks.nth(self.next_chunk) {
-                        Some(chunk) => {
-                            let mut buf = Vec::with_capacity(chunk.len() + 7);
-                            buf.write_u32::<LE>(stmt_id).unwrap();
-                            buf.write_u16::<LE>(id).unwrap();
-                            buf.write_all(chunk).unwrap();
-                            if chunk.len() < max_allowed_packet - 8 {
-                                Some((buf, 0, None))
-                            } else {
-                                Some((buf, 1, Some(id)))
-                            }
-                        },
-                        None => {
-                            Some((Vec::new(), 0, None))
+            Some(id) => {
+                match self.params[id as usize] {
+                    Bytes(ref x) => {
+                        let stmt_id = self.inner_stmt.as_ref().unwrap().statement_id;
+                        let mut chunks = x.chunks(max_allowed_packet - 8);
+                        match chunks.nth(self.next_chunk) {
+                            Some(chunk) => {
+                                let mut buf = Vec::with_capacity(chunk.len() + 7);
+                                buf.write_u32::<LE>(stmt_id).unwrap();
+                                buf.write_u16::<LE>(id).unwrap();
+                                buf.write_all(chunk).unwrap();
+                                if chunk.len() < max_allowed_packet - 8 {
+                                    Some((buf, 0, None))
+                                } else {
+                                    Some((buf, 1, Some(id)))
+                                }
+                            },
+                            None => Some((Vec::new(), 0, None)),
                         }
-                    }
-                },
-                _ => unreachable!(),
+                    },
+                    _ => unreachable!(),
+                }
             },
             None => None,
         };
@@ -95,7 +95,7 @@ pub fn new(conn: Conn, inner_stmt: InnerStmt, params: Vec<Value>, ids: Vec<u16>)
         inner_stmt: Some(inner_stmt),
         params: params,
         ids: ids,
-        next_chunk: 0
+        next_chunk: 0,
     }
 }
 
@@ -105,10 +105,12 @@ impl Future for SendLongData {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.either_poll()) {
-            Out::Init(conn) | Out::WritePacket(conn) => {
+            Out::Init(conn) |
+            Out::WritePacket(conn) => {
                 match self.next_chunk(conn.max_allowed_packet as usize) {
                     Some(data) => {
-                        let future = conn.write_command_data(Command::COM_STMT_SEND_LONG_DATA, data);
+                        let future =
+                            conn.write_command_data(Command::COM_STMT_SEND_LONG_DATA, data);
                         self.step = Step::WritePacket(future);
                         self.poll()
                     },
@@ -116,7 +118,7 @@ impl Future for SendLongData {
                         let stmt = self.inner_stmt.take().unwrap();
                         let params = mem::replace(&mut self.params, vec![]);
                         Ok(Ready((conn, stmt, params)))
-                    }
+                    },
                 }
             },
         }

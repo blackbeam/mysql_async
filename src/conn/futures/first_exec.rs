@@ -67,7 +67,7 @@ impl<R: FromRow> Future for FirstExec<R> {
                 self.step = Step::First(stmt.first(params));
                 self.poll()
             },
-            Out::First((row, stmt)) => Ok(Ready((row, stmt.unwrap())))
+            Out::First((row, stmt)) => Ok(Ready((row, stmt.unwrap()))),
         }
     }
 }

@@ -68,7 +68,7 @@ pub fn new(conn: Conn, query: &str) -> Prepare {
                 columns: Vec::new(),
                 stmt: None,
             }
-        }
+        },
         Err(err) => {
             Prepare {
                 step: Step::Failed(failed(err)),
@@ -78,7 +78,7 @@ pub fn new(conn: Conn, query: &str) -> Prepare {
                 columns: Vec::default(),
                 stmt: None,
             }
-        }
+        },
     }
 }
 
@@ -91,7 +91,7 @@ impl Future for Prepare {
             Out::WriteCommand(conn) => {
                 self.step = Step::ReadCommandResponse(conn.read_packet());
                 self.poll()
-            }
+            },
             Out::ReadCommandResponse((conn, packet)) => {
                 let named_params = self.named_params.take();
                 let inner_stmt = InnerStmt::new(packet.as_ref(), named_params)?;
@@ -105,7 +105,7 @@ impl Future for Prepare {
                     let stmt = new_stmt(inner_stmt, conn);
                     Ok(Ready(stmt))
                 }
-            }
+            },
             Out::ReadParamOrColumn((mut conn, packet)) => {
                 if self.params.len() < self.params.capacity() {
                     let param = Column::new(packet, conn.last_command);
@@ -127,11 +127,11 @@ impl Future for Prepare {
                     let stmt = new_stmt(inner_stmt, conn);
                     Ok(Ready(stmt))
                 }
-            }
+            },
             Out::CachedStatement((inner_stmt, conn)) => {
                 let stmt = new_stmt(inner_stmt, conn);
                 Ok(Ready(stmt))
-            }
+            },
             Out::Failed(_) => unreachable!(),
         }
     }

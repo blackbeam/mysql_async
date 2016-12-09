@@ -28,13 +28,12 @@ pub struct Commit {
 }
 
 pub fn new(transaction: Transaction) -> Commit {
-    let fut = transaction.conn.query("COMMIT")
+    let fut = transaction.conn
+        .query("COMMIT")
         .and_then(UnconsumedQueryResult::drop_result as DropTextResultFn)
         .map(Transaction::clean_conn as CleanConnFn);
 
-    Commit {
-        fut: fut,
-    }
+    Commit { fut: fut }
 }
 
 impl Future for Commit {

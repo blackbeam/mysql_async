@@ -40,7 +40,7 @@ impl Future for WritePacket {
                 conn.stream = Some(stream);
                 conn.last_io = SteadyTime::now();
                 Ok(Ready(conn))
-            }
+            },
         }
     }
 }

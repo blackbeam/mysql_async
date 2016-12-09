@@ -46,7 +46,8 @@ pub type TransFirst<R> = Map<First<R>, fn((Option<R>, Conn)) -> (Option<R>, Tran
 pub type TransFirstExec<R> = Map<FirstExec<R>, fn((Option<R>, Conn)) -> (Option<R>, Transaction)>;
 
 /// Future that prepares and executes statement and resolves to `TransBinQueryResult`.
-pub type TransPrepExec = Map<PrepExec, fn(BinQueryResult) -> self::query_result::TransBinQueryResult>;
+pub type TransPrepExec = Map<PrepExec,
+                             fn(BinQueryResult) -> self::query_result::TransBinQueryResult>;
 
 /// Future that prepares and executes query and resolves to `TransTextQueryResult`.
 pub type TransQuery = Map<Query, fn(TextQueryResult) -> self::query_result::TransTextQueryResult>;

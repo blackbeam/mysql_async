@@ -38,9 +38,9 @@ pub fn new_new<F, U, T>(query_result: T, fun: F) -> Map<F, U, T>
 }
 
 impl<F, U, T> Future for Map<F, U, T>
-where F: FnMut(Row) -> U,
-      T: InnerQueryResult,
-      T: UnconsumedQueryResult,
+    where F: FnMut(Row) -> U,
+          T: InnerQueryResult,
+          T: UnconsumedQueryResult,
 {
     type Item = (Vec<U>, T::Output);
     type Error = Error;
@@ -55,7 +55,7 @@ where F: FnMut(Row) -> U,
             Right(output) => {
                 let acc = mem::replace(&mut self.acc, Vec::new());
                 Ok(Ready((acc, output)))
-            }
+            },
         }
     }
 }

@@ -76,25 +76,22 @@ fn set_read_only(conn: Conn, readonly: Option<bool>) -> Either<Step, Conn> {
 pub fn new(conn: Conn,
            consistent_snapshot: bool,
            isolation_level: Option<IsolationLevel>,
-           readonly: Option<bool>) -> StartTransaction
-{
+           readonly: Option<bool>)
+           -> StartTransaction {
     if readonly.is_some() {
         if conn.version < (5, 6, 5) {
             return StartTransaction {
                 step: Step::Failed(failed(ErrorKind::ReadOnlyTransNotSupported.into())),
                 consistent_snapshot: false,
                 readonly: None,
-            }
+            };
         }
     }
 
-    let step = set_isolation_level(conn, isolation_level).either(
-        |step| step,
-        |conn| set_read_only(conn, readonly).either(
-            |step| step,
-            |conn| start_trans(conn, consistent_snapshot),
-        ),
-    );
+    let step = set_isolation_level(conn, isolation_level).either(|step| step, |conn| {
+        set_read_only(conn, readonly)
+            .either(|step| step, |conn| start_trans(conn, consistent_snapshot))
+    });
 
     StartTransaction {
         step: step,
@@ -114,10 +111,9 @@ impl Future for StartTransaction {
                 self.poll()
             },
             Out::DropSetIsolationLevel(conn) => {
-                let step = set_read_only(conn, self.readonly).either(
-                    |step| step,
-                    |conn| start_trans(conn, self.consistent_snapshot),
-                );
+                let step = set_read_only(conn, self.readonly).either(|step| step, |conn| {
+                    start_trans(conn, self.consistent_snapshot)
+                });
                 self.step = step;
                 self.poll()
             },
@@ -134,9 +130,7 @@ impl Future for StartTransaction {
                 self.step = Step::DropStartTransaction(result.drop_result());
                 self.poll()
             },
-            Out::DropStartTransaction(conn) => {
-                Ok(Ready(Transaction::new(conn)))
-            },
+            Out::DropStartTransaction(conn) => Ok(Ready(Transaction::new(conn))),
             Out::Failed(_) => unreachable!(),
         }
     }

@@ -35,9 +35,9 @@ pub fn new_new<F, T: Sized>(query_result: T, fun: F) -> ForEach<F, T>
 }
 
 impl<F, T> Future for ForEach<F, T>
-where F: FnMut(Row),
-      T: InnerQueryResult,
-      T: UnconsumedQueryResult,
+    where F: FnMut(Row),
+          T: InnerQueryResult,
+          T: UnconsumedQueryResult,
 {
     type Item = T::Output;
     type Error = Error;
@@ -48,9 +48,7 @@ where F: FnMut(Row),
                 (&mut self.fun)(row);
                 self.poll()
             },
-            Right(output) => {
-                Ok(Ready(output))
-            },
+            Right(output) => Ok(Ready(output)),
         }
     }
 }

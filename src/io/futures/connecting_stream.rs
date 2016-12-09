@@ -33,13 +33,12 @@ steps! {
 }
 
 /// Future that resolves to a `Stream` connected to a MySql server.
-pub struct ConnectingStream
-{
+pub struct ConnectingStream {
     step: Step,
 }
 
 pub fn new<S>(addr: S, handle: &Handle) -> ConnectingStream
-where S: ToSocketAddrs,
+    where S: ToSocketAddrs,
 {
     match addr.to_socket_addrs() {
         Ok(addresses) => {
@@ -50,25 +49,18 @@ where S: ToSocketAddrs,
             }
 
             if streams.len() > 0 {
-                ConnectingStream {
-                    step: Step::WaitForStream(select_ok(streams)),
-                }
+                ConnectingStream { step: Step::WaitForStream(select_ok(streams)) }
             } else {
                 let err = io::Error::new(io::ErrorKind::InvalidInput,
                                          "could not resolve to any address");
-                ConnectingStream {
-                    step: Step::Fail(failed(err.into())),
-                }
+                ConnectingStream { step: Step::Fail(failed(err.into())) }
             }
         },
-        Err(err) => ConnectingStream {
-            step: Step::Fail(failed(err.into())),
-        }
+        Err(err) => ConnectingStream { step: Step::Fail(failed(err.into())) },
     }
 }
 
-impl Future for ConnectingStream
-{
+impl Future for ConnectingStream {
     type Item = Stream;
     type Error = Error;
 
@@ -79,7 +71,7 @@ impl Future for ConnectingStream
                     closed: false,
                     next_packet: Some(NewPacket::empty().parse()),
                     buf: Some(VecDeque::new()),
-                    endpoint: Some(stream)
+                    endpoint: Some(stream),
                 }))
             },
             Out::Fail(_) => unreachable!(),

@@ -9,12 +9,7 @@
 use byteorder::LittleEndian as LE;
 use byteorder::{ReadBytesExt, WriteBytesExt};
 
-use consts::{
-    self,
-    CapabilityFlags,
-    ColumnType,
-    StatusFlags,
-};
+use consts::{self, CapabilityFlags, ColumnType, StatusFlags};
 
 use errors::*;
 
@@ -25,19 +20,12 @@ use scramble::scramble;
 use std::borrow::Cow;
 use std::cmp;
 use std::fmt;
-use std::io::{
-    self,
-    Write,
-};
+use std::io::{self, Write};
 use std::ops::Index;
 use std::str;
 use std::sync::Arc;
 
-use value::{
-    from_value,
-    FromValue,
-    Value,
-};
+use value::{from_value, FromValue, Value};
 use value::Value::*;
 
 lazy_static! {
@@ -62,12 +50,8 @@ pub fn lenenc_le(mut data: &[u8]) -> Option<(u64, u8)> {
 
 pub fn u32_le(data: &[u8]) -> Option<u32> {
     if data.len() >= 4 {
-        Some(
-            ((data[3] as u32) << 24) +
-            ((data[2] as u32) << 16) +
-            ((data[1] as u32) << 8) +
-            data[0] as u32
-        )
+        Some(((data[3] as u32) << 24) + ((data[2] as u32) << 16) + ((data[1] as u32) << 8) +
+             data[0] as u32)
     } else {
         None
     }
@@ -90,7 +74,7 @@ pub fn u16_le(data: &[u8]) -> Option<u16> {
 }
 
 pub fn write_lenenc_int<W>(writer: &mut W, x: u64) -> Result<()>
-where W: Write,
+    where W: Write,
 {
     if x < 251 {
         writer.write_u8(x as u8)?;
@@ -108,7 +92,7 @@ where W: Write,
 }
 
 pub fn write_lenenc_bytes<W>(writer: &mut W, bytes: &[u8]) -> Result<()>
-where W: Write,
+    where W: Write,
 {
     write_lenenc_int(writer, bytes.len() as u64)?;
     writer.write_all(bytes)?;
@@ -116,7 +100,7 @@ where W: Write,
 }
 
 pub fn read_lenenc_int<R>(reader: &mut R) -> Result<u64>
-where R: io::Read,
+    where R: io::Read,
 {
     let head_byte = reader.read_u8()?;
     let length = match head_byte {
@@ -130,7 +114,7 @@ where R: io::Read,
 }
 
 pub fn read_lenenc_bytes<R>(reader: &mut R) -> Result<Vec<u8>>
-where R: io::Read,
+    where R: io::Read,
 {
     let len = read_lenenc_int(reader)?;
     let mut out = vec![0u8; len as usize];
@@ -143,7 +127,8 @@ where R: io::Read,
 pub fn read_bin_value<R>(reader: &mut R,
                          col_type: ColumnType,
                          unsigned: bool,
-                         num_flag: bool) -> Result<Value>
+                         num_flag: bool)
+                         -> Result<Value>
     where R: io::Read,
 {
     match col_type {
@@ -196,12 +181,8 @@ pub fn read_bin_value<R>(reader: &mut R,
                 Ok(Int(reader.read_i64::<LE>()?))
             }
         },
-        ColumnType::MYSQL_TYPE_FLOAT => {
-            Ok(Float(reader.read_f32::<LE>()? as f64))
-        },
-        ColumnType::MYSQL_TYPE_DOUBLE => {
-            Ok(Float(reader.read_f64::<LE>()?))
-        },
+        ColumnType::MYSQL_TYPE_FLOAT => Ok(Float(reader.read_f32::<LE>()? as f64)),
+        ColumnType::MYSQL_TYPE_DOUBLE => Ok(Float(reader.read_f64::<LE>()?)),
         ColumnType::MYSQL_TYPE_TIMESTAMP |
         ColumnType::MYSQL_TYPE_DATE |
         ColumnType::MYSQL_TYPE_DATETIME => {
@@ -386,18 +367,18 @@ impl HandshakePacket {
         let ver_str = self.srv_ver().into_owned();
         VERSION_RE.captures(&ver_str[..])
             .and_then(|capts| {
-                Some((
-                    (capts.at(1).unwrap().parse::<u16>()).unwrap_or(0),
-                    (capts.at(2).unwrap().parse::<u16>()).unwrap_or(0),
-                    (capts.at(3).unwrap().parse::<u16>()).unwrap_or(0),
-                ))
-            }).and_then(|version| {
-            if version == (0, 0, 0) {
-                None
-            } else {
-                Some(version)
-            }
-        }).ok_or(ErrorKind::CantParseVersion(ver_str).into())
+                Some(((capts.at(1).unwrap().parse::<u16>()).unwrap_or(0),
+                      (capts.at(2).unwrap().parse::<u16>()).unwrap_or(0),
+                      (capts.at(3).unwrap().parse::<u16>()).unwrap_or(0)))
+            })
+            .and_then(|version| {
+                if version == (0, 0, 0) {
+                    None
+                } else {
+                    Some(version)
+                }
+            })
+            .ok_or(ErrorKind::CantParseVersion(ver_str).into())
     }
 
     pub fn conn_id(&self) -> u32 {
@@ -423,7 +404,7 @@ impl HandshakePacket {
         match self.auth_plug_data_len() {
             Some(length) => {
                 let length = length as usize;
-                let mut auth_plug_data_2 = &self.packet.payload[offset..offset+length];
+                let mut auth_plug_data_2 = &self.packet.payload[offset..offset + length];
                 if auth_plug_data_2[auth_plug_data_2.len() - 1] == 0 {
                     auth_plug_data_2 = &auth_plug_data_2[..auth_plug_data_2.len() - 1];
                 }
@@ -477,9 +458,7 @@ impl HandshakePacket {
     }
 
     pub fn auth_plugin_name(&self) -> Option<Cow<str>> {
-        self.auth_plugin_name_bytes().map(|bytes| {
-            String::from_utf8_lossy(bytes)
-        })
+        self.auth_plugin_name_bytes().map(|bytes| String::from_utf8_lossy(bytes))
     }
 }
 
@@ -492,19 +471,17 @@ impl HandshakeResponse {
     pub fn new<U, P, D>(handshake: &HandshakePacket,
                         user: Option<U>,
                         passwd: Option<P>,
-                        database: Option<D>) -> HandshakeResponse
+                        database: Option<D>)
+                        -> HandshakeResponse
         where U: AsRef<[u8]> + Clone,
               P: AsRef<[u8]>,
               D: AsRef<[u8]> + Clone,
     {
-        let mut client_flags = consts::CLIENT_PROTOCOL_41 |
-                               consts::CLIENT_SECURE_CONNECTION |
-                               consts::CLIENT_LONG_PASSWORD |
-                               consts::CLIENT_TRANSACTIONS |
-                               consts::CLIENT_LOCAL_FILES |
-                               consts::CLIENT_MULTI_STATEMENTS |
-                               consts::CLIENT_MULTI_RESULTS |
-                               consts::CLIENT_PS_MULTI_RESULTS;
+        let mut client_flags =
+            consts::CLIENT_PROTOCOL_41 | consts::CLIENT_SECURE_CONNECTION |
+            consts::CLIENT_LONG_PASSWORD | consts::CLIENT_TRANSACTIONS |
+            consts::CLIENT_LOCAL_FILES | consts::CLIENT_MULTI_STATEMENTS |
+            consts::CLIENT_MULTI_RESULTS | consts::CLIENT_PS_MULTI_RESULTS;
         if let Some(ref database) = database {
             if database.as_ref().len() > 0 {
                 client_flags.insert(consts::CLIENT_CONNECT_WITH_DB);
@@ -512,7 +489,9 @@ impl HandshakeResponse {
         }
 
         let scramble_buf = passwd.and_then(|passwd| {
-            scramble(handshake.auth_plug_data_1(), handshake.auth_plug_data_2(), passwd.as_ref())
+            scramble(handshake.auth_plug_data_1(),
+                     handshake.auth_plug_data_2(),
+                     passwd.as_ref())
         });
 
         let user_len = user.clone().map(|user| user.as_ref().len()).unwrap_or(0);
@@ -553,9 +532,7 @@ impl HandshakeResponse {
             }
         }
 
-        HandshakeResponse {
-            data: data,
-        }
+        HandshakeResponse { data: data }
     }
 
     pub fn as_ref(&self) -> &[u8] {
@@ -579,10 +556,12 @@ impl OkPacket {
         if packet.is(PacketType::Ok) {
             let mut offset = 1;
 
-            let (affected_rows, affected_rows_len) = lenenc_le(&packet.payload[offset..]).expect("should be here 5");
+            let (affected_rows, affected_rows_len) = lenenc_le(&packet.payload[offset..])
+                .expect("should be here 5");
             offset += affected_rows_len as usize;
 
-            let (last_insert_id, last_insert_id_len) = lenenc_le(&packet.payload[offset..]).expect("should be here 6");
+            let (last_insert_id, last_insert_id_len) = lenenc_le(&packet.payload[offset..])
+                .expect("should be here 6");
             offset += last_insert_id_len as usize;
 
             let status_flags = u16_le(&packet.payload[offset..]).expect("should be here 7");
@@ -595,14 +574,16 @@ impl OkPacket {
             let info;
             let mut session_state_changes = None;
             if capabilities.contains(consts::CLIENT_SESSION_TRACK) {
-                let (info_len, info_len_len) = lenenc_le(&packet.payload[offset..]).expect("should be here 9");
+                let (info_len, info_len_len) = lenenc_le(&packet.payload[offset..])
+                    .expect("should be here 9");
                 offset += info_len_len as usize;
                 info = (offset, offset + info_len as usize);
                 if status_flags.contains(consts::SERVER_SESSION_STATE_CHANGED) {
                     let (sess_state_changes_len, sess_state_changes_len_len) =
                         lenenc_le(&packet.payload[offset..]).expect("should be here 10");
                     offset += sess_state_changes_len_len as usize;
-                    session_state_changes = Some((offset, offset + sess_state_changes_len as usize));
+                    session_state_changes = Some((offset,
+                                                  offset + sess_state_changes_len as usize));
                 }
             } else {
                 info = (offset, packet.payload.len());
@@ -674,9 +655,7 @@ impl ErrPacket {
     #[doc(hidden)]
     pub fn new(packet: Packet) -> Option<ErrPacket> {
         if packet.is(PacketType::Err) {
-            Some(ErrPacket {
-                data: packet.payload,
-            })
+            Some(ErrPacket { data: packet.payload })
         } else {
             None
         }
@@ -716,7 +695,11 @@ impl ErrPacket {
 
 impl fmt::Debug for ErrPacket {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ERROR {} ({}): {}", self.error_code(), self.state(), self.message())
+        write!(f,
+               "ERROR {} ({}): {}",
+               self.error_code(),
+               self.state(),
+               self.message())
     }
 }
 
@@ -727,9 +710,7 @@ pub struct EofPacket {
 impl EofPacket {
     pub fn new(packet: Packet) -> Option<EofPacket> {
         if packet.is(PacketType::Eof) {
-            Some(EofPacket {
-                data: packet.payload,
-            })
+            Some(EofPacket { data: packet.payload })
         } else {
             None
         }
@@ -757,7 +738,7 @@ impl EofPacket {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Row {
     values: Vec<Option<Value>>,
-    columns: Arc<Vec<Column>>
+    columns: Arc<Vec<Column>>,
 }
 
 impl Row {
@@ -766,7 +747,7 @@ impl Row {
     pub fn new(raw_row: Vec<Value>, columns: Arc<Vec<Column>>) -> Row {
         Row {
             values: raw_row.into_iter().map(|value| Some(value)).collect(),
-            columns: columns
+            columns: columns,
         }
     }
 
@@ -787,7 +768,8 @@ impl Row {
     /// then will convert it to `T`.
     pub fn get<T, I>(&mut self, index: I) -> Option<T>
         where T: FromValue,
-              I: ColumnIndex {
+              I: ColumnIndex,
+    {
         index.idx(&*self.columns).and_then(|idx| {
             self.values.get(idx).and_then(|x| x.as_ref()).map(|x| from_value::<T>(x.clone()))
         })
@@ -797,10 +779,10 @@ impl Row {
     /// will converts it to `T`.
     pub fn take<T, I>(&mut self, index: I) -> Option<T>
         where T: FromValue,
-              I: ColumnIndex {
-        index.idx(&*self.columns).and_then(|idx| {
-            self.values.get_mut(idx).and_then(|x| x.take()).map(from_value::<T>)
-        })
+              I: ColumnIndex,
+    {
+        index.idx(&*self.columns)
+            .and_then(|idx| self.values.get_mut(idx).and_then(|x| x.take()).map(from_value::<T>))
     }
 
     /// Unwraps values of a row.
@@ -809,7 +791,8 @@ impl Row {
     ///
     /// Panics if any of columns was taken by `take` method.
     pub fn unwrap(self) -> Vec<Value> {
-        self.values.into_iter()
+        self.values
+            .into_iter()
             .map(|x| x.expect("Can't unwrap row if some of columns was taken"))
             .collect()
     }
@@ -886,36 +869,52 @@ pub struct Column {
 impl Column {
     #[doc(hidden)]
     pub fn new(packet: Packet, last_command: consts::Command) -> Column {
-        let (schema, table, org_table, name, org_name, defaults, column_len, charset, type_, flags, decimals) = {
+        let (schema,
+             table,
+             org_table,
+             name,
+             org_name,
+             defaults,
+             column_len,
+             charset,
+             type_,
+             flags,
+             decimals) = {
             let mut reader = packet.as_ref();
             let mut offset = 0;
 
-            let (len, size) = lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("1");
+            let (len, size) =
+                lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("1");
             // skip catalog
             offset += size + len;
             reader = &reader[size + len..];
 
-            let (len, size) = lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("2");
+            let (len, size) =
+                lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("2");
             let schema = (offset + size, len);
             offset += size + len;
             reader = &reader[size + len..];
 
-            let (len, size) = lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("3");
+            let (len, size) =
+                lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("3");
             let table = (offset + size, len);
             offset += size + len;
             reader = &reader[size + len..];
 
-            let (len, size) = lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("4");
+            let (len, size) =
+                lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("4");
             let org_table = (offset + size, len);
             offset += size + len;
             reader = &reader[size + len..];
 
-            let (len, size) = lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("5");
+            let (len, size) =
+                lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("5");
             let name = (offset + size, len);
             offset += size + len;
             reader = &reader[size + len..];
 
-            let (len, size) = lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("6");
+            let (len, size) =
+                lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("6");
             let org_name = (offset + size, len);
             offset += size + len;
             reader = &reader[size + len..];
@@ -946,12 +945,23 @@ impl Column {
             offset += 2;
 
             let defaults = if last_command == consts::Command::COM_FIELD_LIST {
-                let (len, size) = lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("10");
+                let (len, size) =
+                    lenenc_le(&mut reader).map(|(a, b)| (a as usize, b as usize)).expect("10");
                 Some((offset + size, len))
             } else {
                 None
             };
-            (schema, table, org_table, name, org_name, defaults, column_len, charset, type_, flags, decimals)
+            (schema,
+             table,
+             org_table,
+             name,
+             org_name,
+             defaults,
+             column_len,
+             charset,
+             type_,
+             flags,
+             decimals)
         };
 
         Column {
@@ -972,33 +982,31 @@ impl Column {
 
     /// Schema name (see [`Column`](http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-Protocol::ColumnDefinition)).
     pub fn schema<'a>(&'a self) -> &'a [u8] {
-        &self.payload[self.schema.0..self.schema.0+self.schema.1]
+        &self.payload[self.schema.0..self.schema.0 + self.schema.1]
     }
 
     /// Virtual table name (see [`Column`](http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-Protocol::ColumnDefinition)).
     pub fn table<'a>(&'a self) -> &'a [u8] {
-        &self.payload[self.table.0..self.table.0+self.table.1]
+        &self.payload[self.table.0..self.table.0 + self.table.1]
     }
 
     /// Physical table name (see [`Column`](http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-Protocol::ColumnDefinition)).
     pub fn org_table<'a>(&'a self) -> &'a [u8] {
-        &self.payload[self.org_table.0..self.org_table.0+self.org_table.1]
+        &self.payload[self.org_table.0..self.org_table.0 + self.org_table.1]
     }
 
     /// Virtual column name (see [`Column`](http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-Protocol::ColumnDefinition)).
     pub fn name<'a>(&'a self) -> &'a [u8] {
-        &self.payload[self.name.0..self.name.0+self.name.1]
+        &self.payload[self.name.0..self.name.0 + self.name.1]
     }
 
     /// Physical column name (see [`Column`](http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-Protocol::ColumnDefinition)).
     pub fn org_name<'a>(&'a self) -> &'a [u8] {
-        &self.payload[self.org_name.0..self.org_name.0+self.org_name.1]
+        &self.payload[self.org_name.0..self.org_name.0 + self.org_name.1]
     }
 
     /// Default values (see [`Column`](http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-Protocol::ColumnDefinition)).
     pub fn default_values<'a>(&'a self) -> Option<&'a [u8]> {
-        self.default_values.map(|(offset, len)| {
-            &self.payload[offset..offset + len]
-        })
+        self.default_values.map(|(offset, len)| &self.payload[offset..offset + len])
     }
 }

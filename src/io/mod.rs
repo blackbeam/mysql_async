@@ -79,7 +79,7 @@ impl stream::Stream for Stream {
 
     fn poll(&mut self) -> Poll<Option<(Packet, u8)>, Error> {
         // should read everything from self.endpoint
-        if ! self.closed {
+        if !self.closed {
             let mut buf = [0u8; 4096];
             loop {
                 match self.endpoint.as_mut().unwrap().read(&mut buf[..]) {
@@ -95,12 +95,12 @@ impl stream::Stream for Stream {
                     },
                     Err(error) => {
                         self.closed = true;
-                        return Err(Error::from(error))
+                        return Err(Error::from(error));
                     },
                 };
             }
         } else {
-            return Ok(Ready(None))
+            return Ok(Ready(None));
         }
 
         // need to call again if there is a data in self.buf
@@ -114,33 +114,29 @@ impl stream::Stream for Stream {
                 return Ok(Ready(Some((packet, seq_id))));
             },
             ParseResult::NeedHeader(mut new_packet, needed) => {
-                {
-                    let buf_handle = self.buf.as_mut().unwrap();
-                    let buf_len = buf_handle.len();
-                    for byte in buf_handle.drain(..cmp::min(needed, buf_len)) {
-                        new_packet.push_header(byte);
-                    }
-                    if buf_len != 0 {
-                        should_poll = true;
-                    }
-
-                    new_packet
+                let buf_handle = self.buf.as_mut().unwrap();
+                let buf_len = buf_handle.len();
+                for byte in buf_handle.drain(..cmp::min(needed, buf_len)) {
+                    new_packet.push_header(byte);
                 }
-            }
+                if buf_len != 0 {
+                    should_poll = true;
+                }
+
+                new_packet
+            },
             ParseResult::Incomplete(mut new_packet, needed) => {
-                {
-                    let buf_handle = self.buf.as_mut().unwrap();
-                    let buf_len = buf_handle.len();
-                    for byte in buf_handle.drain(..cmp::min(needed, buf_len)) {
-                        new_packet.push(byte);
-                    }
-                    if buf_len != 0 {
-                        should_poll = true;
-                    }
-
-                    new_packet
+                let buf_handle = self.buf.as_mut().unwrap();
+                let buf_len = buf_handle.len();
+                for byte in buf_handle.drain(..cmp::min(needed, buf_len)) {
+                    new_packet.push(byte);
                 }
-            }
+                if buf_len != 0 {
+                    should_poll = true;
+                }
+
+                new_packet
+            },
         };
 
         self.next_packet = Some(next_packet.parse());

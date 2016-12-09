@@ -259,7 +259,8 @@ mod test_misc {
     lazy_static! {
         pub static ref DATABASE_URL: String = {
             if let Ok(url) = env::var("DATABASE_URL") {
-                if opts::Opts::from_url(&url).expect("DATABASE_URL invalid").get_db_name().expect("a database name is required").is_empty() {
+                let opts = opts::Opts::from_url(&url).expect("DATABASE_URL invalid");
+                if opts.get_db_name().expect("a database name is required").is_empty() {
                     panic!("database name is empty");
                 }
                 url

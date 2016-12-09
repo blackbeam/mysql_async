@@ -55,7 +55,8 @@ impl Future for BatchExec {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.either_poll()) {
-            Out::Prepare(stmt) | Out::DropResult(stmt) => {
+            Out::Prepare(stmt) |
+            Out::DropResult(stmt) => {
                 let current = self.current;
                 self.current += 1;
                 let params = match self.params_vec.get_mut(current) {

@@ -46,7 +46,7 @@ pub fn parse_named_params<'a>(query: &'a str) -> Result<(Option<Vec<String>>, Co
             },
             MaybeInNamedParam => {
                 match c {
-                    'a' ... 'z' | '_' => {
+                    'a'...'z' | '_' => {
                         params.push((i - 1, 0, String::with_capacity(16)));
                         params[cur_param].2.push(c);
                         state = InNamedParam;
@@ -56,12 +56,12 @@ pub fn parse_named_params<'a>(query: &'a str) -> Result<(Option<Vec<String>>, Co
             },
             InNamedParam => {
                 match c {
-                    'a' ... 'z' | '0' ... '9' | '_' => params[cur_param].2.push(c),
+                    'a'...'z' | '0'...'9' | '_' => params[cur_param].2.push(c),
                     _ => {
                         params[cur_param].1 = i;
                         cur_param += 1;
                         rematch = true;
-                    }
+                    },
                 }
             },
         }
@@ -106,16 +106,20 @@ mod test {
     #[test]
     fn should_parse_named_params() {
         let result = parse_named_params(":a :b").unwrap();
-        assert_eq!((Some(vec!["a".to_string(), "b".into()]), "? ?".into()), result);
+        assert_eq!((Some(vec!["a".to_string(), "b".into()]), "? ?".into()),
+                   result);
 
         let result = parse_named_params("SELECT (:a-10)").unwrap();
-        assert_eq!((Some(vec!["a".to_string()]), "SELECT (?-10)".into()), result);
+        assert_eq!((Some(vec!["a".to_string()]), "SELECT (?-10)".into()),
+                   result);
 
         let result = parse_named_params(r#"SELECT '"\':a' "'\"':c" :b"#).unwrap();
-        assert_eq!((Some(vec!["b".to_string()]), r#"SELECT '"\':a' "'\"':c" ?"#.into()), result);
+        assert_eq!((Some(vec!["b".to_string()]), r#"SELECT '"\':a' "'\"':c" ?"#.into()),
+                   result);
 
         let result = parse_named_params(r":a_Aa:b").unwrap();
-        assert_eq!((Some(vec!["a_".to_string(), "b".into()]), r"?Aa?".into()), result);
+        assert_eq!((Some(vec!["a_".to_string(), "b".into()]), r"?Aa?".into()),
+                   result);
 
         let result = parse_named_params(r"::b").unwrap();
         assert_eq!((Some(vec!["b".to_string()]), r":?".into()), result);
@@ -130,7 +134,8 @@ mod test {
     #[test]
     fn should_allow_numbers_in_param_name() {
         let result = parse_named_params(":a1 :a2").unwrap();
-        assert_eq!((Some(vec!["a1".to_string(), "a2".to_string()]), "? ?".into()), result);
+        assert_eq!((Some(vec!["a1".to_string(), "a2".to_string()]), "? ?".into()),
+                   result);
 
         let result = parse_named_params(":1a :2a").unwrap();
         assert_eq!((None, ":1a :2a".into()), result);
@@ -139,7 +144,9 @@ mod test {
     #[test]
     fn special_characters_in_query() {
         let result = parse_named_params(r"SELECT 1 FROM été WHERE thing = :param;").unwrap();
-        assert_eq!((Some(vec!["param".to_string()]), "SELECT 1 FROM été WHERE thing = ?;".into()), result);
+        assert_eq!((Some(vec!["param".to_string()]),
+                    "SELECT 1 FROM été WHERE thing = ?;".into()),
+                   result);
     }
 
     #[cfg(feature = "nightly")]
@@ -152,7 +159,8 @@ mod test {
             bencher.iter(|| {
                 let result = parse_named_params(r#"
                 SELECT :one, :two, :three, :four, :five, :six, :seven, :eight, :nine, :ten
-                "#).unwrap();
+                "#)
+                    .unwrap();
                 test::black_box(result);
             });
         }
@@ -162,7 +170,8 @@ mod test {
             bencher.iter(|| {
                 let result = parse_named_params(r"
                 SELECT one, two, three, four, five, six, seven, eight, nine, ten
-                ").unwrap();
+                ")
+                    .unwrap();
                 test::black_box(result);
             });
         }

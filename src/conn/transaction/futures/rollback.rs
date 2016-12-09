@@ -28,13 +28,12 @@ pub struct Rollback {
 }
 
 pub fn new(transaction: Transaction) -> Rollback {
-    let fut = transaction.conn.query("ROLLBACK")
+    let fut = transaction.conn
+        .query("ROLLBACK")
         .and_then(UnconsumedQueryResult::drop_result as DropTextResultFn)
         .map(Transaction::clean_conn as CleanConnFn);
 
-    Rollback {
-        fut: fut,
-    }
+    Rollback { fut: fut }
 }
 
 impl Future for Rollback {

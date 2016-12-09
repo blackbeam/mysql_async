@@ -8,10 +8,7 @@
 
 use errors::*;
 
-use std::net::{
-    Ipv4Addr,
-    Ipv6Addr,
-};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
 use url::Url;
@@ -44,7 +41,6 @@ pub struct Opts {
 
     // TODO: keepalive_timeout
     // TODO: local infile handler
-
     /// Lower bound of opened connections for `Pool` (defaults to 10).
     pool_min: usize,
 
@@ -167,9 +163,7 @@ impl OptsBuilder {
     }
 
     pub fn from_opts<T: Into<Opts>>(opts: T) -> Self {
-        OptsBuilder {
-            opts: opts.into(),
-        }
+        OptsBuilder { opts: opts.into() }
     }
 
     /// Address of mysql server (defaults to `127.0.0.1`). Hostnames should also work.
@@ -253,9 +247,8 @@ fn get_opts_pass_from_url(url: &Url) -> Option<String> {
 
 fn get_opts_db_name_from_url(url: &Url) -> Option<String> {
     if let Some(mut segments) = url.path_segments() {
-        segments.next().map(|db_name| {
-            percent_decode(db_name.as_ref()).decode_utf8_lossy().into_owned()
-        })
+        segments.next()
+            .map(|db_name| percent_decode(db_name.as_ref()).decode_utf8_lossy().into_owned())
     } else {
         None
     }
@@ -333,13 +326,14 @@ mod test {
     fn should_convert_url_into_opts() {
         let opts = "mysql://usr:pw@192.168.1.1:3309/dbname";
         assert_eq!(Opts {
-            user: Some("usr".to_string()),
-            pass: Some("pw".to_string()),
-            ip_or_hostname: "192.168.1.1".to_string(),
-            tcp_port: 3309,
-            db_name: Some("dbname".to_string()),
-            ..Opts::default()
-        }, opts.into());
+                       user: Some("usr".to_string()),
+                       pass: Some("pw".to_string()),
+                       ip_or_hostname: "192.168.1.1".to_string(),
+                       tcp_port: 3309,
+                       db_name: Some("dbname".to_string()),
+                       ..Opts::default()
+                   },
+                   opts.into());
     }
 
     #[test]

@@ -51,7 +51,7 @@ impl<R> First<R> {
             Step::CollectingResult(ref mut fut) => {
                 let val = try_ready!(<CollectAll<TextQueryResult> as Future>::poll(fut));
                 Ok(Ready(Out::CollectingResult(val)))
-            }
+            },
         }
     }
 }
@@ -64,7 +64,7 @@ pub fn new<R>(query: Query) -> First<R> {
 }
 
 impl<R> Future for First<R>
-where R: FromRow
+    where R: FromRow,
 {
     type Item = (Option<R>, Conn);
     type Error = Error;
@@ -81,8 +81,8 @@ where R: FromRow
                         return Ok(Ready((Some(from_row(row)), conn)));
                     }
                 }
-                return Ok(Ready((None, conn)))
-            }
+                return Ok(Ready((None, conn)));
+            },
         }
     }
 }

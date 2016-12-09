@@ -53,12 +53,13 @@ pub struct Pool {
 impl fmt::Debug for Pool {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Pool")
-         .field("min", &self.min)
-         .field("max", &self.max)
-         .field("new connections count", &self.inner_ref().new.len())
-         .field("idle connections count", &self.inner_ref().idle.len())
-         .field("disconnecting connections count", &self.inner_ref().disconnecting.len())
-         .finish()
+            .field("min", &self.min)
+            .field("max", &self.max)
+            .field("new connections count", &self.inner_ref().new.len())
+            .field("idle connections count", &self.inner_ref().idle.len())
+            .field("disconnecting connections count",
+                   &self.inner_ref().disconnecting.len())
+            .finish()
     }
 }
 
@@ -101,7 +102,7 @@ impl Pool {
     /// Active connections taken from this pool should be disconnected manually.
     /// Also all pending and new `GetConn`'s will resolve to error.
     pub fn disconnect(mut self) -> DisconnectPool {
-        if ! self.inner_ref().closed {
+        if !self.inner_ref().closed {
             self.inner_mut().closed = true;
             while let Some(conn) = self.take_conn() {
                 self.inner_mut().disconnecting.push(conn.disconnect());
@@ -287,9 +288,9 @@ mod test {
         let mut lp = Core::new().unwrap();
 
         let pool = Pool::new(&**DATABASE_URL, &lp.handle());
-        let fut = pool.get_conn().and_then(|conn| conn.ping().map(|_| ())).and_then(|_| {
-            pool.disconnect()
-        });
+        let fut = pool.get_conn()
+            .and_then(|conn| conn.ping().map(|_| ()))
+            .and_then(|_| pool.disconnect());
 
         lp.run(fut).unwrap();
     }
@@ -298,29 +299,34 @@ mod test {
     fn should_hold_bounds() {
         let mut lp = Core::new().unwrap();
 
-        let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL), &lp.handle());
+        let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL),
+                             &lp.handle());
         let pool_clone = pool.clone();
-        let fut = pool.get_conn().join(pool.get_conn()).and_then(|(mut conn1, conn2)| {
-            let new_conn = pool_clone.get_conn();
-            conn1.pool.as_mut().unwrap().handle_futures().unwrap();
-            assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().new.len(), 0);
-            assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().idle.len(), 0);
-            assert_eq!(conn2.pool.as_ref().unwrap().inner_ref().disconnecting.len(), 0);
-            assert_eq!(conn2.pool.as_ref().unwrap().inner_ref().dropping.len(), 0);
-            new_conn
-        }).and_then(|conn1| {
-            assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().new.len(), 0);
-            assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().idle.len(), 0);
-            assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().disconnecting.len(), 0);
-            assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().dropping.len(), 0);
-            Ok(())
-        }).and_then(|_| {
-            assert_eq!(pool.inner_ref().new.len(), 0);
-            assert_eq!(pool.inner_ref().idle.len(), 1);
-            assert_eq!(pool.inner_ref().disconnecting.len(), 0);
-            assert_eq!(pool.inner_ref().dropping.len(), 0);
-            pool.disconnect()
-        });
+        let fut = pool.get_conn()
+            .join(pool.get_conn())
+            .and_then(|(mut conn1, conn2)| {
+                let new_conn = pool_clone.get_conn();
+                conn1.pool.as_mut().unwrap().handle_futures().unwrap();
+                assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().new.len(), 0);
+                assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().idle.len(), 0);
+                assert_eq!(conn2.pool.as_ref().unwrap().inner_ref().disconnecting.len(), 0);
+                assert_eq!(conn2.pool.as_ref().unwrap().inner_ref().dropping.len(), 0);
+                new_conn
+            })
+            .and_then(|conn1| {
+                assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().new.len(), 0);
+                assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().idle.len(), 0);
+                assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().disconnecting.len(), 0);
+                assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().dropping.len(), 0);
+                Ok(())
+            })
+            .and_then(|_| {
+                assert_eq!(pool.inner_ref().new.len(), 0);
+                assert_eq!(pool.inner_ref().idle.len(), 1);
+                assert_eq!(pool.inner_ref().disconnecting.len(), 0);
+                assert_eq!(pool.inner_ref().dropping.len(), 0);
+                pool.disconnect()
+            });
 
         lp.run(fut).unwrap();
     }
@@ -339,7 +345,7 @@ mod test {
             let pool = Pool::new(&**DATABASE_URL, &lp.handle());
 
             bencher.iter(|| {
-                let fut = pool.get_conn().and_then(|conn| { conn.ping() });
+                let fut = pool.get_conn().and_then(|conn| conn.ping());
                 lp.run(fut).unwrap();
             })
         }
