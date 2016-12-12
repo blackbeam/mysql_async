@@ -14,8 +14,8 @@ use value::Value;
 
 error_chain! {
     foreign_links {
-        io::Error, Io;
-        url::ParseError, UrlParseError;
+        Io(io::Error);
+        UrlParseError(url::ParseError);
     }
 
     errors {

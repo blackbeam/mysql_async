@@ -76,6 +76,7 @@ impl Future for NewConn {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.either_poll()) {
             Out::ConnectingStream(stream) => {
+                stream.set_keepalive_ms(self.opts.get_tcp_keepalive())?;
                 self.step = Step::ReadHandshake(stream.into_future());
                 self.poll()
             },

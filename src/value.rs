@@ -303,7 +303,7 @@ macro_rules! take_or_place {
             Some(value) => {
                 match $t::get_intermediate(value) {
                     Ok(ir) => ir,
-                    Err(error) => match error.into_kind() {
+                    Err(error) => match error.into() {
                         ErrorKind::FromValue(value) => {
                             $row.place($index, value);
                             return Err(ErrorKind::FromRow($row).into());
@@ -320,7 +320,7 @@ macro_rules! take_or_place {
             Some(value) => {
                 match $t::get_intermediate(value) {
                     Ok(ir) => ir,
-                    Err(error) => match error.into_kind() {
+                    Err(error) => match error.into() {
                         ErrorKind::FromValue(value) => {
                             $($row.place($idx, $ir.rollback());)*
                             $row.place($index, value);
@@ -1472,7 +1472,7 @@ impl<T, Ir> ConvIr<Option<T>> for OptionIr<Ir>
                         })
                     },
                     Err(error) => {
-                        match error.into_kind() {
+                        match error.into() {
                             ErrorKind::FromValue(v) => Err(ErrorKind::FromValue(v).into()),
                             _ => unreachable!(),
                         }

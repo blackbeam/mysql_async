@@ -39,7 +39,9 @@ pub struct Opts {
     /// Database name (defaults to `None`).
     db_name: Option<String>,
 
-    // TODO: keepalive_timeout
+    /// TCP keep alive timeout in milliseconds (defaults to `None`).
+    tcp_keepalive: Option<u32>,
+
     // TODO: local infile handler
     /// Lower bound of opened connections for `Pool` (defaults to 10).
     pool_min: usize,
@@ -105,6 +107,11 @@ impl Opts {
         self.init.as_ref()
     }
 
+    /// TCP keep alive timeout in milliseconds (defaults to `None).
+    pub fn get_tcp_keepalive(&self) -> Option<u32> {
+        self.tcp_keepalive.clone()
+    }
+
     /// Lower bound of opened connections for `Pool` (defaults to 10).
     pub fn get_pool_min(&self) -> usize {
         self.pool_min
@@ -131,6 +138,7 @@ impl Default for Opts {
             pass: None,
             db_name: None,
             init: vec![],
+            tcp_keepalive: None,
             pool_min: 10,
             pool_max: 100,
             conn_ttl: None,
@@ -202,13 +210,21 @@ impl OptsBuilder {
         self
     }
 
-    /// Lower bound of opened connections for `Pool` (defaults to `10`. `None` to reset to default).
+    /// TCP keep alive timeout in milliseconds (defaults to `None`).
+    pub fn tcp_keepalive<T: Into<u32>>(&mut self, tcp_keepalive: Option<T>) -> &mut Self {
+        self.opts.tcp_keepalive = tcp_keepalive.map(Into::into);
+        self
+    }
+
+    /// Lower bound of opened connections for `Pool`
+    /// (defaults to `10`. `None` to reset to default).
     pub fn pool_min<T: Into<usize>>(&mut self, pool_min: Option<T>) -> &mut Self {
         self.opts.pool_min = pool_min.map(Into::into).unwrap_or(DEFAULT_MIN_CONNS);
         self
     }
 
-    /// Lower bound of opened connections for `Pool` (defaults to `100`. `None` to reset to default).
+    /// Lower bound of opened connections for `Pool`
+    /// (defaults to `100`. `None` to reset to default).
     pub fn pool_max<T: Into<usize>>(&mut self, pool_max: Option<T>) -> &mut Self {
         self.opts.pool_max = pool_max.map(Into::into).unwrap_or(DEFAULT_MAX_CONNS);
         self
@@ -298,6 +314,14 @@ fn from_url(url: &str) -> Result<Opts> {
             match u32::from_str(&*value) {
                 Ok(value) => opts.conn_ttl = Some(value),
                 _ => return Err(ErrorKind::UrlInvalidParamValue("conn_ttl".into(), value).into()),
+            }
+        } else if key == "tcp_keepalive" {
+            match u32::from_str(&*value) {
+                Ok(value) => opts.tcp_keepalive = Some(value),
+                _ => {
+                    return Err(ErrorKind::UrlInvalidParamValue("tcp_keepalive_ms".into(), value)
+                        .into())
+                },
             }
         } else {
             return Err(ErrorKind::UrlUnknownParameter(key).into());

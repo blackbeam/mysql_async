@@ -55,6 +55,10 @@ impl Stream {
     pub fn write_packet(self, data: Vec<u8>, seq_id: u8) -> WritePacket {
         new_write_packet(self, data, seq_id)
     }
+
+    pub fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
+        Ok(self.endpoint.as_ref().expect("Should be here").set_keepalive_ms(ms)?)
+    }
 }
 
 impl io::Read for Stream {

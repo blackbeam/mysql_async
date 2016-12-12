@@ -125,7 +125,7 @@ mod test {
         assert_eq!((Some(vec!["b".to_string()]), r":?".into()), result);
 
         let err = parse_named_params(r":a ?").unwrap_err();
-        match err.into_kind() {
+        match err.into() {
             ErrorKind::MixedParams => (),
             _ => unreachable!(),
         }
