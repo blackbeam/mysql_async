@@ -27,22 +27,29 @@ pub struct WritePacket {
 
 pub fn new(stream: Stream, data: Vec<u8>, mut seq_id: u8) -> WritePacket {
     let data = {
-        let mut last_was_max = false;
-        let capacity = data.len() + 4 * (data.len() / consts::MAX_PAYLOAD_LEN + 2);
-        let mut out = Vec::with_capacity(capacity);
-        for chunk in data.chunks(consts::MAX_PAYLOAD_LEN) {
-            out.write_uint::<LE>(chunk.len() as u64, 3).unwrap();
-            out.write_u8(seq_id).unwrap();
-            out.extend_from_slice(chunk);
-            seq_id += 1;
-            last_was_max = chunk.len() == consts::MAX_PAYLOAD_LEN;
+        if data.len() == 0 {
+            let out = vec![0, 0, 0, seq_id];
+            seq_id = seq_id.wrapping_add(1);
+            out
+        } else {
+            let mut last_was_max = false;
+            let capacity = data.len() + 4 * (data.len() / consts::MAX_PAYLOAD_LEN + 2);
+            let mut out = Vec::with_capacity(capacity);
+            for chunk in data.chunks(consts::MAX_PAYLOAD_LEN) {
+                out.write_uint::<LE>(chunk.len() as u64, 3).unwrap();
+                out.write_u8(seq_id).unwrap();
+                out.extend_from_slice(chunk);
+                seq_id = seq_id.wrapping_add(1);
+                last_was_max = chunk.len() == consts::MAX_PAYLOAD_LEN;
+            }
+            if last_was_max {
+                out.extend_from_slice(&[0, 0, 0, seq_id][..]);
+                seq_id = seq_id.wrapping_add(1);
+            }
+            out
         }
-        if last_was_max {
-            out.extend_from_slice(&[0, 0, 0, seq_id][..]);
-            seq_id += 1;
-        }
-        out
     };
+
     WritePacket {
         future: write_all(stream, data),
         seq_id: seq_id,
