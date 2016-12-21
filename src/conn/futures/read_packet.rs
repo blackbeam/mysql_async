@@ -42,10 +42,12 @@ impl Future for ReadPacket {
         match try_ready!(self.future.poll()) {
             (maybe_packet, stream) => {
                 match maybe_packet {
-                    Some((packet, _)) => {
-                        // TODO: take seq_id to account
+                    Some((packet, seq_id)) => {
                         let packet = {
                             let conn = self.conn.as_mut().unwrap();
+                            if conn.seq_id != seq_id {
+                                return Err(ErrorKind::PacketOutOfOrder.into());
+                            }
                             conn.stream = Some(stream);
                             if packet.is(PacketType::Ok) {
                                 let ok_packet = OkPacket::new(packet, conn.capabilities)
@@ -71,6 +73,7 @@ impl Future for ReadPacket {
                         };
                         let mut conn = self.conn.take().unwrap();
                         conn.last_io = SteadyTime::now();
+                        conn.seq_id = seq_id + 1;
                         Ok(Ready((conn, packet)))
                     },
                     None => Err(ErrorKind::ConnectionClosed.into()),

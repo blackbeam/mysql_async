@@ -82,6 +82,9 @@ error_chain! {
         ReadOnlyTransNotSupported {
             description("`SET TRANSACTION READ (ONLY|WRITE)' is not supported in your MySQL version")
         }
+        PacketOutOfOrder {
+            description("Packet out of order")
+        }
     }
 }
 
