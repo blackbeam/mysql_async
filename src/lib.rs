@@ -171,7 +171,7 @@ pub use self::conn::transaction::Transaction;
 pub use self::conn::transaction::futures::query_result::{TransBinQueryResult, TransTextQueryResult};
 
 #[doc(inline)]
-pub use self::opts::{Opts, OptsBuilder};
+pub use self::opts::{Opts, OptsBuilder, WhiteListFsLocalInfileHandler};
 
 #[doc(inline)]
 pub use self::proto::{Column, ErrPacket, Row};
@@ -253,6 +253,8 @@ pub mod prelude {
     pub use conn::futures::query_result::ResultKind;
     #[doc(inline)]
     pub use conn::futures::query_result::UnconsumedQueryResult;
+    #[doc(inline)]
+    pub use opts::LocalInfileHandler;
     #[doc(inline)]
     pub use value::ConvIr;
     #[doc(inline)]

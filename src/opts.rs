@@ -8,8 +8,15 @@
 
 use errors::*;
 
+use std::collections::HashSet;
+use std::fmt;
+use std::fs;
+use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::path::PathBuf;
+use std::str::from_utf8;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use url::Url;
 use url::percent_encoding::percent_decode;
@@ -19,12 +26,70 @@ const DEFAULT_MIN_CONNS: usize = 10;
 const DEFAULT_MAX_CONNS: usize = 100;
 
 
+// TODO: Example
+/// Trait used to handle local infile requests.
+pub trait LocalInfileHandler {
+    fn handle(&self, file_name: &[u8]) -> Result<Box<io::Read>>;
+}
+
+#[derive(Clone)]
+struct LocalInfileHandlerObject(Arc<LocalInfileHandler>);
+
+impl PartialEq for LocalInfileHandlerObject {
+    fn eq(&self, other: &LocalInfileHandlerObject) -> bool {
+        self.0.as_ref() as *const LocalInfileHandler ==
+        other.0.as_ref() as *const LocalInfileHandler
+    }
+}
+
+impl Eq for LocalInfileHandlerObject {}
+
+impl fmt::Debug for LocalInfileHandlerObject {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Local infile handler object")
+    }
+}
+
+/// Handles local infile requests from filesystem using explicit path white list.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct WhiteListFsLocalInfileHandler {
+    white_list: HashSet<PathBuf>,
+}
+
+impl WhiteListFsLocalInfileHandler {
+    pub fn new<A, B>(white_list: B) -> WhiteListFsLocalInfileHandler
+        where A: Into<PathBuf>,
+              B: IntoIterator<Item = A>,
+    {
+        let mut white_list_set = HashSet::new();
+        for path in white_list.into_iter() {
+            white_list_set.insert(Into::<PathBuf>::into(path));
+        }
+        WhiteListFsLocalInfileHandler { white_list: white_list_set }
+    }
+}
+
+impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
+    fn handle(&self, file_name: &[u8]) -> Result<Box<io::Read>> {
+        let path: PathBuf = match from_utf8(file_name) {
+            Ok(path_str) => path_str.into(),
+            Err(_) => bail!("Invalid file name"),
+        };
+        if self.white_list.contains(&path) {
+            println!("CONTAINS {}", path.display());
+            fs::File::open(path).map(|x| Box::new(x) as Box<io::Read>).map_err(Into::into)
+        } else {
+            bail!(format!("Path `{}' is not in white list", path.display()));
+        }
+    }
+}
+
 /// Mysql connection options.
 ///
 /// Build one with [`OptsBuilder`](struct.OptsBuilder.html).
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct Opts {
-    /// Address of mysql server (defaults to `127.0.0.1`). Hostnames should also work.
+    /// Address of mysql server (defaults to `127.0.0.1`). Host names should also work.
     ip_or_hostname: String,
 
     /// TCP port of mysql server (defaults to `3306`).
@@ -42,7 +107,9 @@ pub struct Opts {
     /// TCP keep alive timeout in milliseconds (defaults to `None`).
     tcp_keepalive: Option<u32>,
 
-    // TODO: local infile handler
+    /// Local infile handler
+    local_infile_handler: Option<LocalInfileHandlerObject>,
+
     /// Lower bound of opened connections for `Pool` (defaults to 10).
     pool_min: usize,
 
@@ -112,6 +179,11 @@ impl Opts {
         self.tcp_keepalive.clone()
     }
 
+    /// Local infile handler
+    pub fn get_local_infile_handler(&self) -> Option<Arc<LocalInfileHandler>> {
+        self.local_infile_handler.as_ref().map(|x| x.0.clone())
+    }
+
     /// Lower bound of opened connections for `Pool` (defaults to 10).
     pub fn get_pool_min(&self) -> usize {
         self.pool_min
@@ -139,6 +211,7 @@ impl Default for Opts {
             db_name: None,
             init: vec![],
             tcp_keepalive: None,
+            local_infile_handler: None,
             pool_min: 10,
             pool_max: 100,
             conn_ttl: None,
@@ -213,6 +286,14 @@ impl OptsBuilder {
     /// TCP keep alive timeout in milliseconds (defaults to `None`).
     pub fn tcp_keepalive<T: Into<u32>>(&mut self, tcp_keepalive: Option<T>) -> &mut Self {
         self.opts.tcp_keepalive = tcp_keepalive.map(Into::into);
+        self
+    }
+
+    /// Handler for local infile requests (defaults to `None`).
+    pub fn local_infile_handler<T>(&mut self, handler: Option<T>) -> &mut Self
+        where T: LocalInfileHandler + 'static,
+    {
+        self.opts.local_infile_handler = handler.map(|x| LocalInfileHandlerObject(Arc::new(x)));
         self
     }
 

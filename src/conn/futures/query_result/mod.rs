@@ -69,6 +69,15 @@ impl<T, Q: QueryResult> IntoIterator for ResultSet<T, Q> {
     }
 }
 
+/// MySql protocol.
+#[derive(Eq, PartialEq, Copy, Clone, Debug, Hash)]
+pub enum Protocol {
+    /// MySql text protocol.
+    Text,
+    /// MySql binary protocol (i.e. prepared statements).
+    Binary,
+}
+
 /// Result kind of a query result.
 pub trait ResultKind {
     /// Output of this result kind.
@@ -78,6 +87,9 @@ pub trait ResultKind {
     ///
     /// For `BinaryResult` it is `Stmt` which was executed.
     type Output: Sized;
+
+    /// A way to determine protocol at runtime.
+    fn protocol() -> Protocol;
 }
 
 pub trait InnerResultKind: ResultKind {
@@ -91,6 +103,10 @@ pub struct BinaryResult;
 
 impl ResultKind for BinaryResult {
     type Output = Stmt;
+
+    fn protocol() -> Protocol {
+        Protocol::Binary
+    }
 }
 
 impl InnerResultKind for BinaryResult {
@@ -112,6 +128,10 @@ pub struct TextResult;
 
 impl ResultKind for TextResult {
     type Output = Either<TextQueryResult, Conn>;
+
+    fn protocol() -> Protocol {
+        Protocol::Text
+    }
 }
 
 impl InnerResultKind for TextResult {

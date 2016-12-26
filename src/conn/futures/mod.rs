@@ -19,6 +19,7 @@ mod columns;
 mod drop_result;
 mod first;
 mod first_exec;
+mod handle_local_infile;
 mod new_conn;
 mod new_raw_query_result;
 mod ping;
@@ -45,6 +46,9 @@ pub use self::first::new as new_first;
 
 pub use self::first_exec::FirstExec;
 pub use self::first_exec::new as new_first_exec;
+
+pub use self::handle_local_infile::HandleLocalInfile;
+pub use self::handle_local_infile::new as new_handle_local_infile;
 
 pub use self::new_conn::NewConn;
 pub use self::new_conn::new as new_new_conn;

@@ -298,14 +298,12 @@ mod test {
     use either::*;
     use prelude::*;
     use lib_futures::Future;
-
     use super::Conn;
-
     use test_misc::DATABASE_URL;
-
     use tokio::reactor::Core;
-
     use value::from_row;
+    use WhiteListFsLocalInfileHandler;
+
 
     #[test]
     fn should_connect() {
@@ -709,6 +707,44 @@ mod test {
                 })
             })
             .and_then(|conn| conn.disconnect());
+
+        lp.run(fut).unwrap();
+    }
+
+    #[test]
+    fn should_handle_local_infile() {
+        use std::io::Write;
+
+        let mut lp = Core::new().unwrap();
+        let mut opts = OptsBuilder::from_opts(&**DATABASE_URL);
+        opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[
+            "local_infile.txt",
+        ][..])));
+
+        let fut = Conn::new(opts, &lp.handle())
+            .and_then(|conn| conn.drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);"))
+            .and_then(|conn| {
+                let mut file = ::std::fs::File::create("local_infile.txt").unwrap();
+                let _ = file.write(b"AAAAAA\n");
+                let _ = file.write(b"BBBBBB\n");
+                let _ = file.write(b"CCCCCC\n");
+                conn.drop_query("LOAD DATA LOCAL INFILE 'local_infile.txt' INTO TABLE tmp;")
+            })
+            .and_then(|conn| {
+                conn.prep_exec("SELECT * FROM tmp;", ())
+                    .and_then(|result| result.map(|row| from_row::<(String,)>(row).0))
+            })
+            .and_then(|(result, stmt)| {
+                assert_eq!(result.len(), 3);
+                assert_eq!(result[0], "AAAAAA");
+                assert_eq!(result[1], "BBBBBB");
+                assert_eq!(result[2], "CCCCCC");
+                stmt.unwrap().drop_result()
+            })
+            .and_then(|conn| {
+                let _ = ::std::fs::remove_file("local_infile.txt");
+                conn.disconnect().map(|_| ())
+            });
 
         lp.run(fut).unwrap();
     }

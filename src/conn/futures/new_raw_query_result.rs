@@ -9,11 +9,14 @@
 use Column;
 use Conn;
 use conn::stmt::InnerStmt;
-use conn::futures::columns::Columns;
+use conn::futures::Columns;
+use conn::futures::HandleLocalInfile;
+use conn::futures::new_handle_local_infile;
+use conn::futures::query_result::Protocol;
 use conn::futures::query_result::ResultKind;
 use conn::futures::query_result::RawQueryResult;
 use conn::futures::query_result::new_raw as new_raw_query_result;
-use conn::futures::read_packet::ReadPacket;
+use conn::futures::ReadPacket;
 use errors::*;
 use lib_futures::Async;
 use lib_futures::Async::Ready;
@@ -29,11 +32,13 @@ use std::marker::PhantomData;
 enum Step {
     ReadPacket(ReadPacket),
     ReadColumns(Columns),
+    HandleLocalInfile(HandleLocalInfile),
 }
 
 enum Out {
     ReadPacket((Conn, Packet)),
     ReadColumns((Conn, Vec<Column>)),
+    HandleLocalInfile(Conn),
 }
 
 /// Future that resolves to `RawQueryResult`.
@@ -62,6 +67,10 @@ impl<K: ResultKind + ?Sized> NewRawQueryResult<K> {
                 let val = try_ready!(fut.poll());
                 Ok(Ready(Out::ReadPacket(val)))
             },
+            Step::HandleLocalInfile(ref mut fut) => {
+                let val = try_ready!(fut.poll());
+                Ok(Ready(Out::HandleLocalInfile(val)))
+            },
             Step::ReadColumns(ref mut fut) => {
                 let val = try_ready!(fut.poll());
                 Ok(Ready(Out::ReadColumns(val)))
@@ -85,10 +94,23 @@ impl<K: ResultKind + ?Sized> Future for NewRawQueryResult<K> {
                                                                     self.inner_stmt.clone());
                     Ok(Ready(query_result))
                 } else {
-                    let column_count = read_lenenc_int(&mut packet.as_ref())?;
-                    self.step = Step::ReadColumns(conn.read_result_set_columns(column_count));
-                    self.poll()
+                    if K::protocol() == Protocol::Text && packet.as_ref()[0] == 0xfb {
+                        let filename = &packet.as_ref()[1..];
+                        let handler = conn.opts.get_local_infile_handler();
+                        self.step = Step::HandleLocalInfile(new_handle_local_infile(conn,
+                                                                                    filename,
+                                                                                    handler));
+                        self.poll()
+                    } else {
+                        let column_count = read_lenenc_int(&mut packet.as_ref())?;
+                        self.step = Step::ReadColumns(conn.read_result_set_columns(column_count));
+                        self.poll()
+                    }
                 }
+            },
+            Out::HandleLocalInfile(conn) => {
+                self.step = Step::ReadPacket(conn.read_packet());
+                self.poll()
             },
             Out::ReadColumns((conn, columns)) => {
                 let query_result =

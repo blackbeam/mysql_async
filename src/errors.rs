@@ -85,6 +85,9 @@ error_chain! {
         PacketOutOfOrder {
             description("Packet out of order")
         }
+        NoLocalInfileHandler {
+            description("Can't handle local infile request. Handler not specified.")
+        }
     }
 }
 
