@@ -26,9 +26,64 @@ const DEFAULT_MIN_CONNS: usize = 10;
 const DEFAULT_MAX_CONNS: usize = 100;
 
 
-// TODO: Example
 /// Trait used to handle local infile requests.
+///
+/// Simple handler example:
+///
+/// ```rust
+/// # extern crate futures;
+/// # #[macro_use]
+/// # extern crate mysql_async as my;
+/// # extern crate tokio_core as tokio;
+///
+/// # use futures::Future;
+/// # use my::prelude::*;
+/// # use tokio::reactor::Core;
+/// # use std::env;
+/// # use std::io;
+/// # fn main() {
+/// struct ExampleHandler(&'static [u8]);
+///
+/// impl LocalInfileHandler for ExampleHandler {
+///     fn handle(&self, _: &[u8]) -> my::errors::Result<Box<io::Read>> {
+///         Ok(Box::new(self.0))
+///     }
+/// }
+///
+/// # let DATABASE_URL: String = if let Ok(url) = env::var("DATABASE_URL") {
+/// #     let opts = my::Opts::from_url(&url).expect("DATABASE_URL invalid");
+/// #     if opts.get_db_name().expect("a database name is required").is_empty() {
+/// #         panic!("database name is empty");
+/// #     }
+/// #     url
+/// # } else {
+/// #     "mysql://root:password@127.0.0.1:3307/mysql".into()
+/// # };
+///
+/// let mut lp = Core::new().unwrap();
+///
+/// let mut opts = my::OptsBuilder::from_opts(&*DATABASE_URL);
+/// opts.local_infile_handler(Some(ExampleHandler(b"foobar")));
+///
+/// let pool = my::Pool::new(opts, &lp.handle());
+///
+/// let future = pool.get_conn()
+///     .and_then(|conn| conn.drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);"))
+///     .and_then(|conn| conn.drop_query("LOAD DATA LOCAL INFILE 'baz' INTO TABLE tmp;"))
+///     .and_then(|conn| conn.prep_exec("SELECT * FROM tmp;", ()))
+///     .and_then(|result| result.map(|row| my::from_row::<(String,)>(row).0))
+///     .map(|(result, _ /* stmt */)| {
+///         assert_eq!(result.len(), 1);
+///         assert_eq!(result[0], "foobar");
+///     })
+///     .and_then(|_| pool.disconnect());
+///
+/// lp.run(future).unwrap();
+/// # }
+/// ```
 pub trait LocalInfileHandler {
+    /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
+    /// query.
     fn handle(&self, file_name: &[u8]) -> Result<Box<io::Read>>;
 }
 
