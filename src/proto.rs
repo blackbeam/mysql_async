@@ -367,9 +367,9 @@ impl HandshakePacket {
         let ver_str = self.srv_ver().into_owned();
         VERSION_RE.captures(&ver_str[..])
             .and_then(|capts| {
-                Some(((capts.at(1).unwrap().parse::<u16>()).unwrap_or(0),
-                      (capts.at(2).unwrap().parse::<u16>()).unwrap_or(0),
-                      (capts.at(3).unwrap().parse::<u16>()).unwrap_or(0)))
+                Some((*&capts[1].parse::<u16>().unwrap_or(0),
+                      *&capts[2].parse::<u16>().unwrap_or(0),
+                      *&capts[3].parse::<u16>().unwrap_or(0)))
             })
             .and_then(|version| {
                 if version == (0, 0, 0) {
