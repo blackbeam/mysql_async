@@ -144,7 +144,8 @@ pub fn read_bin_value<R>(reader: &mut R,
         ColumnType::MYSQL_TYPE_VARCHAR |
         ColumnType::MYSQL_TYPE_BIT |
         ColumnType::MYSQL_TYPE_NEWDECIMAL |
-        ColumnType::MYSQL_TYPE_GEOMETRY => {
+        ColumnType::MYSQL_TYPE_GEOMETRY |
+        ColumnType::MYSQL_TYPE_JSON => {
             if num_flag {
                 Ok(Int(reader.read_i64::<LE>()?))
             } else {

@@ -13,7 +13,7 @@ use errors::*;
 use proto::{Column, Row, write_lenenc_bytes, read_lenenc_bytes, read_bin_value};
 
 use std::str::FromStr;
-use std::str::from_utf8;
+use std::str::{from_utf8, from_utf8_unchecked};
 use std::borrow::ToOwned;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry::Occupied;
@@ -23,6 +23,9 @@ use std::time::Duration;
 use time::{self, Timespec, Tm, at, now, strptime};
 
 use regex::Regex;
+
+use rustc_serialize::{Decodable, Encodable};
+use rustc_serialize::json::{self, Json};
 
 use chrono::{NaiveDate, NaiveTime, NaiveDateTime, Datelike, Timelike};
 
@@ -1302,6 +1305,136 @@ from_array_impl!(29);
 from_array_impl!(30);
 from_array_impl!(31);
 from_array_impl!(32);
+
+impl From<Json> for Value {
+    fn from(x: Json) -> Value {
+        Value::Bytes(json::encode(&x).unwrap().into())
+    }
+}
+
+/// Use it to pass `T: Encodable` as JSON to a prepared statement.
+///
+/// ```ignore
+/// #[derive(RustcEncodable)]
+/// struct EncodableStruct {
+///     // ...
+/// }
+///
+/// conn.prep_exec("INSERT INTO table (json_column) VALUES (?)",
+///                (Serialized(EncosdableStruct),));
+/// ```
+#[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+pub struct Serialized<T>(pub T);
+
+impl<T: Encodable> From<Serialized<T>> for Value {
+    fn from(x: Serialized<T>) -> Value {
+        Value::Bytes(json::encode(&x.0).unwrap().into())
+    }
+}
+
+#[derive(Debug)]
+pub struct JsonIr {
+    bytes: Vec<u8>,
+    output: Json,
+}
+
+impl ConvIr<Json> for JsonIr {
+    fn new(v: Value) -> Result<JsonIr> {
+        let (output, bytes) = {
+            let bytes = match v {
+                Value::Bytes(bytes) => {
+                    match from_utf8(&*bytes) {
+                        Ok(_) => bytes,
+                        Err(_) => return Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
+                    }
+                },
+                v => return Err(ErrorKind::FromValue(v).into()),
+            };
+            let output = {
+                match Json::from_str(unsafe { from_utf8_unchecked(&*bytes) }) {
+                    Ok(output) => output,
+                    Err(_) => return Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
+                }
+            };
+            (output, bytes)
+        };
+        Ok(JsonIr {
+            bytes: bytes,
+            output: output,
+        })
+    }
+
+    fn commit(self) -> Json {
+        self.output
+    }
+
+    fn rollback(self) -> Value {
+        Value::Bytes(self.bytes)
+    }
+}
+
+impl FromValue for Json {
+    type Intermediate = JsonIr;
+}
+
+/// Use it to parse `T: Decodable` from `Value`.
+///
+/// ```ignore
+/// #[derive(RustcDecodable)]
+/// struct DecodableStruct {
+///     // ...
+/// }
+/// // ...
+/// let (Unserialized(val),): (Unserialized<DecodableStruct>,)
+///     = from_row(row_with_single_json_column);
+/// ```
+#[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+pub struct Unserialized<T>(pub T);
+
+#[derive(Debug)]
+pub struct UnserializedIr<T> {
+    bytes: Vec<u8>,
+    output: Unserialized<T>,
+}
+
+impl<T: Decodable> ConvIr<Unserialized<T>> for UnserializedIr<T> {
+    fn new(v: Value) -> Result<UnserializedIr<T>> {
+        let (output, bytes) = {
+            let bytes = match v {
+                Value::Bytes(bytes) => {
+                    match from_utf8(&*bytes) {
+                        Ok(_) => bytes,
+                        Err(_) => return Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
+                    }
+                },
+                v => return Err(ErrorKind::FromValue(v).into()),
+            };
+            let output = {
+                match json::decode(unsafe { from_utf8_unchecked(&*bytes) }) {
+                    Ok(output) => output,
+                    Err(_) => return Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
+                }
+            };
+            (output, bytes)
+        };
+        Ok(UnserializedIr {
+            bytes: bytes,
+            output: Unserialized(output),
+        })
+    }
+
+    fn commit(self) -> Unserialized<T> {
+        self.output
+    }
+
+    fn rollback(self) -> Value {
+        Value::Bytes(self.bytes)
+    }
+}
+
+impl<T: Decodable> FromValue for Unserialized<T> {
+    type Intermediate = UnserializedIr<T>;
+}
 
 /// Basic operations on `FromValue` conversion intermediate result.
 ///

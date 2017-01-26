@@ -128,6 +128,7 @@ extern crate lazy_static;
 #[macro_use]
 extern crate log;
 extern crate regex;
+extern crate rustc_serialize;
 extern crate sha1;
 pub extern crate time;
 extern crate tokio_core as tokio;
@@ -180,7 +181,8 @@ pub use self::opts::{Opts, OptsBuilder, WhiteListFsLocalInfileHandler};
 pub use self::proto::{Column, ErrPacket, Row};
 
 #[doc(inline)]
-pub use self::value::{from_row, from_row_opt, from_value, from_value_opt, Params, Value};
+pub use self::value::{from_row, from_row_opt, from_value, from_value_opt, Params, Value,
+                      Serialized, Unserialized};
 
 /// Futures used in this crate
 pub mod futures {
