@@ -146,14 +146,11 @@ mod conn;
 /// Mysql constants
 pub mod consts;
 /// Errors used in this crate
-mod errors;
+pub mod errors;
 mod io;
 mod opts;
 mod proto;
 mod scramble;
-
-#[doc(inline)]
-pub use errors::*;
 
 #[doc(inline)]
 pub use self::conn::Conn;
