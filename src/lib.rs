@@ -49,7 +49,7 @@
 //!         Payment { customer_id: 9, amount: 10, account_name: Some("bar".into()) },
 //!     ];
 //!
-//!     # let DATABASE_URL: String = if let Ok(url) = env::var("DATABASE_URL") {
+//!     # let database_url: String = if let Ok(url) = env::var("DATABASE_URL") {
 //!     #     let opts = my::Opts::from_url(&url).expect("DATABASE_URL invalid");
 //!     #     if opts.get_db_name().expect("a database name is required").is_empty() {
 //!     #         panic!("database name is empty");
@@ -59,7 +59,7 @@
 //!     #     "mysql://root:password@127.0.0.1:3307/mysql".into()
 //!     # };
 //!
-//!     let pool = my::Pool::new(DATABASE_URL, &lp.handle());
+//!     let pool = my::Pool::new(database_url, &lp.handle());
 //!     let future = pool.get_conn().and_then(|conn| {
 //!         // Create temporary table
 //!         conn.query(

@@ -32,7 +32,6 @@ const DEFAULT_MAX_CONNS: usize = 100;
 ///
 /// ```rust
 /// # extern crate futures;
-/// # #[macro_use]
 /// # extern crate mysql_async as my;
 /// # extern crate tokio_core as tokio;
 ///
@@ -50,7 +49,7 @@ const DEFAULT_MAX_CONNS: usize = 100;
 ///     }
 /// }
 ///
-/// # let DATABASE_URL: String = if let Ok(url) = env::var("DATABASE_URL") {
+/// # let database_url: String = if let Ok(url) = env::var("DATABASE_URL") {
 /// #     let opts = my::Opts::from_url(&url).expect("DATABASE_URL invalid");
 /// #     if opts.get_db_name().expect("a database name is required").is_empty() {
 /// #         panic!("database name is empty");
@@ -62,7 +61,7 @@ const DEFAULT_MAX_CONNS: usize = 100;
 ///
 /// let mut lp = Core::new().unwrap();
 ///
-/// let mut opts = my::OptsBuilder::from_opts(&*DATABASE_URL);
+/// let mut opts = my::OptsBuilder::from_opts(&*database_url);
 /// opts.local_infile_handler(Some(ExampleHandler(b"foobar")));
 ///
 /// let pool = my::Pool::new(opts, &lp.handle());
