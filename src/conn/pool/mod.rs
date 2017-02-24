@@ -167,14 +167,28 @@ impl Pool {
                 let mut done_fut_idxs = Vec::new();
                 for i in 0..len {
                     let result = self.inner_mut().$vec.get_mut(i).unwrap().poll();
-                    if let Ok(Ready(_)) = result {
-                        done_fut_idxs.push(i);
-                    }
                     match result {
+                        Ok(Ready(_)) | Err(_) => done_fut_idxs.push(i),
+                        _ => (),
+                    }
+
+                    let out: Result<()> = match result {
                         $($p => $b),+
+                        _ => Ok(()),
+                    };
+
+                    match out {
+                        Err(err) => {
+                            // early return in case of error
+                            while let Some(i) = done_fut_idxs.pop() {
+                                let _ = self.inner_mut().$vec.swap_remove(i);
+                            }
+                            return Err(err)
+                        }
                         _ => (),
                     }
                 }
+
                 while let Some(i) = done_fut_idxs.pop() {
                     let _ = self.inner_mut().$vec.swap_remove(i);
                 }
@@ -185,8 +199,8 @@ impl Pool {
 
         // Handle closing connections.
         handle!(disconnecting {
-            Ok(Ready(_)) => {},
-            Err(_) => {},
+            Ok(Ready(_)) => { Ok(()) },
+            Err(_) => { Ok(()) },
         });
 
         // Handle dirty connections.
@@ -199,8 +213,9 @@ impl Pool {
                     self.return_conn(conn);
                 }
                 handled = true;
+                Ok(())
             },
-            Err(_) => {},
+            Err(_) => { Ok(()) },
         });
 
         // Handle in-transaction connections
@@ -213,8 +228,9 @@ impl Pool {
                     self.return_conn(conn);
                 }
                 handled = true;
+                Ok(())
             },
-            Err(_) => {},
+            Err(_) => { Ok(()) },
         });
 
         // Handle connecting connections.
@@ -227,10 +243,13 @@ impl Pool {
                     self.return_conn(conn);
                 }
                 handled = true;
+                Ok(())
             },
             Err(err) => {
                 if ! self.inner_ref().closed {
-                    return Err(err);
+                    Err(err)
+                } else {
+                    Ok(())
                 }
             },
         });
