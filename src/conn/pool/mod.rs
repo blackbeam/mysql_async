@@ -290,7 +290,9 @@ impl Drop for Conn {
     fn drop(&mut self) {
         if let Some(mut pool) = self.pool.take() {
             let conn = self.take();
-            pool.return_conn(conn)
+            if conn.stream.is_some() {
+                pool.return_conn(conn)
+            } // drop incomplete connection
         }
     }
 }
