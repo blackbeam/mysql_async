@@ -9,7 +9,6 @@
 use conn::futures::query_result::*;
 use either::Left;
 use either::Right;
-use errors::*;
 use lib_futures::Async::Ready;
 use lib_futures::Future;
 use lib_futures::Poll;

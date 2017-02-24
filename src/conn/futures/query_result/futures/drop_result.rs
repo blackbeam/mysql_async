@@ -7,7 +7,6 @@
 // modified, or distributed except according to those terms.
 
 use conn::futures::query_result::*;
-use errors::*;
 use lib_futures::Async::Ready;
 use lib_futures::Future;
 use lib_futures::Poll;
