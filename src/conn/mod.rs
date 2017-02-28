@@ -263,7 +263,7 @@ impl Conn {
         new_columns(self.read_packet(), column_count)
     }
 
-    /// Returns future that writes comand and it's data to a server and resolves to `Conn`.
+    /// Returns future that writes command and it's data to a server and resolves to `Conn`.
     fn write_command_data<D>(mut self, cmd: consts::Command, command_data: D) -> WritePacket
         where D: AsRef<[u8]>,
     {
