@@ -69,17 +69,12 @@ impl Pool {
         let opts = opts.into();
         let pool_min = opts.get_pool_min();
         let pool_max = opts.get_pool_max();
-        let mut new_conns = Vec::with_capacity(pool_min);
-        for _ in 0..pool_min {
-            let new_conn = Conn::new(opts.clone(), handle);
-            new_conns.push(new_conn);
-        }
         let pool = Pool {
             handle: handle.clone(),
             opts: opts,
             inner: Rc::new(RefCell::new(Inner {
                 closed: false,
-                new: new_conns,
+                new: Vec::with_capacity(pool_min),
                 idle: Vec::new(),
                 disconnecting: Vec::new(),
                 dropping: Vec::new(),
