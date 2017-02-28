@@ -83,6 +83,7 @@ impl stream::Stream for Stream {
 
     fn poll(&mut self) -> Poll<Option<(Packet, u8)>, Error> {
         // should read everything from self.endpoint
+        let mut would_block = false;
         if !self.closed {
             let mut buf = [0u8; 4096];
             loop {
@@ -95,6 +96,7 @@ impl stream::Stream for Stream {
                         buf_handle.extend(&buf[..size]);
                     },
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        would_block = true;
                         break;
                     },
                     Err(error) => {
@@ -145,7 +147,7 @@ impl stream::Stream for Stream {
 
         self.next_packet = Some(next_packet.parse());
 
-        if should_poll {
+        if should_poll || !would_block {
             self.poll()
         } else {
             Ok(NotReady)
