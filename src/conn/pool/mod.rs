@@ -16,6 +16,7 @@ use lib_futures::Async;
 use lib_futures::Async::Ready;
 use lib_futures::Async::NotReady;
 use lib_futures::Future;
+use lib_futures::task::{park, Task};
 use std::fmt;
 use opts::Opts;
 use self::futures::*;
@@ -38,6 +39,7 @@ pub struct Inner {
     disconnecting: Vec<Disconnect>,
     dropping: Vec<DropResult>,
     rollback: Vec<DropQuery>,
+    tasks: Vec<Task>,
 }
 
 #[derive(Clone)]
@@ -79,6 +81,7 @@ impl Pool {
                 disconnecting: Vec::new(),
                 dropping: Vec::new(),
                 rollback: Vec::new(),
+                tasks: Vec::new(),
             })),
             min: pool_min,
             max: pool_max,
@@ -144,6 +147,10 @@ impl Pool {
                 self.inner_mut().idle.push(conn);
             }
         }
+
+        while let Some(task) = self.inner_mut().tasks.pop() {
+            task.unpark()
+        }
     }
 
     fn inner_ref(&self) -> Ref<Inner> {
@@ -169,7 +176,9 @@ impl Pool {
 
                     let out: Result<()> = match result {
                         $($p => $b),+
-                        _ => Ok(()),
+                        _ => {
+                            Ok(())
+                        }
                     };
 
                     match out {
@@ -194,7 +203,10 @@ impl Pool {
 
         // Handle closing connections.
         handle!(disconnecting {
-            Ok(Ready(_)) => { Ok(()) },
+            Ok(Ready(_)) => {
+                handled = true;
+                Ok(())
+            },
             Err(_) => { Ok(()) },
         });
 
@@ -274,6 +286,7 @@ impl Pool {
                     self.inner_mut().new.push(new_conn);
                     self.poll()
                 } else {
+                    self.inner_mut().tasks.push(park());
                     Ok(NotReady)
                 }
             },
