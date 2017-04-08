@@ -437,6 +437,7 @@ impl HandshakePacket {
         }
     }
 
+    #[allow(dead_code)]
     pub fn charset(&self) -> Option<u8> {
         let offset = 1 + self.srv_ver_len + 1 + 4 + 8 + 1 + 2;
         if self.more_data {
@@ -446,6 +447,7 @@ impl HandshakePacket {
         }
     }
 
+    #[allow(dead_code)]
     pub fn auth_plugin_name_bytes(&self) -> Option<&[u8]> {
         self.auth_plug_data_len().map(|length| {
             let length = length as usize;
@@ -458,6 +460,7 @@ impl HandshakePacket {
         })
     }
 
+    #[allow(dead_code)]
     pub fn auth_plugin_name(&self) -> Option<Cow<str>> {
         self.auth_plugin_name_bytes().map(|bytes| String::from_utf8_lossy(bytes))
     }
