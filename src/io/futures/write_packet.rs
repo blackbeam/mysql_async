@@ -14,8 +14,8 @@ use io::Stream;
 use lib_futures::Async::Ready;
 use lib_futures::Future;
 use lib_futures::Poll;
-use tokio::io::write_all;
-use tokio::io::WriteAll;
+use tokio_io::io::write_all;
+use tokio_io::io::WriteAll;
 
 
 /// Future that writes packet to a `Stream` and resolves to a pair of `Stream` and MySql's sequence

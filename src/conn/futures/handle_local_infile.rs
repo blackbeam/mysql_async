@@ -16,19 +16,20 @@ use lib_futures::failed;
 use lib_futures::Future;
 use lib_futures::Poll;
 use opts::LocalInfileHandler;
-use std::io::Read;
 use std::sync::Arc;
-use tokio::io as tokio_io;
+use tokio_io::AsyncRead;
+use tokio_io::io::read;
+use tokio_io::io::Read;
 
 enum Step {
     Failed(Failed<(), Error>),
-    ReadData(tokio_io::Read<Box<Read>, Vec<u8>>),
+    ReadData(Read<Box<AsyncRead>, Vec<u8>>),
     WritePacket(WritePacket),
     Done(WritePacket),
 }
 
 enum Out {
-    ReadData((Box<Read>, Vec<u8>, usize)),
+    ReadData((Box<AsyncRead>, Vec<u8>, usize)),
     WritePacket(Conn),
     Done(Conn),
 }
@@ -36,7 +37,7 @@ enum Out {
 pub struct HandleLocalInfile {
     step: Step,
     conn: Option<Conn>,
-    reader: Option<Box<Read>>,
+    reader: Option<Box<AsyncRead>>,
 }
 
 impl HandleLocalInfile {
@@ -72,7 +73,7 @@ pub fn new(conn: Conn,
                 let mut buf = Vec::with_capacity(4096);
                 unsafe { buf.set_len(4096); }
                 HandleLocalInfile {
-                    step: Step::ReadData(tokio_io::read(reader, buf)),
+                    step: Step::ReadData(read(reader, buf)),
                     reader: None,
                     conn: Some(conn),
                 }
@@ -114,7 +115,7 @@ impl Future for HandleLocalInfile {
                 let reader = self.reader.take().expect("Should be here");
                 let mut buf = Vec::with_capacity(4096);
                 unsafe { buf.set_len(4096); }
-                self.step = Step::ReadData(tokio_io::read(reader, buf));
+                self.step = Step::ReadData(read(reader, buf));
                 self.poll()
             },
             Out::Done(conn) => Ok(Ready(conn)),

@@ -132,6 +132,7 @@ extern crate rustc_serialize;
 extern crate sha1;
 pub extern crate time;
 extern crate tokio_core as tokio;
+extern crate tokio_io;
 extern crate twox_hash;
 extern crate url;
 

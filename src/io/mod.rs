@@ -26,6 +26,8 @@ use std::io::Read;
 use std::net::ToSocketAddrs;
 use tokio::net::TcpStream;
 use tokio::reactor::Handle;
+use tokio_io::AsyncRead;
+use tokio_io::AsyncWrite;
 
 
 pub mod futures;
@@ -74,6 +76,18 @@ impl io::Write for Stream {
 
     fn flush(&mut self) -> io::Result<()> {
         self.endpoint.as_mut().unwrap().flush()
+    }
+}
+
+impl AsyncRead for Stream {
+    unsafe fn prepare_uninitialized_buffer(&self, _buf: &mut [u8]) -> bool {
+        self.endpoint.as_ref().unwrap().prepare_uninitialized_buffer(_buf)
+    }
+}
+
+impl AsyncWrite for Stream {
+    fn shutdown(&mut self) -> Poll<(), io::Error> {
+        self.endpoint.as_mut().unwrap().shutdown()
     }
 }
 

@@ -21,6 +21,8 @@ use std::sync::Arc;
 use url::Url;
 use url::percent_encoding::percent_decode;
 
+use tokio_io::AsyncRead;
+
 
 const DEFAULT_MIN_CONNS: usize = 10;
 const DEFAULT_MAX_CONNS: usize = 100;
@@ -34,17 +36,19 @@ const DEFAULT_MAX_CONNS: usize = 100;
 /// # extern crate futures;
 /// # extern crate mysql_async as my;
 /// # extern crate tokio_core as tokio;
+/// # extern crate tokio_io;
 ///
 /// # use futures::Future;
 /// # use my::prelude::*;
 /// # use tokio::reactor::Core;
+/// # use tokio_io::AsyncRead;
 /// # use std::env;
 /// # use std::io;
 /// # fn main() {
 /// struct ExampleHandler(&'static [u8]);
 ///
 /// impl LocalInfileHandler for ExampleHandler {
-///     fn handle(&self, _: &[u8]) -> my::errors::Result<Box<io::Read>> {
+///     fn handle(&self, _: &[u8]) -> my::errors::Result<Box<AsyncRead>> {
 ///         Ok(Box::new(self.0))
 ///     }
 /// }
@@ -83,7 +87,7 @@ const DEFAULT_MAX_CONNS: usize = 100;
 pub trait LocalInfileHandler {
     /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
     /// query.
-    fn handle(&self, file_name: &[u8]) -> Result<Box<io::Read>>;
+    fn handle(&self, file_name: &[u8]) -> Result<Box<AsyncRead>>;
 }
 
 #[derive(Clone)]
@@ -101,6 +105,20 @@ impl Eq for LocalInfileHandlerObject {}
 impl fmt::Debug for LocalInfileHandlerObject {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Local infile handler object")
+    }
+}
+
+struct File(fs::File);
+
+impl io::Read for File {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl AsyncRead for File {
+    unsafe fn prepare_uninitialized_buffer(&self, _buf: &mut [u8]) -> bool {
+        false
     }
 }
 
@@ -124,14 +142,13 @@ impl WhiteListFsLocalInfileHandler {
 }
 
 impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
-    fn handle(&self, file_name: &[u8]) -> Result<Box<io::Read>> {
+    fn handle(&self, file_name: &[u8]) -> Result<Box<AsyncRead>> {
         let path: PathBuf = match from_utf8(file_name) {
             Ok(path_str) => path_str.into(),
             Err(_) => bail!("Invalid file name"),
         };
         if self.white_list.contains(&path) {
-            println!("CONTAINS {}", path.display());
-            fs::File::open(path).map(|x| Box::new(x) as Box<io::Read>).map_err(Into::into)
+            fs::File::open(path).map(|x| Box::new(File(x)) as Box<AsyncRead>).map_err(Into::into)
         } else {
             bail!(format!("Path `{}' is not in white list", path.display()));
         }
