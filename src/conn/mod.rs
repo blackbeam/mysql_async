@@ -143,6 +143,13 @@ impl Conn {
         self.first::<(u32,), _>("SELECT @@wait_timeout").map(map)
     }
 
+    /// Returns true if time since last io exceeds wait_timeout (or conn_ttl if specified in opts).
+    fn expired(&self) -> bool {
+        let idle_duration = SteadyTime::now() - self.last_io;
+        let ttl = self.opts.get_conn_ttl().unwrap_or(self.wait_timeout) as i64;
+        idle_duration.num_milliseconds() > ttl * 1000
+    }
+
     /// Returns future that resolves to `Conn` if `COM_PING` executed successfully.
     pub fn ping(self) -> Ping {
         new_ping(self.write_command_data(consts::Command::COM_PING, &[]))

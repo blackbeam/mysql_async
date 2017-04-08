@@ -25,8 +25,6 @@ use std::cell::RefCell;
 use std::cell::RefMut;
 use std::rc::Rc;
 use tokio::reactor::Handle;
-use time::Duration;
-use time::SteadyTime;
 
 
 pub mod futures;
@@ -109,29 +107,42 @@ impl Pool {
         new_disconnect_pool(self)
     }
 
+    /// Returns true if futures is in queue.
+    fn in_queue(&self) -> bool {
+        let inner = self.inner_ref();
+        let count =
+            inner.new.len() + inner.disconnecting.len() +
+            inner.dropping.len() + inner.rollback.len();
+        count > 0
+    }
+
     /// A way to take connection from a pool.
     fn take_conn(&mut self) -> Option<Conn> {
-        let maybe_conn = self.inner_mut().idle.pop();
-        maybe_conn.map(|mut conn| {
-            conn.pool = Some(self.clone());
-            conn
-        })
+        if self.in_queue() {
+            // Do not return connection until queue is empty
+            return None;
+        }
+        while self.inner_ref().idle.len() > 0 {
+            let conn = self.inner_mut().idle.pop();
+            let conn = conn.and_then(|mut conn| {
+                if conn.expired() {
+                    self.inner_mut().disconnecting.push(conn.disconnect());
+                    None
+                } else {
+                    conn.pool = Some(self.clone());
+                    Some(conn)
+                }
+            });
+            if conn.is_some() {
+                return conn;
+            }
+        }
+        None
     }
 
     /// A way to return connection taken from a pool.
     fn return_conn(&mut self, conn: Conn) {
         if self.inner_ref().closed {
-            return;
-        }
-
-        let idle_duration: Duration = SteadyTime::now() - conn.last_io;
-        let ttl = if let Some(conn_ttl) = self.opts.get_conn_ttl() {
-            conn_ttl as i64
-        } else {
-            conn.wait_timeout as i64
-        };
-        if idle_duration.num_seconds() > ttl {
-            self.inner_mut().disconnecting.push(conn.disconnect());
             return;
         }
 
@@ -163,6 +174,11 @@ impl Pool {
 
     /// Will manage lifetime of futures stored in a pool.
     fn handle_futures(&mut self) -> Result<()> {
+        if !self.in_queue() {
+            // There is no futures in queue
+            return Ok(());
+        }
+
         macro_rules! handle {
             ($vec:ident { $($p:pat => $b:block,)+ }) => ({
                 let len = self.inner_ref().$vec.len();
