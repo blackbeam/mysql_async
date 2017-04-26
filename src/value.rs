@@ -24,8 +24,9 @@ use time::{self, Timespec, Tm, at, now, strptime};
 
 use regex::Regex;
 
-use rustc_serialize::{Decodable, Encodable};
-use rustc_serialize::json::{self, Json};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::{Value as Json, to_vec, from_slice};
 
 use chrono::{NaiveDate, NaiveTime, NaiveDateTime, Datelike, Timelike};
 
@@ -1308,27 +1309,27 @@ from_array_impl!(32);
 
 impl From<Json> for Value {
     fn from(x: Json) -> Value {
-        Value::Bytes(json::encode(&x).unwrap().into())
+        Value::Bytes(to_vec(&x).unwrap())
     }
 }
 
-/// Use it to pass `T: Encodable` as JSON to a prepared statement.
+/// Use it to pass `T: Serialize` as JSON to a prepared statement.
 ///
 /// ```ignore
-/// #[derive(RustcEncodable)]
-/// struct EncodableStruct {
+/// #[derive(Serialize)]
+/// struct SerializableStruct {
 ///     // ...
 /// }
 ///
 /// conn.prep_exec("INSERT INTO table (json_column) VALUES (?)",
-///                (Serialized(EncosdableStruct),));
+///                (Serialized(SerializableStruct),));
 /// ```
 #[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub struct Serialized<T>(pub T);
 
-impl<T: Encodable> From<Serialized<T>> for Value {
+impl<T: Serialize> From<Serialized<T>> for Value {
     fn from(x: Serialized<T>) -> Value {
-        Value::Bytes(json::encode(&x.0).unwrap().into())
+        Value::Bytes(to_vec(&x.0).unwrap())
     }
 }
 
@@ -1377,28 +1378,28 @@ impl FromValue for Json {
     type Intermediate = JsonIr;
 }
 
-/// Use it to parse `T: Decodable` from `Value`.
+/// Use it to parse `T: Deserialize` from `Value`.
 ///
 /// ```ignore
-/// #[derive(RustcDecodable)]
-/// struct DecodableStruct {
+/// #[derive(Deserialize)]
+/// struct DeserializableStruct {
 ///     // ...
 /// }
 /// // ...
-/// let (Unserialized(val),): (Unserialized<DecodableStruct>,)
+/// let (Deserialized(val),): (Deserialized<DeserializableStruct>,)
 ///     = from_row(row_with_single_json_column);
 /// ```
 #[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
-pub struct Unserialized<T>(pub T);
+pub struct Deserialized<T>(pub T);
 
 #[derive(Debug)]
-pub struct UnserializedIr<T> {
+pub struct DeserializedIr<T> {
     bytes: Vec<u8>,
-    output: Unserialized<T>,
+    output: Deserialized<T>,
 }
 
-impl<T: Decodable> ConvIr<Unserialized<T>> for UnserializedIr<T> {
-    fn new(v: Value) -> Result<UnserializedIr<T>> {
+impl<T: DeserializeOwned> ConvIr<Deserialized<T>> for DeserializedIr<T> {
+    fn new(v: Value) -> Result<DeserializedIr<T>> {
         let (output, bytes) = {
             let bytes = match v {
                 Value::Bytes(bytes) => {
@@ -1410,20 +1411,20 @@ impl<T: Decodable> ConvIr<Unserialized<T>> for UnserializedIr<T> {
                 v => return Err(ErrorKind::FromValue(v).into()),
             };
             let output = {
-                match json::decode(unsafe { from_utf8_unchecked(&*bytes) }) {
+                match from_slice(&*bytes) {
                     Ok(output) => output,
                     Err(_) => return Err(ErrorKind::FromValue(Value::Bytes(bytes)).into()),
                 }
             };
             (output, bytes)
         };
-        Ok(UnserializedIr {
+        Ok(DeserializedIr {
             bytes: bytes,
-            output: Unserialized(output),
+            output: Deserialized(output),
         })
     }
 
-    fn commit(self) -> Unserialized<T> {
+    fn commit(self) -> Deserialized<T> {
         self.output
     }
 
@@ -1432,8 +1433,8 @@ impl<T: Decodable> ConvIr<Unserialized<T>> for UnserializedIr<T> {
     }
 }
 
-impl<T: Decodable> FromValue for Unserialized<T> {
-    type Intermediate = UnserializedIr<T>;
+impl<T: DeserializeOwned> FromValue for Deserialized<T> {
+    type Intermediate = DeserializedIr<T>;
 }
 
 /// Basic operations on `FromValue` conversion intermediate result.
