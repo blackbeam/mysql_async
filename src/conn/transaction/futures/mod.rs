@@ -9,6 +9,7 @@
 use conn::Conn;
 use conn::futures::BatchExec;
 use conn::futures::DropQuery;
+use conn::futures::DropExec;
 use conn::futures::First;
 use conn::futures::FirstExec;
 use conn::futures::PrepExec;
@@ -50,6 +51,11 @@ pub type TransDropQuery = Map<DropQuery, fn(Conn) -> self::Transaction>;
 ///
 /// Where `Option<R>` is the first row of a statement execution result (if any).
 pub type TransFirstExec<R> = Map<FirstExec<R>, fn((Option<R>, Conn)) -> (Option<R>, Transaction)>;
+
+/// Future that prepares and executes statement and resolves to `Transaction`.
+///
+/// Result will be dropped.
+pub type TransDropExec = Map<DropExec, fn(Conn) -> self::Transaction>;
 
 /// Future that prepares and executes statement and resolves to `TransBinQueryResult`.
 pub type TransPrepExec = Map<PrepExec,

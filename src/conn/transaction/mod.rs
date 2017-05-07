@@ -102,6 +102,18 @@ impl Transaction {
         self.conn.prep_exec(query, params).map(new_bin)
     }
 
+    /// Returns future that prepares and executes statement and resolves to `Transaction`.
+    ///
+    /// Result will be dropped.
+    pub fn drop_exec<Q, P>(self, query: Q, params: P) -> TransDropExec
+        where Q: AsRef<str>,
+              P: Into<Params>
+    {
+        self.conn
+            .drop_exec(query, params)
+            .map(Transaction::new_raw)
+    }
+
     /// Returns future that prepares and executes statement and resolves to `(Option<R>, Transaction)`.
     ///
     /// Where `Option<R>` is the first row of a statement execution result (if any).
