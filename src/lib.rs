@@ -242,7 +242,11 @@ pub mod futures {
     #[doc(inline)]
     pub use conn::transaction::futures::TransFirst;
     #[doc(inline)]
+    pub use conn::transaction::futures::TransDropQuery;
+    #[doc(inline)]
     pub use conn::transaction::futures::TransFirstExec;
+    #[doc(inline)]
+    pub use conn::transaction::futures::TransDropExec;
     #[doc(inline)]
     pub use conn::transaction::futures::TransPrepExec;
     #[doc(inline)]
