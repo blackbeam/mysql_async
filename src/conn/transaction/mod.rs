@@ -76,6 +76,13 @@ impl Transaction {
         self.conn.query(query).map(new_text)
     }
 
+    /// Returns future that executes query and resolves to `Transaction`.
+    ///
+    /// Result will be dropped.
+    pub fn drop_query<Q: AsRef<str>>(self, query: Q) -> TransDropQuery {
+        self.conn.drop_query(query).map(Transaction::new_raw)
+    }
+
     /// Returns future that executes query and resolves to `(Option<R>, Transaction)`.
     ///
     /// Where `Option<R>` is the first row of a query execution result (if any).
