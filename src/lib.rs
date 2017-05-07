@@ -171,6 +171,9 @@ pub use self::conn::stmt::Stmt;
 pub use self::conn::transaction::Transaction;
 
 #[doc(inline)]
+pub use self::conn::transaction::IsolationLevel;
+
+#[doc(inline)]
 pub use self::conn::transaction::futures::query_result::{TransBinQueryResult, TransTextQueryResult};
 
 #[doc(inline)]
@@ -225,6 +228,8 @@ pub mod futures {
     pub use conn::pool::futures::DisconnectPool;
     #[doc(inline)]
     pub use conn::pool::futures::GetConn;
+    #[doc(inline)]
+    pub use conn::pool::futures::StartTransaction as PooledStartTransaction;
     #[doc(inline)]
     pub use conn::stmt::futures::Batch;
     #[doc(inline)]

@@ -12,6 +12,7 @@ use conn::futures::DropQuery;
 use conn::futures::DropResult;
 use conn::futures::NewConn;
 use errors::*;
+use IsolationLevel;
 use lib_futures::Async;
 use lib_futures::Async::Ready;
 use lib_futures::Async::NotReady;
@@ -91,6 +92,18 @@ impl Pool {
     /// Returns future that resolves to `Conn`.
     pub fn get_conn(&self) -> GetConn {
         new_get_conn(self)
+    }
+
+    /// Shortcut for `get_conn` followed by `start_transaction`.
+    pub fn start_transaction(&self,
+                             consistent_snapshot: bool,
+                             isolation_level: Option<IsolationLevel>,
+                             readonly: Option<bool>)
+                             -> StartTransaction {
+        new_start_transaction(self.get_conn(),
+                              consistent_snapshot,
+                              isolation_level,
+                              readonly)
     }
 
     /// Returns future that disconnects this pool from server and resolves to `()`.
