@@ -88,7 +88,7 @@ impl Transaction {
     /// Where `Option<R>` is the first row of a query execution result (if any).
     pub fn first<R, Q>(self, query: Q) -> TransFirst<R>
         where R: FromRow,
-              Q: AsRef<str>,
+              Q: AsRef<str>
     {
         fn map<R: FromRow>((row, conn): (Option<R>, Conn)) -> (Option<R>, Transaction) {
             (row, Transaction::new_raw(conn))
@@ -120,7 +120,7 @@ impl Transaction {
     pub fn first_exec<R, Q, P>(self, query: Q, params: P) -> TransFirstExec<R>
         where R: FromRow,
               Q: AsRef<str>,
-              P: Into<Params>,
+              P: Into<Params>
     {
         fn map<R: FromRow>((row, conn): (Option<R>, Conn)) -> (Option<R>, Transaction) {
             (row, Transaction::new_raw(conn))
@@ -134,8 +134,10 @@ impl Transaction {
     /// All results will be dropped.
     pub fn batch_exec<Q, P>(self, query: Q, params_vec: Vec<P>) -> TransBatchExec
         where Q: AsRef<str>,
-              P: Into<Params>,
+              P: Into<Params>
     {
-        self.conn.batch_exec(query, params_vec).map(Transaction::new_raw)
+        self.conn
+            .batch_exec(query, params_vec)
+            .map(Transaction::new_raw)
     }
 }
