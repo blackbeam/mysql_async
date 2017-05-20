@@ -44,16 +44,17 @@ impl<R, T> Future for Collect<R, T>
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try_ready!(self.query_result.as_mut().unwrap().poll()) {
-            Left(row) => {
-                self.vec.push(from_row::<R>(row));
-                self.poll()
-            },
-            Right(output) => {
-                let query_result = self.query_result.take().unwrap();
-                let vec = mem::replace(&mut self.vec, Vec::new());
-                Ok(Ready((ResultSet(vec, query_result), output)))
-            },
+        loop {
+            match try_ready!(self.query_result.as_mut().unwrap().poll()) {
+                Left(row) => {
+                    self.vec.push(from_row::<R>(row));
+                },
+                Right(output) => {
+                    let query_result = self.query_result.take().unwrap();
+                    let vec = mem::replace(&mut self.vec, Vec::new());
+                    return Ok(Ready((ResultSet(vec, query_result), output)));
+                },
+            }
         }
     }
 }

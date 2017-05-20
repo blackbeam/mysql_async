@@ -45,17 +45,18 @@ impl<A, F, T> Future for Reduce<A, F, T>
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try_ready!(self.query_result.poll()) {
-            Left(row) => {
-                let old_acc_val = self.accum.take().unwrap();
-                let new_acc_val = (self.fun)(old_acc_val, row);
-                self.accum = Some(new_acc_val);
-                self.poll()
-            },
-            Right(output) => {
-                let acc_val = self.accum.take().unwrap();
-                Ok(Ready((acc_val, output)))
-            },
+        loop {
+            match try_ready!(self.query_result.poll()) {
+                Left(row) => {
+                    let old_acc_val = self.accum.take().unwrap();
+                    let new_acc_val = (self.fun)(old_acc_val, row);
+                    self.accum = Some(new_acc_val);
+                },
+                Right(output) => {
+                    let acc_val = self.accum.take().unwrap();
+                    return Ok(Ready((acc_val, output)));
+                },
+            }
         }
     }
 }

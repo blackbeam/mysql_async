@@ -46,16 +46,17 @@ impl<F, U, T> Future for Map<F, U, T>
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try_ready!(self.query_result.poll()) {
-            Left(row) => {
-                let val = (&mut self.fun)(row);
-                self.acc.push(val);
-                self.poll()
-            },
-            Right(output) => {
-                let acc = mem::replace(&mut self.acc, Vec::new());
-                Ok(Ready((acc, output)))
-            },
+        loop {
+            match try_ready!(self.query_result.poll()) {
+                Left(row) => {
+                    let val = (&mut self.fun)(row);
+                    self.acc.push(val);
+                },
+                Right(output) => {
+                    let acc = mem::replace(&mut self.acc, Vec::new());
+                    return Ok(Ready((acc, output)));
+                },
+            }
         }
     }
 }
