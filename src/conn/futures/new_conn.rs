@@ -97,7 +97,7 @@ impl Future for NewConn {
                                                                         self.opts.get_pass(),
                                                                         self.opts.get_db_name());
                         let future =
-                            stream.write_packet(handshake_response.as_ref().to_vec(), seq_id + 1);
+                            stream.write_packet(handshake_response.as_ref().to_vec(), seq_id.wrapping_add(1));
                         self.step = Step::WriteHandshake(future);
                         self.poll()
                     },

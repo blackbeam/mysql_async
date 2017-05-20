@@ -73,7 +73,7 @@ impl Future for ReadPacket {
                         };
                         let mut conn = self.conn.take().unwrap();
                         conn.last_io = SteadyTime::now();
-                        conn.seq_id = seq_id + 1;
+                        conn.seq_id = seq_id.wrapping_add(1);
                         Ok(Ready((conn, packet)))
                     },
                     None => Err(ErrorKind::ConnectionClosed.into()),
