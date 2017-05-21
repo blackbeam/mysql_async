@@ -33,18 +33,20 @@ impl<T> Future for DropResult<T>
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try_ready!(self.query_result.as_mut().unwrap().poll()) {
-            Left(_) => self.poll(),
-            Right(output) => {
-                let prev_result = self.query_result.take().unwrap();
-                match output.into_next_or_output(prev_result) {
-                    (_, Left(next_result)) => {
-                        self.query_result = Some(next_result);
-                        self.poll()
-                    },
-                    (_, Right(stmt_or_conn)) => Ok(Ready(stmt_or_conn)),
-                }
-            },
+        loop {
+            match try_ready!(self.query_result.as_mut().unwrap().poll()) {
+                Left(_) => continue,
+                Right(output) => {
+                    let prev_result = self.query_result.take().unwrap();
+                    match output.into_next_or_output(prev_result) {
+                        (_, Left(next_result)) => {
+                            self.query_result = Some(next_result);
+                            continue;
+                        },
+                        (_, Right(stmt_or_conn)) => return Ok(Ready(stmt_or_conn)),
+                    }
+                },
+            }
         }
     }
 }

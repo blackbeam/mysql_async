@@ -43,27 +43,29 @@ impl<T> Future for CollectAll<T>
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try_ready!(self.query_result.as_mut().unwrap().poll()) {
-            Left(row) => {
-                self.row_vec.push(row);
-                self.poll()
-            },
-            Right(output) => {
-                let set = mem::replace(&mut self.row_vec, Vec::new());
-                let prev_result = self.query_result.take().unwrap();
-                match output.into_next_or_output(prev_result) {
-                    (prev_result, Left(next_result)) => {
-                        self.query_result = Some(next_result);
-                        self.vec.push(ResultSet(set, prev_result));
-                        self.poll()
-                    },
-                    (prev_result, Right(out)) => {
-                        self.vec.push(ResultSet(set, prev_result));
-                        let vec = mem::replace(&mut self.vec, Vec::new());
-                        Ok(Ready((vec, out)))
-                    },
-                }
-            },
+        loop {
+            match try_ready!(self.query_result.as_mut().unwrap().poll()) {
+                Left(row) => {
+                    self.row_vec.push(row);
+                    continue;
+                },
+                Right(output) => {
+                    let set = mem::replace(&mut self.row_vec, Vec::new());
+                    let prev_result = self.query_result.take().unwrap();
+                    match output.into_next_or_output(prev_result) {
+                        (prev_result, Left(next_result)) => {
+                            self.query_result = Some(next_result);
+                            self.vec.push(ResultSet(set, prev_result));
+                            continue;
+                        },
+                        (prev_result, Right(out)) => {
+                            self.vec.push(ResultSet(set, prev_result));
+                            let vec = mem::replace(&mut self.vec, Vec::new());
+                            return Ok(Ready((vec, out)));
+                        },
+                    }
+                },
+            }
         }
     }
 }

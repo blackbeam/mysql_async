@@ -43,12 +43,11 @@ impl<F, T> Future for ForEach<F, T>
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try_ready!(self.query_result.poll()) {
-            Left(row) => {
-                (&mut self.fun)(row);
-                self.poll()
-            },
-            Right(output) => Ok(Ready(output)),
+        loop {
+            match try_ready!(self.query_result.poll()) {
+                Left(row) => (&mut self.fun)(row),
+                Right(output) => return Ok(Ready(output)),
+            }
         }
     }
 }
