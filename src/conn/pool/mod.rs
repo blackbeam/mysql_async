@@ -6,18 +6,16 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use BoxFuture;
 use conn::Conn;
-use conn::futures::Disconnect;
-use conn::futures::DropQuery;
-use conn::futures::DropResult;
-use conn::futures::NewConn;
 use errors::*;
-use IsolationLevel;
 use lib_futures::Async;
 use lib_futures::Async::Ready;
 use lib_futures::Async::NotReady;
 use lib_futures::Future;
 use lib_futures::task::{park, Task};
+use queryable::Queryable;
+use queryable::transaction::{Transaction, TransactionOptions};
 use std::fmt;
 use opts::Opts;
 use self::futures::*;
@@ -30,14 +28,13 @@ use tokio::reactor::Handle;
 
 pub mod futures;
 
-
 pub struct Inner {
     closed: bool,
-    new: Vec<NewConn>,
+    new: Vec<BoxFuture<Conn>>,
     idle: Vec<Conn>,
-    disconnecting: Vec<Disconnect>,
-    dropping: Vec<DropResult>,
-    rollback: Vec<DropQuery>,
+    disconnecting: Vec<BoxFuture<()>>,
+    dropping: Vec<BoxFuture<Conn>>,
+    rollback: Vec<BoxFuture<Conn>>,
     tasks: Vec<Task>,
 }
 
@@ -95,15 +92,12 @@ impl Pool {
     }
 
     /// Shortcut for `get_conn` followed by `start_transaction`.
-    pub fn start_transaction(&self,
-                             consistent_snapshot: bool,
-                             isolation_level: Option<IsolationLevel>,
-                             readonly: Option<bool>)
-                             -> StartTransaction {
-        new_start_transaction(self.get_conn(),
-                              consistent_snapshot,
-                              isolation_level,
-                              readonly)
+    pub fn start_transaction(&self, options: TransactionOptions) -> BoxFuture<Transaction<Conn>> {
+        let fut = self.get_conn()
+            .and_then(|conn| {
+                Queryable::start_transaction(conn, options)
+            });
+        Box::new(fut)
     }
 
     /// Returns future that disconnects this pool from server and resolves to `()`.
@@ -338,6 +332,7 @@ impl Drop for Conn {
 mod test {
     use conn::pool::Pool;
     use lib_futures::Future;
+    use queryable::Queryable;
     use test_misc::DATABASE_URL;
     use tokio::reactor::Core;
 
@@ -347,7 +342,9 @@ mod test {
 
         let pool = Pool::new(&**DATABASE_URL, &lp.handle());
         let fut = pool.get_conn()
-            .and_then(|conn| conn.ping().map(|_| ()))
+            .and_then(|conn| {
+                Queryable::ping(conn).map(|_| ())
+            })
             .and_then(|_| pool.disconnect());
 
         lp.run(fut).unwrap();

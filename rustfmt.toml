@@ -1,4 +1,7 @@
-where_trailing_comma = true
-match_block_trailing_comma = true
-use_try_shorthand = true
-fn_brace_style = "SameLineWhere"
+fn_args_layout = "Block"
+array_layout = "Block"
+where_style = "Rfc"
+generics_indent = "Block"
+fn_call_style = "Block"
+struct_lit_width = 60
+struct_variant_width = 60

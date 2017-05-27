@@ -7,7 +7,7 @@
 // modified, or distributed except according to those terms.
 
 //! ## mysql-async
-//! Tokio based asynchronous MySql client library for rust progrumming language.
+//! Tokio based asynchronous MySql client library for rust programming language.
 //!
 //! ### Installation
 //! Library hosted on [crates.io](https://crates.io/crates/mysql_async/).
@@ -62,13 +62,13 @@
 //!     let pool = my::Pool::new(database_url, &lp.handle());
 //!     let future = pool.get_conn().and_then(|conn| {
 //!         // Create temporary table
-//!         conn.query(
+//!         conn.drop_query(
 //!             r"CREATE TEMPORARY TABLE payment (
 //!                 customer_id int not null,
 //!                 amount int not null,
 //!                 account_name text
 //!             )"
-//!         ).and_then(|result| result.drop_result())
+//!         )
 //!     }).and_then(|conn| {
 //!         // Save payments
 //!         let params = payments.iter().map(|payment| {
@@ -86,7 +86,7 @@
 //!         conn.prep_exec("SELECT customer_id, amount, account_name FROM payment", ())
 //!     }).and_then(|result| {
 //!         // Collect payments
-//!         result.map(|row| {
+//!         result.map_and_drop(|row| {
 //!             let (customer_id, amount, account_name) = my::from_row(row);
 //!             Payment {
 //!                 customer_id: customer_id,
@@ -94,10 +94,10 @@
 //!                 account_name: account_name,
 //!             }
 //!         })
-//!     }).and_then(|(payments, _ /* conn */)| {
-//!         // Destructor of connection will return it to the pool
-//!         // But pool should be disconnected explicitly because it is
-//!         // asynchronous procedure.
+//!     }).and_then(|(_ /* conn */, payments)| {
+//!         // The destructor of a connection will return it to the pool,
+//!         // but pool should be disconnected explicitly because it's
+//!         // an asynchronous procedure.
 //!         pool.disconnect().map(|_| payments)
 //!     });
 //!
@@ -117,7 +117,6 @@ extern crate test;
 extern crate bitflags;
 extern crate byteorder;
 pub extern crate chrono;
-pub extern crate either;
 #[macro_use]
 extern crate error_chain;
 extern crate fnv;
@@ -125,8 +124,7 @@ extern crate fnv;
 extern crate futures as lib_futures;
 #[macro_use]
 extern crate lazy_static;
-#[macro_use]
-extern crate log;
+extern crate mio;
 extern crate regex;
 extern crate serde;
 extern crate serde_json;
@@ -137,47 +135,38 @@ extern crate tokio_io;
 extern crate twox_hash;
 extern crate url;
 
-#[cfg(test)]
-extern crate env_logger;
-
 #[macro_use]
 pub mod macros;
 #[macro_use]
 mod value;
 mod conn;
+mod connection_like;
 /// Mysql constants
 pub mod consts;
 /// Errors used in this crate
 pub mod errors;
 mod io;
+mod local_infile_handler;
 mod opts;
 mod proto;
+mod queryable;
 mod scramble;
+
+pub type BoxFuture<T> = Box<lib_futures::Future<Item = T, Error = errors::Error>>;
 
 #[doc(inline)]
 pub use self::conn::Conn;
-
-#[doc(inline)]
-pub use self::conn::futures::query_result::{BinaryResult, BinQueryResult, ResultSet,
-                                            TextQueryResult, TextResult};
-
 #[doc(inline)]
 pub use self::conn::pool::Pool;
 
 #[doc(inline)]
-pub use self::conn::stmt::Stmt;
+pub use self::queryable::transaction::IsolationLevel;
 
 #[doc(inline)]
-pub use self::conn::transaction::Transaction;
+pub use self::opts::{Opts, OptsBuilder};
 
 #[doc(inline)]
-pub use self::conn::transaction::IsolationLevel;
-
-#[doc(inline)]
-pub use self::conn::transaction::futures::query_result::{TransBinQueryResult, TransTextQueryResult};
-
-#[doc(inline)]
-pub use self::opts::{Opts, OptsBuilder, WhiteListFsLocalInfileHandler};
+pub use self::local_infile_handler::builtin::WhiteListFsLocalInfileHandler;
 
 #[doc(inline)]
 pub use self::proto::{Column, ErrPacket, Row};
@@ -186,88 +175,30 @@ pub use self::proto::{Column, ErrPacket, Row};
 pub use self::value::{from_row, from_row_opt, from_value, from_value_opt, Params, Value,
                       Serialized, Deserialized};
 
+#[doc(inline)]
+pub use self::queryable::query_result::QueryResult;
+
+#[doc(inline)]
+pub use self::queryable::transaction::{Transaction, TransactionOptions};
+
 /// Futures used in this crate
-pub mod futures {
-    #[doc(inline)]
-    pub use conn::futures::BatchExec;
-    #[doc(inline)]
-    pub use conn::futures::Disconnect;
-    #[doc(inline)]
-    pub use conn::futures::DropExec;
-    #[doc(inline)]
-    pub use conn::futures::DropQuery;
-    #[doc(inline)]
-    pub use conn::futures::First;
-    #[doc(inline)]
-    pub use conn::futures::FirstExec;
-    #[doc(inline)]
-    pub use conn::futures::NewConn;
-    #[doc(inline)]
-    pub use conn::futures::Ping;
-    #[doc(inline)]
-    pub use conn::futures::Prepare;
-    #[doc(inline)]
-    pub use conn::futures::PrepExec;
-    #[doc(inline)]
-    pub use conn::futures::Query;
-    #[doc(inline)]
-    pub use conn::futures::Reset;
-    #[doc(inline)]
-    pub use conn::futures::query_result::futures::Collect;
-    #[doc(inline)]
-    pub use conn::futures::query_result::futures::CollectAll;
-    #[doc(inline)]
-    pub use conn::futures::query_result::futures::DropResult;
-    #[doc(inline)]
-    pub use conn::futures::query_result::futures::ForEach;
-    #[doc(inline)]
-    pub use conn::futures::query_result::futures::Map;
-    #[doc(inline)]
-    pub use conn::futures::query_result::futures::Reduce;
-    #[doc(inline)]
-    pub use conn::pool::futures::DisconnectPool;
-    #[doc(inline)]
-    pub use conn::pool::futures::GetConn;
-    #[doc(inline)]
-    pub use conn::pool::futures::StartTransaction as PooledStartTransaction;
-    #[doc(inline)]
-    pub use conn::stmt::futures::Batch;
-    #[doc(inline)]
-    pub use conn::stmt::futures::Execute;
-    #[doc(inline)]
-    pub use conn::stmt::futures::First as StmtFirst;
-    #[doc(inline)]
-    pub use conn::transaction::futures::Commit;
-    #[doc(inline)]
-    pub use conn::transaction::futures::Rollback;
-    #[doc(inline)]
-    pub use conn::transaction::futures::StartTransaction;
-    #[doc(inline)]
-    pub use conn::transaction::futures::TransBatchExec;
-    #[doc(inline)]
-    pub use conn::transaction::futures::TransFirst;
-    #[doc(inline)]
-    pub use conn::transaction::futures::TransDropQuery;
-    #[doc(inline)]
-    pub use conn::transaction::futures::TransFirstExec;
-    #[doc(inline)]
-    pub use conn::transaction::futures::TransDropExec;
-    #[doc(inline)]
-    pub use conn::transaction::futures::TransPrepExec;
-    #[doc(inline)]
-    pub use conn::transaction::futures::TransQuery;
+mod futures {
+    pub use queryable::query_result::{
+        ForEachAndDrop,
+        MapAndDrop,
+        ReduceAndDrop,
+        ForEach,
+        Map,
+        Reduce,
+    };
 }
 
 /// Traits used in this crate
 pub mod prelude {
     #[doc(inline)]
-    pub use conn::futures::query_result::QueryResult;
+    pub use queryable::Queryable;
     #[doc(inline)]
-    pub use conn::futures::query_result::ResultKind;
-    #[doc(inline)]
-    pub use conn::futures::query_result::UnconsumedQueryResult;
-    #[doc(inline)]
-    pub use opts::LocalInfileHandler;
+    pub use local_infile_handler::LocalInfileHandler;
     #[doc(inline)]
     pub use value::ConvIr;
     #[doc(inline)]

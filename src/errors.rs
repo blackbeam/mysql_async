@@ -88,6 +88,9 @@ error_chain! {
         NoLocalInfileHandler {
             description("Can't handle local infile request. Handler not specified.")
         }
+        NestedTransaction {
+            description("Transactions couldn't be nested")
+        }
     }
 }
 

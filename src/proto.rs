@@ -304,7 +304,6 @@ impl NewPacket {
             } else {
                 let length = u24_le(&*self.header).unwrap();
                 self.last_seq_id = self.header[3];
-                debug!("Last seq id {}", self.last_seq_id);
                 self.header.clear();
                 if length == 0 {
                     return ParseResult::Done(Packet { payload: self.data }, self.last_seq_id);
@@ -736,6 +735,26 @@ impl EofPacket {
     }
 }
 
+pub struct LocalInfilePacket<'a> {
+    file_name: &'a [u8],
+}
+
+impl<'a> LocalInfilePacket<'a> {
+    pub fn new(packet: &'a Packet) -> Option<LocalInfilePacket<'a>> {
+        if packet.as_ref()[0] == 0xFB {
+            Some(LocalInfilePacket {
+                file_name: &packet.as_ref()[1..],
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn file_name(&self) -> &[u8] {
+        self.file_name
+    }
+}
+
 /// Row of a result set.
 ///
 /// Row could be indexed by numeric column index or by column name.
@@ -853,6 +872,20 @@ impl<'a> ColumnIndex for &'a str {
     }
 }
 
+trait ReadExt: ReadBytesExt {
+    fn read_lenenc_int(&mut self) -> io::Result<u64> {
+        let len = match self.read_u8()? {
+            0xfc => 2,
+            0xfd => 3,
+            0xfe => 8,
+            x => return Ok(x as u64),
+        };
+        self.read_uint::<LE>(len)
+    }
+}
+
+impl<T: ReadBytesExt> ReadExt for T {}
+
 /// Mysql column.
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct Column {
@@ -872,7 +905,67 @@ pub struct Column {
 
 impl Column {
     #[doc(hidden)]
-    pub fn new(packet: Packet, last_command: consts::Command) -> Column {
+    pub fn new(packet: Packet) -> io::Result<Column> {
+        let (schema, table, org_table, name, org_name, character_set, column_length, column_type,
+            flags, decimals, default_values) = {
+            let mut reader = &packet.as_ref()[4..];
+            let mut len = reader.read_lenenc_int()? as usize;
+            let (schema, mut reader) = reader.split_at(len);
+            len = reader.read_lenenc_int()? as usize;
+            let (table, mut reader) = reader.split_at(len);
+            len = reader.read_lenenc_int()? as usize;
+            let (org_table, mut reader) = reader.split_at(len);
+            len = reader.read_lenenc_int()? as usize;
+            let (name, mut reader) = reader.split_at(len);
+            len = reader.read_lenenc_int()? as usize;
+            let (org_name, mut reader) = reader.split_at(len);
+            reader = &reader[1..];
+            let character_set = reader.read_u16::<LE>()?;
+            let column_length = reader.read_u32::<LE>()?;
+            let column_type = reader.read_u8()?.into();
+            let flags = consts::ColumnFlags::from_bits_truncate(reader.read_u16::<LE>()?);
+            let decimals = reader.read_u8()?;
+            reader = &reader[2..];
+            let defaults = match reader.len() {
+                0 => None,
+                _ => {
+                    len = reader.read_lenenc_int()? as usize;
+                    let (defaults, _) = reader.split_at(len);
+                    Some(defaults)
+                }
+            };
+            let packet_addr = packet.as_ref().as_ptr() as usize;
+            (
+                (schema.as_ptr() as usize - packet_addr, schema.len()),
+                (table.as_ptr() as usize - packet_addr, table.len()),
+                (org_table.as_ptr() as usize - packet_addr, org_table.len()),
+                (name.as_ptr() as usize - packet_addr, name.len()),
+                (org_name.as_ptr() as usize - packet_addr, org_name.len()),
+                character_set,
+                column_length,
+                column_type,
+                flags,
+                decimals,
+                defaults.map(|x| (x.as_ptr() as usize - packet_addr, x.len())),
+            )
+        };
+        Ok(Column {
+            schema,
+            table,
+            org_table,
+            name,
+            org_name,
+            character_set,
+            column_length,
+            column_type,
+            flags,
+            decimals,
+            default_values,
+            payload: packet.payload,
+        })
+    }
+    #[doc(hidden)]
+    pub fn new_old(packet: Packet, last_command: consts::Command) -> Column {
         let (schema,
              table,
              org_table,

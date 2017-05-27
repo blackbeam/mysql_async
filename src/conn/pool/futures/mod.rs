@@ -8,13 +8,9 @@
 
 mod get_conn;
 mod disconnect_pool;
-mod start_transaction;
 
 pub use self::get_conn::GetConn;
 pub use self::get_conn::new as new_get_conn;
 
 pub use self::disconnect_pool::DisconnectPool;
 pub use self::disconnect_pool::new as new_disconnect_pool;
-
-pub use self::start_transaction::StartTransaction;
-pub use self::start_transaction::new as new_start_transaction;

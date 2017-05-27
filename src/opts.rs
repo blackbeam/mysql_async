@@ -8,152 +8,20 @@
 
 use errors::*;
 
-use std::collections::HashSet;
-use std::fmt;
-use std::fs;
-use std::io;
+use local_infile_handler::{
+    LocalInfileHandler,
+    LocalInfileHandlerObject,
+};
+
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::path::PathBuf;
-use std::str::from_utf8;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use url::Url;
 use url::percent_encoding::percent_decode;
 
-use tokio_io::AsyncRead;
-
-
 const DEFAULT_MIN_CONNS: usize = 10;
 const DEFAULT_MAX_CONNS: usize = 100;
-
-
-/// Trait used to handle local infile requests.
-///
-/// Simple handler example:
-///
-/// ```rust
-/// # extern crate futures;
-/// # extern crate mysql_async as my;
-/// # extern crate tokio_core as tokio;
-/// # extern crate tokio_io;
-///
-/// # use futures::Future;
-/// # use my::prelude::*;
-/// # use tokio::reactor::Core;
-/// # use tokio_io::AsyncRead;
-/// # use std::env;
-/// # use std::io;
-/// # fn main() {
-/// struct ExampleHandler(&'static [u8]);
-///
-/// impl LocalInfileHandler for ExampleHandler {
-///     fn handle(&self, _: &[u8]) -> my::errors::Result<Box<AsyncRead>> {
-///         Ok(Box::new(self.0))
-///     }
-/// }
-///
-/// # let database_url: String = if let Ok(url) = env::var("DATABASE_URL") {
-/// #     let opts = my::Opts::from_url(&url).expect("DATABASE_URL invalid");
-/// #     if opts.get_db_name().expect("a database name is required").is_empty() {
-/// #         panic!("database name is empty");
-/// #     }
-/// #     url
-/// # } else {
-/// #     "mysql://root:password@127.0.0.1:3307/mysql".into()
-/// # };
-///
-/// let mut lp = Core::new().unwrap();
-///
-/// let mut opts = my::OptsBuilder::from_opts(&*database_url);
-/// opts.local_infile_handler(Some(ExampleHandler(b"foobar")));
-///
-/// let pool = my::Pool::new(opts, &lp.handle());
-///
-/// let future = pool.get_conn()
-///     .and_then(|conn| conn.drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);"))
-///     .and_then(|conn| conn.drop_query("LOAD DATA LOCAL INFILE 'baz' INTO TABLE tmp;"))
-///     .and_then(|conn| conn.prep_exec("SELECT * FROM tmp;", ()))
-///     .and_then(|result| result.map(|row| my::from_row::<(String,)>(row).0))
-///     .map(|(result, _ /* stmt */)| {
-///         assert_eq!(result.len(), 1);
-///         assert_eq!(result[0], "foobar");
-///     })
-///     .and_then(|_| pool.disconnect());
-///
-/// lp.run(future).unwrap();
-/// # }
-/// ```
-pub trait LocalInfileHandler {
-    /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
-    /// query.
-    fn handle(&self, file_name: &[u8]) -> Result<Box<AsyncRead>>;
-}
-
-#[derive(Clone)]
-struct LocalInfileHandlerObject(Arc<LocalInfileHandler>);
-
-impl PartialEq for LocalInfileHandlerObject {
-    fn eq(&self, other: &LocalInfileHandlerObject) -> bool {
-        self.0.as_ref() as *const LocalInfileHandler ==
-        other.0.as_ref() as *const LocalInfileHandler
-    }
-}
-
-impl Eq for LocalInfileHandlerObject {}
-
-impl fmt::Debug for LocalInfileHandlerObject {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Local infile handler object")
-    }
-}
-
-struct File(fs::File);
-
-impl io::Read for File {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.0.read(buf)
-    }
-}
-
-impl AsyncRead for File {
-    unsafe fn prepare_uninitialized_buffer(&self, _buf: &mut [u8]) -> bool {
-        false
-    }
-}
-
-/// Handles local infile requests from filesystem using explicit path white list.
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub struct WhiteListFsLocalInfileHandler {
-    white_list: HashSet<PathBuf>,
-}
-
-impl WhiteListFsLocalInfileHandler {
-    pub fn new<A, B>(white_list: B) -> WhiteListFsLocalInfileHandler
-        where A: Into<PathBuf>,
-              B: IntoIterator<Item = A>,
-    {
-        let mut white_list_set = HashSet::new();
-        for path in white_list.into_iter() {
-            white_list_set.insert(Into::<PathBuf>::into(path));
-        }
-        WhiteListFsLocalInfileHandler { white_list: white_list_set }
-    }
-}
-
-impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
-    fn handle(&self, file_name: &[u8]) -> Result<Box<AsyncRead>> {
-        let path: PathBuf = match from_utf8(file_name) {
-            Ok(path_str) => path_str.into(),
-            Err(_) => bail!("Invalid file name"),
-        };
-        if self.white_list.contains(&path) {
-            fs::File::open(path).map(|x| Box::new(File(x)) as Box<AsyncRead>).map_err(Into::into)
-        } else {
-            bail!(format!("Path `{}' is not in white list", path.display()));
-        }
-    }
-}
 
 /// Mysql connection options.
 ///
@@ -252,7 +120,7 @@ impl Opts {
 
     /// Local infile handler
     pub fn get_local_infile_handler(&self) -> Option<Arc<LocalInfileHandler>> {
-        self.local_infile_handler.as_ref().map(|x| x.0.clone())
+        self.local_infile_handler.as_ref().map(|x| x.clone_inner())
     }
 
     /// Lower bound of opened connections for `Pool` (defaults to 10).
@@ -364,7 +232,7 @@ impl OptsBuilder {
     pub fn local_infile_handler<T>(&mut self, handler: Option<T>) -> &mut Self
         where T: LocalInfileHandler + 'static,
     {
-        self.opts.local_infile_handler = handler.map(|x| LocalInfileHandlerObject(Arc::new(x)));
+        self.opts.local_infile_handler = handler.map(LocalInfileHandlerObject::new);
         self
     }
 

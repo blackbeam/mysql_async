@@ -10,15 +10,14 @@ repository = "https://github.com/blackbeam/mysql_async"
 version = "0.9.3"
 
 [dependencies]
-bitflags = "~0.8"
+bitflags = "~0.9"
 byteorder = "~1.0.0"
 chrono = "~0.3"
-either = "~1.1.0"
 error-chain = "~0.10"
 fnv = "~1.0"
 futures = "~0.1.1"
 lazy_static = "~0.2.1"
-log = "~0.3.6"
+mio = "~0.6"
 serde = "1.0"
 serde_json = "1.0"
 sha1 = "~0.2.0"
@@ -31,9 +30,6 @@ url = "^1.2.1"
 [dependencies.regex]
 default-features = false
 version = "~0.2.1"
-
-[dev-dependencies]
-env_logger = "~0.4.0"
 
 [features]
 nightly = []
