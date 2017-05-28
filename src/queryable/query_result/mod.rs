@@ -202,9 +202,9 @@ impl<T, P> QueryResult<T, P>
         self.get_affected_rows()
     }
 
-    /// `true` if no more rows nor result sets in this query.
+    /// `true` if there is no more rows nor result sets in this query.
     ///
-    /// One should use it to check if there is more than one result set in this query result.
+    /// One could use it to check if there is more than one result set in this query result.
     pub fn is_empty(&self) -> bool {
         match *self {
             QueryResult(Empty(..)) => true,
@@ -219,7 +219,7 @@ impl<T, P> QueryResult<T, P>
     /// It will stop collecting on result set boundary. This means that you should call `collect`
     /// as many times as result sets in your query result. For example query
     /// `SELECT 'foo'; SELECT 'foo', 'bar';` will produce `QueryResult` with two result sets in it.
-    /// One can use `QueryResult::is_empty` to make sure that there is no more result test.
+    /// One can use `QueryResult::is_empty` to make sure that there is no more result sets.
     pub fn collect<R>(self) -> BoxFuture<(Self, Vec<R>)>
         where R: FromRow + 'static
     {

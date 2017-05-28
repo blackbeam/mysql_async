@@ -799,7 +799,7 @@ impl Row {
     }
 
     /// Will take value of a column with index `index` if it exists and wasn't taken earlier then
-    /// will converts it to `T`.
+    /// will convert it to `T`.
     pub fn take<T, I>(&mut self, index: I) -> Option<T>
         where T: FromValue,
               I: ColumnIndex,
