@@ -330,6 +330,7 @@ impl Drop for Conn {
 
 #[cfg(test)]
 mod test {
+    use TransactionOptions;
     use conn::pool::Pool;
     use lib_futures::Future;
     use queryable::Queryable;
@@ -343,9 +344,36 @@ mod test {
         let pool = Pool::new(&**DATABASE_URL, &lp.handle());
         let fut = pool.get_conn()
             .and_then(|conn| {
-                Queryable::ping(conn).map(|_| ())
+                conn.ping().map(|_| ())
             })
             .and_then(|_| pool.disconnect());
+
+        lp.run(fut).unwrap();
+    }
+
+    #[test]
+    fn should_start_transaction() {
+        let mut lp = Core::new().unwrap();
+
+        let pool = Pool::new(format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL),
+                             &lp.handle());
+        let fut = pool.start_transaction(TransactionOptions::default())
+            .and_then(|transaction| {
+                transaction.drop_query("CREATE TEMPORARY TABLE tmp(id int)")
+            })
+            .and_then(|transaction| {
+                transaction.batch_exec("INSERT INTO tmp (id) VALUES (?)", vec![(1,), (2,)])
+            })
+            .and_then(|transaction| {
+                transaction.prep_exec("SELECT * FROM tmp", ())
+            })
+            .map(|_| ())
+            .and_then({let pool = pool.clone(); move |_| pool.get_conn()})
+            .and_then(|conn| conn.first("SELECT COUNT(*) FROM tmp"))
+            .and_then(|(_, row_opt)| {
+                assert_eq!(row_opt, Some((0u8,)));
+                pool.disconnect()
+            });
 
         lp.run(fut).unwrap();
     }
