@@ -965,32 +965,32 @@ impl Column {
         })
     }
 
-    /// Schema name (see [`Column`](http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-Protocol::ColumnDefinition)).
+    /// Schema name (see [`Column`](https://mariadb.com/kb/en/mariadb/resultset)).
     pub fn schema<'a>(&'a self) -> &'a [u8] {
         &self.payload[self.schema.0..self.schema.0 + self.schema.1]
     }
 
-    /// Virtual table name (see [`Column`](http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-Protocol::ColumnDefinition)).
+    /// Virtual table name (see [`Column`](https://mariadb.com/kb/en/mariadb/resultset)).
     pub fn table<'a>(&'a self) -> &'a [u8] {
         &self.payload[self.table.0..self.table.0 + self.table.1]
     }
 
-    /// Physical table name (see [`Column`](http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-Protocol::ColumnDefinition)).
+    /// Physical table name (see [`Column`](https://mariadb.com/kb/en/mariadb/resultset)).
     pub fn org_table<'a>(&'a self) -> &'a [u8] {
         &self.payload[self.org_table.0..self.org_table.0 + self.org_table.1]
     }
 
-    /// Virtual column name (see [`Column`](http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-Protocol::ColumnDefinition)).
+    /// Virtual column name (see [`Column`](https://mariadb.com/kb/en/mariadb/resultset)).
     pub fn name<'a>(&'a self) -> &'a [u8] {
         &self.payload[self.name.0..self.name.0 + self.name.1]
     }
 
-    /// Physical column name (see [`Column`](http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-Protocol::ColumnDefinition)).
+    /// Physical column name (see [`Column`](https://mariadb.com/kb/en/mariadb/resultset)).
     pub fn org_name<'a>(&'a self) -> &'a [u8] {
         &self.payload[self.org_name.0..self.org_name.0 + self.org_name.1]
     }
 
-    /// Default values (see [`Column`](http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-Protocol::ColumnDefinition)).
+    /// Default values (see [`Column`](https://mariadb.com/kb/en/mariadb/resultset)).
     pub fn default_values<'a>(&'a self) -> Option<&'a [u8]> {
         self.default_values.map(|(offset, len)| &self.payload[offset..offset + len])
     }
