@@ -31,6 +31,10 @@ pub struct TransactionOptions {
 }
 
 impl TransactionOptions {
+    pub fn new() -> TransactionOptions {
+        TransactionOptions::default()
+    }
+
     pub fn set_consistent_snapshot(&mut self, value: bool) -> &mut Self {
         self.consistent_snapshot = value;
         self
