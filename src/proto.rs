@@ -758,7 +758,7 @@ impl<'a> LocalInfilePacket<'a> {
 /// Row of a result set.
 ///
 /// Row could be indexed by numeric column index or by column name.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq)]
 pub struct Row {
     values: Vec<Option<Value>>,
     columns: Arc<Vec<Column>>,
@@ -823,6 +823,23 @@ impl Row {
     #[doc(hidden)]
     pub fn place(&mut self, index: usize, value: Value) {
         self.values[index] = Some(value);
+    }
+}
+
+impl fmt::Debug for Row {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut debug = f.debug_tuple("Row");
+        for val in self.values.iter() {
+            match *val {
+                Some(ref val) => {
+                    debug.field(val);
+                },
+                None => {
+                    debug.field(&"<taken>");
+                },
+            }
+        }
+        debug.finish()
     }
 }
 
