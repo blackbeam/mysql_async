@@ -359,9 +359,16 @@ impl<T, Ir> FromRow for T
           T: FromValue<Intermediate = Ir>,
 {
     #[inline]
-    fn from_row(row: Row) -> T {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to T")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type T. (see FromRow documentation)", row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(mut row: Row) -> Result<T> {
         if row.len() == 1 {
             Ok(take_or_place!(row, 0, T).commit())
@@ -376,9 +383,16 @@ impl<T1, Ir1> FromRow for (T1,)
           T1: FromValue<Intermediate = Ir1>,
 {
     #[inline]
-    fn from_row(row: Row) -> (T1,) {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1,)")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type (T1,). (see FromRow documentation)", row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(row: Row) -> Result<(T1,)> {
         T1::from_row_opt(row).map(|t| (t,))
     }
@@ -391,9 +405,16 @@ impl<T1, Ir1, T2, Ir2> FromRow for (T1, T2)
           T2: FromValue<Intermediate = Ir2>,
 {
     #[inline]
-    fn from_row(row: Row) -> (T1, T2) {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1,T2)")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type (T1, T2). (see FromRow documentation)", row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(mut row: Row) -> Result<(T1, T2)> {
         if row.len() != 2 {
             return Err(ErrorKind::FromRow(row).into());
@@ -413,9 +434,17 @@ impl<T1, Ir1, T2, Ir2, T3, Ir3> FromRow for (T1, T2, T3)
           T3: FromValue<Intermediate = Ir3>,
 {
     #[inline]
-    fn from_row(row: Row) -> (T1, T2, T3) {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1,T2,T3)")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type (T1, T2, T3). (see FromRow documentation)",
+                       row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(mut row: Row) -> Result<(T1, T2, T3)> {
         if row.len() != 3 {
             return Err(ErrorKind::FromRow(row).into());
@@ -438,9 +467,17 @@ impl<T1, Ir1, T2, Ir2, T3, Ir3, T4, Ir4> FromRow for (T1, T2, T3, T4)
           T4: FromValue<Intermediate = Ir4>,
 {
     #[inline]
-    fn from_row(row: Row) -> (T1, T2, T3, T4) {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T4)")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type (T1, .., T4). (see FromRow documentation)",
+                       row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(mut row: Row) -> Result<(T1, T2, T3, T4)> {
         if row.len() != 4 {
             return Err(ErrorKind::FromRow(row).into());
@@ -466,9 +503,17 @@ impl<T1, Ir1, T2, Ir2, T3, Ir3, T4, Ir4, T5, Ir5> FromRow for (T1, T2, T3, T4, T
           T5: FromValue<Intermediate = Ir5>,
 {
     #[inline]
-    fn from_row(row: Row) -> (T1, T2, T3, T4, T5) {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T5)")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type (T1, .., T5). (see FromRow documentation)",
+                       row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(mut row: Row) -> Result<(T1, T2, T3, T4, T5)> {
         if row.len() != 5 {
             return Err(ErrorKind::FromRow(row).into());
@@ -497,9 +542,17 @@ impl<T1, Ir1, T2, Ir2, T3, Ir3, T4, Ir4, T5, Ir5, T6, Ir6> FromRow for (T1, T2, 
           T6: FromValue<Intermediate = Ir6>,
 {
     #[inline]
-    fn from_row(row: Row) -> (T1, T2, T3, T4, T5, T6) {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T6)")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type (T1, .., T6). (see FromRow documentation)",
+                       row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(mut row: Row) -> Result<(T1, T2, T3, T4, T5, T6)> {
         if row.len() != 6 {
             return Err(ErrorKind::FromRow(row).into());
@@ -532,9 +585,17 @@ impl<T1, Ir1, T2, Ir2, T3, Ir3, T4, Ir4, T5, Ir5, T6, Ir6, T7, Ir7> FromRow
           T7: FromValue<Intermediate = Ir7>,
 {
     #[inline]
-    fn from_row(row: Row) -> (T1, T2, T3, T4, T5, T6, T7) {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T7)")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type (T1, .., T7). (see FromRow documentation)",
+                       row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(mut row: Row) -> Result<(T1, T2, T3, T4, T5, T6, T7)> {
         if row.len() != 7 {
             return Err(ErrorKind::FromRow(row).into());
@@ -584,9 +645,17 @@ impl<T1, Ir1, T2, Ir2, T3, Ir3, T4, Ir4, T5, Ir5, T6, Ir6, T7, Ir7, T8, Ir8> Fro
           T8: FromValue<Intermediate = Ir8>,
 {
     #[inline]
-    fn from_row(row: Row) -> (T1, T2, T3, T4, T5, T6, T7, T8) {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T8)")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type (T1, .., T8). (see FromRow documentation)",
+                       row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(mut row: Row) -> Result<(T1, T2, T3, T4, T5, T6, T7, T8)> {
         if row.len() != 8 {
             return Err(ErrorKind::FromRow(row).into());
@@ -646,9 +715,17 @@ where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
       Ir8: ConvIr<T8>, T8: FromValue<Intermediate=Ir8>,
       Ir9: ConvIr<T9>, T9: FromValue<Intermediate=Ir9>, {
     #[inline]
-    fn from_row(row: Row) -> (T1, T2, T3, T4, T5, T6, T7, T8, T9) {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T9)")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type (T1, .., T9). (see FromRow documentation)",
+                       row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(mut row: Row) ->
         Result<(T1, T2, T3, T4, T5, T6, T7, T8, T9)>
     {
@@ -709,9 +786,17 @@ where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
       Ir9: ConvIr<T9>, T9: FromValue<Intermediate=Ir9>,
       Ir10: ConvIr<T10>, T10: FromValue<Intermediate=Ir10>, {
     #[inline]
-    fn from_row(row: Row) -> (T1, T2, T3, T4, T5, T6, T7, T8, T9, T10) {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T10)")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type (T1, .., T10). (see FromRow documentation)",
+                       row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(mut row: Row) ->
         Result<(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10)>
     {
@@ -780,9 +865,17 @@ where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
       Ir10: ConvIr<T10>, T10: FromValue<Intermediate=Ir10>,
       Ir11: ConvIr<T11>, T11: FromValue<Intermediate=Ir11>, {
     #[inline]
-    fn from_row(row: Row) -> (T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11) {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T11)")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type (T1, .., T11). (see FromRow documentation)",
+                       row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(mut row: Row) ->
         Result<(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11)>
     {
@@ -859,9 +952,17 @@ where Ir1: ConvIr<T1>, T1: FromValue<Intermediate=Ir1>,
       Ir11: ConvIr<T11>, T11: FromValue<Intermediate=Ir11>,
       Ir12: ConvIr<T12>, T12: FromValue<Intermediate=Ir12>, {
     #[inline]
-    fn from_row(row: Row) -> (T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12) {
-        FromRow::from_row_opt(row).ok().expect("Could not convert row to (T1 .. T12)")
+    fn from_row(row: Row) -> Self {
+        match FromRow::from_row_opt(row) {
+            Ok(x) => x,
+            Err(Error(ErrorKind::FromRow(row), ..)) => {
+                panic!("Couldn't convert {:?} to type (T1, .., T12). (see FromRow documentation)",
+                       row)
+            }
+            _ => unreachable!(),
+        }
     }
+
     fn from_row_opt(mut row: Row) ->
         Result<(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12)>
     {
