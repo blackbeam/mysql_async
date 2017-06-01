@@ -12,13 +12,14 @@ use errors::*;
 
 use proto::{Column, Row, write_lenenc_bytes, read_lenenc_bytes, read_bin_value};
 
-use std::str::FromStr;
-use std::str::{from_utf8, from_utf8_unchecked};
 use std::borrow::ToOwned;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry::Occupied;
+use std::fmt;
 use std::hash::BuildHasherDefault as BldHshrDflt;
 use std::io::Write as stdWrite;
+use std::str::FromStr;
+use std::str::{from_utf8, from_utf8_unchecked};
 use std::time::Duration;
 use time::{self, Timespec, Tm, at, now, strptime};
 
@@ -63,7 +64,7 @@ lazy_static! {
 }
 
 /// Value of a MySql column.
-#[derive(Clone, PartialEq, PartialOrd, Debug)]
+#[derive(Clone, PartialEq, PartialOrd)]
 pub enum Value {
     NULL,
     Bytes(Vec<u8>),
@@ -262,6 +263,28 @@ impl Value {
             Ok((bitmap, writer, None))
         } else {
             Ok((bitmap, writer, Some(large_ids)))
+        }
+    }
+}
+
+impl fmt::Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Value::NULL => f.debug_tuple("Null").finish(),
+            Value::Bytes(ref bytes) => {
+                let mut debug = f.debug_tuple("Bytes");
+                if bytes.len() <= 8 {
+                    debug.field(&String::from_utf8_lossy(&*bytes).replace("\n", "\\n")).finish()
+                } else {
+                    let bytes = String::from_utf8_lossy(&bytes[..8]).replace("\n", "\\n");
+                    debug.field(&format!("{}..", bytes)).finish()
+                }
+            },
+            Value::Int(ref val) => f.debug_tuple("Int").field(val).finish(),
+            Value::UInt(ref val) => f.debug_tuple("UInt").field(val).finish(),
+            Value::Float(ref val) => f.debug_tuple("Float").field(val).finish(),
+            Value::Date(..) => f.debug_tuple("Date").field(&self.as_str()).finish(),
+            Value::Time(..) => f.debug_tuple("Time").field(&self.as_str()).finish(),
         }
     }
 }
