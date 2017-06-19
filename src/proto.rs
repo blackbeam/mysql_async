@@ -304,7 +304,6 @@ impl NewPacket {
             } else {
                 let length = u24_le(&*self.header).unwrap();
                 self.last_seq_id = self.header[3];
-                self.header.clear();
                 if length == 0 {
                     return ParseResult::Done(Packet { payload: self.data }, self.last_seq_id);
                 } else {
