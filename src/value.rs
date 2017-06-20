@@ -307,6 +307,8 @@ pub fn from_row_opt<T: FromRow>(row: Row) -> Result<T> {
 /// `FromValue` trait, i.e. calling `from_row::<(T, U)>(row)` is similar to calling
 /// `(T::from_value(column_1), U::from_value(column_2))`.
 ///
+/// Note that conversion will always fail if any of columns was taken using `Row::take` method.
+///
 /// Conversion of individual columns of a row may fail. In this case `from_row` will panic, and
 /// `from_row_opt` will roll back conversion and return original row.
 ///
