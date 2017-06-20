@@ -24,6 +24,7 @@ use std::collections::vec_deque::VecDeque;
 use std::io;
 use std::io::Read;
 use std::net::ToSocketAddrs;
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::reactor::Handle;
 use tokio_io::AsyncRead;
@@ -59,7 +60,8 @@ impl Stream {
     }
 
     pub fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
-        Ok(self.endpoint.as_ref().expect("Should be here").set_keepalive_ms(ms)?)
+        let ms = ms.map(|val| Duration::from_millis(val as u64));
+        Ok(self.endpoint.as_ref().expect("Should be here").set_keepalive(ms)?)
     }
 }
 

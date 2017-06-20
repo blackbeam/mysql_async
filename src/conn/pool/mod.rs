@@ -13,7 +13,7 @@ use lib_futures::Async;
 use lib_futures::Async::Ready;
 use lib_futures::Async::NotReady;
 use lib_futures::Future;
-use lib_futures::task::{park, Task};
+use lib_futures::task::{self, Task};
 use queryable::Queryable;
 use queryable::transaction::{Transaction, TransactionOptions};
 use std::fmt;
@@ -167,7 +167,7 @@ impl Pool {
         }
 
         while let Some(task) = self.inner_mut().tasks.pop() {
-            task.unpark()
+            task.notify()
         }
     }
 
@@ -309,7 +309,7 @@ impl Pool {
                     self.inner_mut().new.push(new_conn);
                     self.poll()
                 } else {
-                    self.inner_mut().tasks.push(park());
+                    self.inner_mut().tasks.push(task::current());
                     Ok(NotReady)
                 }
             },
