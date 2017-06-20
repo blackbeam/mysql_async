@@ -289,19 +289,42 @@ impl fmt::Debug for Value {
     }
 }
 
-/// Will *panic* if could not convert `row` to `T`.
+/// Shortcut for `FromRow::from_row`. See `FromRow` documentation.
 #[inline]
 pub fn from_row<T: FromRow>(row: Row) -> T {
     FromRow::from_row(row)
 }
 
-/// Will return `Err(row)` if could not convert `row` to `T`
+/// Shortcut for `FromRow::from_row_opt`. See `FromRow` documentation.
 #[inline]
 pub fn from_row_opt<T: FromRow>(row: Row) -> Result<T> {
     FromRow::from_row_opt(row)
 }
 
-/// Trait to convert `Row` into tuple of `FromValue` implementors up to arity 12.
+/// Trait to convert `Row` into a tuple of `FromValue` implementors up to arity 12.
+///
+/// This trait is convenient way to convert mysql row to a tuple or rust types and relies on
+/// `FromValue` trait, i.e. calling `from_row::<(T, U)>(row)` is similar to calling
+/// `(T::from_value(column_1), U::from_value(column_2))`.
+///
+/// Conversion of individual columns of a row may fail. In this case `from_row` will panic, and
+/// `from_row_opt` will roll back conversion and return original row.
+///
+/// Concrete types of columns in a row is usually known to a programmer so `from_value` should never
+/// panic if types specified correctly. This means that column which holds `NULL` should correspond
+/// to a type wrapped in `Option`, `String` is used only with column which hold correct utf8, size
+/// and signedness of a numeric type should match to a value stored in a column and so on.
+///
+/// ```ignore
+/// // Consider columns in the row is: Bytes(<some binary data>), NULL and Int(1024)
+/// from_row::<(String, u8, u8>(row) // this will panic because of invalid utf8 in first column.
+/// from_row::<(Vec<u8>, u8, u8)>(row) // this will panic because of a NULL in second column.
+/// from_row::<(Vec<u8>, Option<u8>, u8)>(row) // this will panic because 1024 does not fit in u8.
+/// from_row::<(Vec<u8>)>(row) // this will panic because number of columns != arity of a tuple.
+/// from_row::<(Vec<u8>, Option<u8>, u16, Option<u8>)>(row) // same reason of panic as previous.
+///
+/// from_row::<(Vec<u8>, Option<u8>, u16)>(row) // this will work and return (vec![..], None, 1024u16)
+/// ```
 pub trait FromRow {
     fn from_row(row: Row) -> Self;
     fn from_row_opt(row: Row) -> Result<Self> where Self: Sized;
