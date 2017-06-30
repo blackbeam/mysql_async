@@ -18,7 +18,6 @@ use io;
 use lib_futures::future::{Either, Future, IntoFuture, err, ok};
 use lib_futures::future::Either::*;
 use local_infile_handler::LocalInfileHandler;
-use proto::OkPacket;
 use queryable::Queryable;
 use std::fmt;
 use std::sync::Arc;
@@ -257,7 +256,7 @@ impl<T: Queryable + ConnectionLike> ConnectionLike for Transaction<T> {
         self.conn_like_ref().get_opts()
     }
 
-    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)> {
+    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)> {
         self.conn_like_ref().get_pending_result()
     }
 
@@ -289,7 +288,7 @@ impl<T: Queryable + ConnectionLike> ConnectionLike for Transaction<T> {
         self.conn_like_mut().set_last_insert_id(last_insert_id);
     }
 
-    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>) {
+    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>) {
         self.conn_like_mut().set_pending_result(meta);
     }
 

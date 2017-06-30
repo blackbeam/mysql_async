@@ -21,7 +21,7 @@ use opts::Opts;
 use queryable::{BinaryProtocol, Queryable, TextProtocol};
 use queryable::query_result;
 use proto::Column;
-use proto::{ErrPacket, OkPacket, PacketType, HandshakePacket, HandshakeResponse};
+use proto::{ErrPacket, PacketType, HandshakePacket, HandshakeResponse};
 use self::stmt_cache::StmtCache;
 use std::io;
 use std::fmt;
@@ -50,7 +50,7 @@ pub struct Conn {
     affected_rows: u64,
     warnings: u16,
     pool: Option<Pool>,
-    has_result: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>,
+    has_result: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>,
     in_transaction: bool,
     opts: Opts,
     handle: Handle,
@@ -279,14 +279,14 @@ impl Conn {
 
     fn drop_result(mut self) -> BoxFuture<Conn> {
         let fut = match self.has_result.take() {
-            Some((columns, _, None)) => {
+            Some((columns, None)) => {
                 A(B(query_result::assemble::<_, TextProtocol>(
                     self,
                     Some(columns),
                     None,
                 ).drop_result()))
             }
-            Some((columns, _, cached)) => {
+            Some((columns, cached)) => {
                 A(A(query_result::assemble::<_, BinaryProtocol>(
                     self,
                     Some(columns),
@@ -352,8 +352,7 @@ impl ConnectionLike for Conn {
         &self.opts
     }
 
-    fn get_pending_result(&self)
-                          -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>
+    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)>
     {
         self.has_result.as_ref()
     }
@@ -386,8 +385,7 @@ impl ConnectionLike for Conn {
         self.last_insert_id = last_insert_id;
     }
 
-    fn set_pending_result(&mut self,
-                          meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>) {
+    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>) {
         self.has_result = meta;
     }
 

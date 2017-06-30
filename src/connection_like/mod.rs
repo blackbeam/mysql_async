@@ -15,7 +15,7 @@ use io;
 use lib_futures::future::{Future, IntoFuture, Loop, err, ok, loop_fn};
 use lib_futures::future::Either::*;
 use local_infile_handler::LocalInfileHandler;
-use proto::{Column, LocalInfilePacket, OkPacket, Packet, read_lenenc_int};
+use proto::{Column, LocalInfilePacket, Packet, read_lenenc_int};
 use queryable::Protocol;
 use queryable::query_result::{QueryResult, self};
 use queryable::stmt::InnerStmt;
@@ -66,8 +66,7 @@ pub trait ConnectionLike {
     fn get_local_infile_handler(&self) -> Option<Arc<LocalInfileHandler>>; // TODO: Switch to Rc?
     fn get_max_allowed_packet(&self) -> u64;
     fn get_opts(&self) -> &Opts;
-    fn get_pending_result(&self)
-        -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>;
+    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)>;
     fn get_server_version(&self) -> (u16, u16, u16);
     fn get_status(&self) -> StatusFlags;
     fn get_seq_id(&self) -> u8;
@@ -75,8 +74,7 @@ pub trait ConnectionLike {
     fn set_in_transaction(&mut self, in_transaction: bool);
     fn set_last_command(&mut self, last_command: Command);
     fn set_last_insert_id(&mut self, last_insert_id: u64);
-    fn set_pending_result(&mut self,
-                          meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>);
+    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>);
     fn set_status(&mut self, status: StatusFlags);
     fn set_warnings(&mut self, warnings: u16);
     fn set_seq_id(&mut self, seq_id: u8);
@@ -319,7 +317,7 @@ pub trait ConnectionLike {
                             })
                             .map(|(mut this, columns)| {
                                 let columns = Arc::new(columns);
-                                this.set_pending_result(Some((Clone::clone(&columns), None, None)));
+                                this.set_pending_result(Some((Clone::clone(&columns), None)));
                                 query_result::new(this, Some(columns), cached)
                             });
                         B(fut)

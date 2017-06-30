@@ -28,7 +28,7 @@ use lib_futures::future::{
 use lib_futures::future::Either::*;
 use local_infile_handler::LocalInfileHandler;
 use prelude::FromRow;
-use proto::{OkPacket, Packet};
+use proto::Packet;
 use queryable::Protocol;
 use self::QueryResultInner::*;
 pub use self::for_each::ForEach;
@@ -449,8 +449,7 @@ impl<T, P: Protocol> ConnectionLike for QueryResult<T, P>
         self.conn_like_ref().get_opts()
     }
 
-    fn get_pending_result(&self)
-        -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>
+    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)>
     {
         self.conn_like_ref().get_pending_result()
     }
@@ -483,8 +482,7 @@ impl<T, P: Protocol> ConnectionLike for QueryResult<T, P>
         self.conn_like_mut().set_last_insert_id(last_insert_id);
     }
 
-    fn set_pending_result(&mut self,
-                          meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>)
+    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>)
     {
         self.conn_like_mut().set_pending_result(meta);
     }

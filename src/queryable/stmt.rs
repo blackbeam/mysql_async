@@ -20,7 +20,7 @@ use lib_futures::future::{Either, Future, IntoFuture, Loop, err, loop_fn, ok};
 use lib_futures::future::Either::*;
 use local_infile_handler::LocalInfileHandler;
 use prelude::FromRow;
-use proto::{Column, OkPacket, Row};
+use proto::{Column, Row};
 use queryable::BinaryProtocol;
 use queryable::query_result::QueryResult;
 use std::io::Write;
@@ -367,7 +367,7 @@ impl<T: ConnectionLike + 'static> ConnectionLike for Stmt<T> {
         self.conn_like_ref().get_opts()
     }
 
-    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)> {
+    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)> {
         self.conn_like_ref().get_pending_result()
     }
 
@@ -399,7 +399,7 @@ impl<T: ConnectionLike + 'static> ConnectionLike for Stmt<T> {
         self.conn_like_mut().set_last_insert_id(last_insert_id);
     }
 
-    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>) {
+    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>) {
         self.conn_like_mut().set_pending_result(meta);
     }
 
