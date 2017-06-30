@@ -8,7 +8,7 @@
 
 use BoxFuture;
 use conn::pool::Pool;
-use connection_like::ConnectionLike;
+use connection_like::{ConnectionLike, StmtCacheResult};
 use connection_like::streamless::Streamless;
 use consts;
 use errors::*;
@@ -20,22 +20,20 @@ use local_infile_handler::LocalInfileHandler;
 use opts::Opts;
 use queryable::{BinaryProtocol, Queryable, TextProtocol};
 use queryable::query_result;
-use queryable::stmt::InnerStmt;
 use proto::Column;
 use proto::{ErrPacket, OkPacket, PacketType, HandshakePacket, HandshakeResponse};
-use std::collections::HashMap;
-use std::hash::BuildHasherDefault;
+use self::stmt_cache::StmtCache;
 use std::io;
 use std::fmt;
 use std::mem;
 use std::sync::Arc;
 use time::SteadyTime;
 use tokio::reactor::Handle;
-use twox_hash::XxHash;
 
 
 pub mod named_params;
 pub mod pool;
+pub mod stmt_cache;
 
 
 /// Mysql connection
@@ -52,13 +50,13 @@ pub struct Conn {
     affected_rows: u64,
     warnings: u16,
     pool: Option<Pool>,
-    has_result: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>,
+    has_result: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>,
     in_transaction: bool,
     opts: Opts,
     handle: Handle,
     last_io: SteadyTime,
     wait_timeout: u32,
-    stmt_cache: HashMap<String, InnerStmt, BuildHasherDefault<XxHash>>,
+    stmt_cache: StmtCache,
 }
 
 impl fmt::Debug for Conn {
@@ -112,7 +110,7 @@ impl Conn {
                          handle: handle,
                          last_io: SteadyTime::now(),
                          wait_timeout: 0,
-                         stmt_cache: Default::default(),
+                         stmt_cache: StmtCache::new(0),
                      })
     }
 
@@ -194,11 +192,11 @@ impl Conn {
                             has_result: None,
                             pool: None,
                             in_transaction: false,
-                            opts: opts,
                             handle: handle.clone(),
                             last_io: SteadyTime::now(),
                             wait_timeout: 0,
-                            stmt_cache: Default::default(),
+                            stmt_cache: StmtCache::new(opts.get_stmt_cache_size()),
+                            opts: opts,
                         };
                         B(conn.read_max_allowed_packet())
                     },
@@ -267,7 +265,7 @@ impl Conn {
             (ok(pool), B(Conn::new(self.opts.clone(), &self.handle)))
         };
         Box::new(fut.into_future().map(|(pool, mut conn)| {
-            conn.stmt_cache = Default::default();
+            conn.stmt_cache.clear();
             conn.pool = pool;
             conn
         }))
@@ -281,12 +279,20 @@ impl Conn {
 
     fn drop_result(mut self) -> BoxFuture<Conn> {
         let fut = match self.has_result.take() {
-            Some((columns, _, Some(_))) => {
-                A(A(query_result::assemble::<_, BinaryProtocol>(self, Some(columns)).drop_result()))
-            },
             Some((columns, _, None)) => {
-                A(B(query_result::assemble::<_, TextProtocol>(self, Some(columns)).drop_result()))
+                A(B(query_result::assemble::<_, TextProtocol>(
+                    self,
+                    Some(columns),
+                    None,
+                ).drop_result()))
             }
+            Some((columns, _, cached)) => {
+                A(A(query_result::assemble::<_, BinaryProtocol>(
+                    self,
+                    Some(columns),
+                    cached,
+                ).drop_result()))
+            },
             None => B(ok(self))
         };
         Box::new(fut)
@@ -303,8 +309,12 @@ impl ConnectionLike for Conn {
         self.stream = Some(stream);
     }
 
-    fn cache_stmt(&mut self, query: String, stmt: InnerStmt) {
-        self.stmt_cache.insert(query, stmt);
+    fn stmt_cache_ref(&self) -> &StmtCache {
+        &self.stmt_cache
+    }
+
+    fn stmt_cache_mut(&mut self) -> &mut StmtCache {
+        &mut self.stmt_cache
     }
 
     fn get_affected_rows(&self) -> u64 {
@@ -313,10 +323,6 @@ impl ConnectionLike for Conn {
 
     fn get_capabilities(&self) -> consts::CapabilityFlags {
         self.capabilities
-    }
-
-    fn get_cached_stmt(&self, query: &String) -> Option<&InnerStmt> {
-        self.stmt_cache.get(query)
     }
 
     fn get_in_transaction(&self) -> bool {
@@ -342,8 +348,12 @@ impl ConnectionLike for Conn {
         self.max_allowed_packet
     }
 
+    fn get_opts(&self) -> &Opts {
+        &self.opts
+    }
+
     fn get_pending_result(&self)
-                          -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>
+                          -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>
     {
         self.has_result.as_ref()
     }
@@ -377,7 +387,7 @@ impl ConnectionLike for Conn {
     }
 
     fn set_pending_result(&mut self,
-                          meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>) {
+                          meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>) {
         self.has_result = meta;
     }
 
@@ -451,6 +461,58 @@ mod test {
             .and_then(|conn| conn.reset())
             .and_then(|conn| conn.drop_exec("SELECT ?", (1,)))
             .and_then(|conn| conn.disconnect());
+
+        lp.run(fut).unwrap();
+    }
+
+    #[test]
+    fn should_not_cache_statements_if_stmt_cache_size_is_zero() {
+        let mut lp = Core::new().unwrap();
+        let mut opts = OptsBuilder::from_opts(&**DATABASE_URL);
+        opts.stmt_cache_size(0);
+        let fut = Conn::new(opts, &lp.handle())
+            .and_then(|conn| conn.drop_exec("DO ?", (1,)))
+            .and_then(|conn| conn.prepare("DO 2").and_then(|stmt| {
+                stmt.first::<_, (::Value,)>(())
+                    .and_then(|(stmt, _)| stmt.first::<_, (::Value,)>(()))
+                    .and_then(|(stmt, _)| stmt.close())
+            }))
+            .and_then(|conn| conn.prep_exec("DO 3", ()).and_then(|result| result.drop_result()))
+            .and_then(|conn| conn.batch_exec("DO 4", vec![(), ()]))
+            .and_then(|conn| conn.first_exec::<_, _, (u8,)>("DO 5", ()))
+            .and_then(|(conn, _)| conn.first("SHOW SESSION STATUS LIKE 'Com_stmt_close';"))
+            .and_then(|(conn, row)| {
+                assert_eq!(from_row::<(String, usize)>(row.unwrap()).1, 5);
+                conn.disconnect()
+            });
+
+        lp.run(fut).unwrap();
+    }
+
+    #[test]
+    fn should_hold_stmt_cache_size_bound() {
+        use connection_like::ConnectionLike;
+
+        let mut lp = Core::new().unwrap();
+        let mut opts = OptsBuilder::from_opts(&**DATABASE_URL);
+        opts.stmt_cache_size(3);
+        let fut = Conn::new(opts, &lp.handle())
+            .and_then(|conn| conn.drop_exec("DO 1", ()))
+            .and_then(|conn| conn.drop_exec("DO 2", ()))
+            .and_then(|conn| conn.drop_exec("DO 3", ()))
+            .and_then(|conn| conn.drop_exec("DO 1", ()))
+            .and_then(|conn| conn.drop_exec("DO 4", ()))
+            .and_then(|conn| conn.drop_exec("DO 3", ()))
+            .and_then(|conn| conn.drop_exec("DO 5", ()))
+            .and_then(|conn| conn.drop_exec("DO 6", ()))
+            .and_then(|conn| conn.first("SHOW SESSION STATUS LIKE 'Com_stmt_close';"))
+            .and_then(|(conn, row_opt)| {
+                let (_, count): (String, usize) = row_opt.unwrap();
+                assert_eq!(count, 3);
+                let order = conn.stmt_cache_ref().iter().map(Clone::clone).collect::<Vec<String>>();
+                assert_eq!(order, &["DO 3", "DO 5", "DO 6"]);
+                conn.disconnect()
+            });
 
         lp.run(fut).unwrap();
     }
@@ -635,13 +697,15 @@ mod test {
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT ?"))
-            .and_then(|stmt| Queryable::disconnect(stmt.unwrap()));
+            .and_then(|stmt| stmt.close())
+            .and_then(|conn| conn.disconnect());
 
         lp.run(fut).unwrap();
 
         let fut = Conn::new(&**DATABASE_URL, &lp.handle())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT :foo"))
-            .and_then(|stmt| Queryable::disconnect(stmt.unwrap()));
+            .and_then(|stmt| stmt.close())
+            .and_then(|conn| conn.disconnect());
 
         lp.run(fut).unwrap();
     }
@@ -671,7 +735,9 @@ mod test {
                 })
             })
             .and_then(|(stmt, reduced)| {
-                Queryable::disconnect(stmt.unwrap()).map(move |_| reduced)
+                stmt.close()
+                    .and_then(|conn| conn.disconnect())
+                    .map(move |_| reduced)
             });
 
         let output = lp.run(fut).unwrap();
@@ -703,7 +769,9 @@ mod test {
                 })
             })
             .and_then(|(stmt, reduced)| {
-                Queryable::disconnect(stmt.unwrap()).map(move |_| reduced)
+                stmt.close()
+                    .and_then(|conn| conn.disconnect())
+                    .map(move |_| reduced)
             });
 
         let output = lp.run(fut).unwrap();
@@ -754,35 +822,6 @@ mod test {
 
         let output: (u8,) = lp.run(fut).unwrap();
         assert_eq!(output, (2u8,));
-    }
-
-    #[test]
-    fn should_use_statement_cache() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-            .and_then(|conn| Queryable::drop_exec(conn, "SELECT ?", (42,)))
-            .and_then(|conn| {
-                Queryable::drop_exec(
-                    conn,
-                    "SELECT :foo, :bar",
-                    params! ("foo" => 42, "bar" => "baz"))
-            })
-            .and_then(|conn| {
-                Queryable::first_exec(conn, "SELECT ?", (42,))
-            })
-            .and_then(|(conn, output)| {
-                assert_eq!(output, Some((42u8,)));
-                Queryable::first_exec(conn, "SELECT :baz, :quux", params!("baz" => 1, "quux" => 2))
-            })
-            .and_then(|(conn, output)| {
-                assert_eq!(output, Some((1u8, 2u8)));
-                assert_eq!(conn.stmt_cache.len(), 2);
-                Queryable::disconnect(conn)
-            })
-            .map(|_| ());
-
-        lp.run(fut).unwrap();
     }
 
     #[test]

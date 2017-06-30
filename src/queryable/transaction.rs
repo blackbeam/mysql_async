@@ -8,7 +8,9 @@
 
 use BoxFuture;
 use Column;
-use connection_like::ConnectionLike;
+use Opts;
+use conn::stmt_cache::StmtCache;
+use connection_like::{ConnectionLike, StmtCacheResult};
 use connection_like::streamless::Streamless;
 use consts::{CapabilityFlags, Command, StatusFlags};
 use errors::*;
@@ -18,7 +20,6 @@ use lib_futures::future::Either::*;
 use local_infile_handler::LocalInfileHandler;
 use proto::OkPacket;
 use queryable::Queryable;
-use queryable::stmt::InnerStmt;
 use std::fmt;
 use std::sync::Arc;
 
@@ -216,16 +217,16 @@ impl<T: Queryable + ConnectionLike> ConnectionLike for Transaction<T> {
         }
     }
 
-    fn cache_stmt(&mut self, query: String, stmt: InnerStmt) {
-        self.conn_like_mut().cache_stmt(query, stmt);
+    fn stmt_cache_ref(&self) -> &StmtCache {
+        self.conn_like_ref().stmt_cache_ref()
+    }
+
+    fn stmt_cache_mut(&mut self) -> &mut StmtCache {
+        self.conn_like_mut().stmt_cache_mut()
     }
 
     fn get_affected_rows(&self) -> u64 {
         self.conn_like_ref().get_affected_rows()
-    }
-
-    fn get_cached_stmt(&self, query: &String) -> Option<&InnerStmt> {
-        self.conn_like_ref().get_cached_stmt(query)
     }
 
     fn get_capabilities(&self) -> CapabilityFlags {
@@ -252,7 +253,11 @@ impl<T: Queryable + ConnectionLike> ConnectionLike for Transaction<T> {
         self.conn_like_ref().get_max_allowed_packet()
     }
 
-    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)> {
+    fn get_opts(&self) -> &Opts {
+        self.conn_like_ref().get_opts()
+    }
+
+    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)> {
         self.conn_like_ref().get_pending_result()
     }
 
@@ -284,7 +289,7 @@ impl<T: Queryable + ConnectionLike> ConnectionLike for Transaction<T> {
         self.conn_like_mut().set_last_insert_id(last_insert_id);
     }
 
-    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>) {
+    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>) {
         self.conn_like_mut().set_pending_result(meta);
     }
 

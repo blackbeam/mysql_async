@@ -7,6 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use BoxFuture;
+use Opts;
 use conn::named_params::parse_named_params;
 use consts::{CapabilityFlags, Command, StatusFlags, CLIENT_DEPRECATE_EOF};
 use errors::*;
@@ -22,6 +23,7 @@ use self::read_packet::ReadPacket;
 use self::streamless::Streamless;
 use self::write_packet::WritePacket;
 use std::sync::Arc;
+use conn::stmt_cache::StmtCache;
 use tokio_io::io::read;
 
 pub mod read_packet;
@@ -44,21 +46,28 @@ pub mod streamless {
 }
 pub mod write_packet;
 
+#[derive(Debug)]
+pub enum StmtCacheResult {
+    Cached,
+    NotCached(u32),
+}
+
 pub trait ConnectionLike {
     fn take_stream(self) -> (Streamless<Self>, io::Stream)
         where Self: Sized;
     fn return_stream(&mut self, stream: io::Stream) -> ();
-    fn cache_stmt(&mut self, query: String, stmt: InnerStmt);
+    fn stmt_cache_ref(&self) -> &StmtCache;
+    fn stmt_cache_mut(&mut self) -> &mut StmtCache;
     fn get_affected_rows(&self) -> u64;
-    fn get_cached_stmt(&self, query: &String) -> Option<&InnerStmt>;
     fn get_capabilities(&self) -> CapabilityFlags;
     fn get_in_transaction(&self) -> bool;
     fn get_last_command(&self) -> Command;
     fn get_last_insert_id(&self) -> Option<u64>;
     fn get_local_infile_handler(&self) -> Option<Arc<LocalInfileHandler>>; // TODO: Switch to Rc?
     fn get_max_allowed_packet(&self) -> u64;
+    fn get_opts(&self) -> &Opts;
     fn get_pending_result(&self)
-        -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>;
+        -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>;
     fn get_server_version(&self) -> (u16, u16, u16);
     fn get_status(&self) -> StatusFlags;
     fn get_seq_id(&self) -> u8;
@@ -67,12 +76,32 @@ pub trait ConnectionLike {
     fn set_last_command(&mut self, last_command: Command);
     fn set_last_insert_id(&mut self, last_insert_id: u64);
     fn set_pending_result(&mut self,
-                          meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>);
+                          meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>);
     fn set_status(&mut self, status: StatusFlags);
     fn set_warnings(&mut self, warnings: u16);
     fn set_seq_id(&mut self, seq_id: u8);
     fn touch(&mut self) -> ();
     fn on_disconnect(&mut self);
+
+    fn cache_stmt(mut self, query: String, stmt: &InnerStmt) -> BoxFuture<(Self, StmtCacheResult)>
+        where Self: Sized + 'static
+    {
+        let fut = if self.get_opts().get_stmt_cache_size() > 0 {
+            if let Some(old_stmt) = self.stmt_cache_mut().put(query, stmt.clone()) {
+                A(self.close_stmt(old_stmt.statement_id)
+                    .map(|this| (this, StmtCacheResult::Cached)))
+            } else {
+                B(ok((self, StmtCacheResult::Cached)))
+            }
+        } else {
+            B(ok((self, StmtCacheResult::NotCached(stmt.statement_id))))
+        };
+        Box::new(fut)
+    }
+
+    fn get_cached_stmt(&mut self, query: &String) -> Option<&InnerStmt> {
+        self.stmt_cache_mut().get(query)
+    }
 
     /// Returns future that reads packet from a server end resolves to `(Self, Packet)`.
     fn read_packet(self) -> ReadPacket<Self>
@@ -106,15 +135,16 @@ pub trait ConnectionLike {
         Box::new(fut)
     }
 
-    fn prepare_stmt<Q: AsRef<str>>(self, query: Q) -> BoxFuture<(Self, InnerStmt)>
-        where Self: Sized + 'static
+    fn prepare_stmt<Q>(mut self, query: Q) -> BoxFuture<(Self, InnerStmt, StmtCacheResult)>
+        where Q: AsRef<str>,
+              Self: Sized + 'static
     {
         match parse_named_params(query.as_ref()) {
             Ok((named_params, query)) => {
                 let query = query.into_owned();
                 if let Some(mut inner_stmt) = self.get_cached_stmt(&query).map(Clone::clone) {
                     inner_stmt.named_params = named_params.clone();
-                    Box::new(ok((self, inner_stmt)))
+                    Box::new(ok((self, inner_stmt, StmtCacheResult::Cached)))
                 } else {
                     let fut = self.write_command_data(Command::COM_STMT_PREPARE, &*query)
                         .and_then(|this| {
@@ -191,9 +221,11 @@ pub trait ConnectionLike {
                                     }
                                 })
                         })
-                        .map(|(mut this, inner_stmt)| {
-                            this.cache_stmt(query, inner_stmt.clone());
-                            (this, inner_stmt)
+                        .and_then(|(this, inner_stmt)| {
+                            this.cache_stmt(query, &inner_stmt)
+                                .map(|(this, stmt_cache_result)| {
+                                    (this, inner_stmt, stmt_cache_result)
+                                })
                         });
                     Box::new(fut)
                 }
@@ -204,15 +236,27 @@ pub trait ConnectionLike {
         }
     }
 
+    fn close_stmt(self, statement_id: u32) -> WritePacket<Self>
+        where Self: Sized + 'static
+    {
+        let stmt_id = [
+            (statement_id & 0xFF) as u8,
+            (statement_id >> 8 & 0xFF) as u8,
+            (statement_id >> 16 & 0xFF) as u8,
+            (statement_id >> 24 & 0xFF) as u8,
+        ];
+        self.write_command_data(Command::COM_STMT_CLOSE, &stmt_id[..])
+    }
+
     /// Returns future that reads result set from a server and resolves to `QueryResult`.
-    fn read_result_set<P>(self) -> BoxFuture<QueryResult<Self, P>>
+    fn read_result_set<P>(self, cached: Option<StmtCacheResult>) -> BoxFuture<QueryResult<Self, P>>
         where P: Protocol + 'static,
               Self: Sized + 'static
     {
         let fut = self.read_packet()
             .and_then(|(this, packet)| {
                 match packet.as_ref()[0] {
-                    0x00 => A(A(ok(query_result::new(this, None)))),
+                    0x00 => A(A(ok(query_result::new(this, None, cached)))),
                     0xFB => {
                         let fut = LocalInfilePacket::new(&packet)
                             .ok_or(ErrorKind::UnexpectedPacket.into())
@@ -245,7 +289,7 @@ pub trait ConnectionLike {
                                         })
                                 })
                                 .and_then(|this| this.read_packet())
-                                .map(|(this, _)| query_result::new(this, None))
+                                .map(|(this, _)| query_result::new(this, None, cached))
                             });
                         A(B(fut))
                     },
@@ -276,7 +320,7 @@ pub trait ConnectionLike {
                             .map(|(mut this, columns)| {
                                 let columns = Arc::new(columns);
                                 this.set_pending_result(Some((Clone::clone(&columns), None, None)));
-                                query_result::new(this, Some(columns))
+                                query_result::new(this, Some(columns), cached)
                             });
                         B(fut)
                     }

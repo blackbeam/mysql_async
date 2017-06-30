@@ -8,8 +8,10 @@
 
 use BoxFuture;
 use Column;
+use Opts;
 use Row;
-use connection_like::ConnectionLike;
+use conn::stmt_cache::StmtCache;
+use connection_like::{ConnectionLike, StmtCacheResult};
 use connection_like::streamless::Streamless;
 use consts::{CapabilityFlags, Command, StatusFlags, SERVER_MORE_RESULTS_EXISTS};
 use errors::*;
@@ -28,7 +30,6 @@ use local_infile_handler::LocalInfileHandler;
 use prelude::FromRow;
 use proto::{OkPacket, Packet};
 use queryable::Protocol;
-use queryable::stmt::InnerStmt;
 use self::QueryResultInner::*;
 pub use self::for_each::ForEach;
 pub use self::map::Map;
@@ -59,36 +60,42 @@ pub type ReduceAndDrop<S, T, P, F, U> = AndThen<
     fn((S, U)) -> (BoxFuture<T>, FutureResult<U, Error>)
 >;
 
-pub fn new<T, P>(conn_like: T, columns: Option<Arc<Vec<Column>>>) -> QueryResult<T, P>
+pub fn new<T, P>(conn_like: T, columns: Option<Arc<Vec<Column>>>, cached: Option<StmtCacheResult>) -> QueryResult<T, P>
     where T: ConnectionLike + Sized + 'static,
           P: Protocol + 'static
 {
-    QueryResult::new(conn_like, columns)
+    QueryResult::new(conn_like, columns, cached)
 }
 
-pub fn disassemble<T, P>(query_result: QueryResult<T, P>) -> (T, Option<Arc<Vec<Column>>>) {
+pub fn disassemble<T, P>(
+    query_result: QueryResult<T, P>
+) -> (T, Option<Arc<Vec<Column>>>, Option<StmtCacheResult>)
+{
     match query_result {
-        QueryResult(Empty(Some(A(conn_like)), _)) => (conn_like, None),
-        QueryResult(WithRows(Some(A(conn_like)), columns, _)) => {
-            (conn_like, Some(columns))
+        QueryResult(Empty(Some(A(conn_like)), cached, _)) => (conn_like, None, cached),
+        QueryResult(WithRows(Some(A(conn_like)), columns, cached, _)) => {
+            (conn_like, Some(columns), cached)
         },
         _ => unreachable!(),
     }
 }
 
-pub fn assemble<T, P>(conn_like: T, columns: Option<Arc<Vec<Column>>>) -> QueryResult<T, P>
+pub fn assemble<T, P>(conn_like: T,
+                      columns: Option<Arc<Vec<Column>>>,
+                      cached: Option<StmtCacheResult>)
+                      -> QueryResult<T, P>
     where T: ConnectionLike + Sized + 'static,
           P: Protocol + 'static
 {
     match columns {
-        Some(columns) => QueryResult(WithRows(Some(A(conn_like)), columns, PhantomData)),
-        None => QueryResult(Empty(Some(A(conn_like)), PhantomData)),
+        Some(columns) => QueryResult(WithRows(Some(A(conn_like)), columns, cached, PhantomData)),
+        None => QueryResult(Empty(Some(A(conn_like)), cached, PhantomData)),
     }
 }
 
 enum QueryResultInner<T, P> {
-    Empty(Option<Either<T, Streamless<T>>>, PhantomData<P>),
-    WithRows(Option<Either<T, Streamless<T>>>, Arc<Vec<Column>>, PhantomData<P>),
+    Empty(Option<Either<T, Streamless<T>>>, Option<StmtCacheResult>, PhantomData<P>),
+    WithRows(Option<Either<T, Streamless<T>>>, Arc<Vec<Column>>, Option<StmtCacheResult>, PhantomData<P>),
 }
 
 /// Result of a query or statement execution.
@@ -125,19 +132,19 @@ impl<T, P> QueryResult<T, P>
     fn into_empty(mut self) -> Self {
         self.set_pending_result(None);
         match self {
-            QueryResult(WithRows(conn_like, ..)) => {
-                QueryResult(Empty(conn_like, PhantomData))
+            QueryResult(WithRows(conn_like, _, cached, _)) => {
+                QueryResult(Empty(conn_like, cached, PhantomData))
             }
             _ => unreachable!(),
         }
     }
 
-    fn into_inner(self) -> T {
+    fn into_inner(self) -> (T, Option<StmtCacheResult>) {
         match self {
-            QueryResult(Empty(conn_like, ..)) |
-            QueryResult(WithRows(conn_like, ..)) => {
+            QueryResult(Empty(conn_like, cached, _)) |
+            QueryResult(WithRows(conn_like, _, cached, _)) => {
                 match conn_like {
-                    Some(A(conn_like)) => conn_like,
+                    Some(A(conn_like)) => (conn_like, cached),
                     _ => unreachable!(),
                 }
             }
@@ -152,9 +159,8 @@ impl<T, P> QueryResult<T, P>
             .and_then(|(this, packet)| {
                 if P::is_last_result_set_packet(&this, &packet) {
                     if this.get_status().contains(SERVER_MORE_RESULTS_EXISTS) {
-                        A(A(this.into_inner()
-                            .read_result_set()
-                            .map(|new_this| (new_this, None))))
+                        let (inner, cached) = this.into_inner();
+                        A(A(inner.read_result_set(cached).map(|new_this| (new_this, None))))
                     } else {
                         A(B(ok((this.into_empty(), None))))
                     }
@@ -183,12 +189,15 @@ impl<T, P> QueryResult<T, P>
         Box::new(fut)
     }
 
-    fn new(conn_like: T, columns: Option<Arc<Vec<Column>>>) -> QueryResult<T, P> {
+    fn new(conn_like: T,
+           columns: Option<Arc<Vec<Column>>>,
+           cached: Option<StmtCacheResult>)
+           -> QueryResult<T, P> {
         match columns {
             Some(columns) => {
-                QueryResult(WithRows(Some(A(conn_like)), columns, PhantomData))
+                QueryResult(WithRows(Some(A(conn_like)), columns, cached, PhantomData))
             },
-            None => QueryResult(Empty(Some(A(conn_like)), PhantomData)),
+            None => QueryResult(Empty(Some(A(conn_like)), cached, PhantomData)),
         }
     }
 
@@ -336,6 +345,14 @@ impl<T, P> QueryResult<T, P>
                 B(this.get_row_raw().map(|(this, _)| Loop::Continue(this)))
             }
         });
+        let fut = fut
+            .and_then(|(conn_like, cached)| {
+                if let Some(StmtCacheResult::NotCached(statement_id)) = cached {
+                    A(conn_like.close_stmt(statement_id))
+                } else {
+                    B(ok(conn_like))
+                }
+            });
         Box::new(fut)
     }
 }
@@ -348,25 +365,25 @@ impl<T, P: Protocol> ConnectionLike for QueryResult<T, P>
         where Self: Sized
     {
         match self {
-            QueryResult(Empty(conn_like, ..)) => {
+            QueryResult(Empty(conn_like, cached, _)) => {
                 match conn_like {
                     Some(A(conn_like)) => {
                         let (streamless, stream) = conn_like.take_stream();
                         let self_streamless = Streamless::new(
-                            QueryResult(Empty(Some(B(streamless)), PhantomData)));
+                            QueryResult(Empty(Some(B(streamless)), cached, PhantomData)));
                         (self_streamless, stream)
                     },
                     Some(B(..)) => panic!("Logic error: stream taken"),
                     None => unreachable!(),
                 }
             }
-            QueryResult(WithRows(conn_like, columns, ..)) => {
+            QueryResult(WithRows(conn_like, columns, cached, _)) => {
                 match conn_like {
                     Some(A(conn_like)) => {
                         let (streamless, stream) = conn_like.take_stream();
                         let self_streamless = Streamless::new(
                             QueryResult(WithRows(
-                                Some(B(streamless)), columns, PhantomData)));
+                                Some(B(streamless)), columns, cached, PhantomData)));
                         (self_streamless, stream)
                     },
                     Some(B(..)) => panic!("Logic error: stream taken"),
@@ -392,16 +409,16 @@ impl<T, P: Protocol> ConnectionLike for QueryResult<T, P>
         }
     }
 
-    fn cache_stmt(&mut self, query: String, stmt: InnerStmt) {
-        self.conn_like_mut().cache_stmt(query, stmt);
+    fn stmt_cache_ref(&self) -> &StmtCache {
+        self.conn_like_ref().stmt_cache_ref()
+    }
+
+    fn stmt_cache_mut(&mut self) -> &mut StmtCache {
+        self.conn_like_mut().stmt_cache_mut()
     }
 
     fn get_affected_rows(&self) -> u64 {
         self.conn_like_ref().get_affected_rows()
-    }
-
-    fn get_cached_stmt(&self, query: &String) -> Option<&InnerStmt> {
-        self.conn_like_ref().get_cached_stmt(query)
     }
 
     fn get_capabilities(&self) -> CapabilityFlags {
@@ -428,8 +445,12 @@ impl<T, P: Protocol> ConnectionLike for QueryResult<T, P>
         self.conn_like_ref().get_max_allowed_packet()
     }
 
+    fn get_opts(&self) -> &Opts {
+        self.conn_like_ref().get_opts()
+    }
+
     fn get_pending_result(&self)
-        -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>
+        -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>
     {
         self.conn_like_ref().get_pending_result()
     }
@@ -463,7 +484,7 @@ impl<T, P: Protocol> ConnectionLike for QueryResult<T, P>
     }
 
     fn set_pending_result(&mut self,
-                          meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>)
+                          meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>)
     {
         self.conn_like_mut().set_pending_result(meta);
     }

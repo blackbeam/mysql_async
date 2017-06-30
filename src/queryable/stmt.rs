@@ -7,9 +7,11 @@
 // modified, or distributed except according to those terms.
 
 use BoxFuture;
+use Opts;
 use byteorder::LittleEndian as LE;
 use byteorder::{ReadBytesExt, WriteBytesExt};
-use connection_like::ConnectionLike;
+use conn::stmt_cache::StmtCache;
+use connection_like::{ConnectionLike, StmtCacheResult};
 use connection_like::streamless::Streamless;
 use consts::{CapabilityFlags, ColumnType, Command, StatusFlags};
 use errors::*;
@@ -62,21 +64,26 @@ impl InnerStmt {
 pub struct Stmt<T> {
     conn_like: Option<Either<T, Streamless<T>>>,
     inner: InnerStmt,
+    /// None => In use elsewhere
+    /// Some(Cached) => Should not be closed
+    /// Some(NotCached(_)) => Should be closed
+    cached: Option<StmtCacheResult>,
 }
 
-pub fn new<T>(conn_like: T, inner: InnerStmt) -> Stmt<T>
+pub fn new<T>(conn_like: T, inner: InnerStmt, cached: StmtCacheResult) -> Stmt<T>
     where T: ConnectionLike + Sized + 'static
 {
-    Stmt::new(conn_like, inner)
+    Stmt::new(conn_like, inner, cached)
 }
 
 impl<T> Stmt<T>
     where T: ConnectionLike + Sized + 'static
 {
-    fn new(conn_like: T, inner: InnerStmt) -> Stmt<T> {
+    fn new(conn_like: T, inner: InnerStmt, cached: StmtCacheResult) -> Stmt<T> {
         Stmt {
             conn_like: Some(A(conn_like)),
             inner,
+            cached: Some(cached),
         }
     }
 
@@ -151,6 +158,7 @@ impl<T> Stmt<T>
         Box::new(fut)
     }
 
+    /// See `Queriable::execute`
     pub fn execute<P>(self, params: P) -> BoxFuture<QueryResult<Self, BinaryProtocol>>
         where P: Into<Params>
     {
@@ -229,9 +237,10 @@ impl<T> Stmt<T>
                 B(self.write_command_data(Command::COM_STMT_EXECUTE, data))
             }
         };
-        Box::new(fut.and_then(|this| this.read_result_set()))
+        Box::new(fut.and_then(|this| this.read_result_set(None)))
     }
 
+    /// See `Queriable::first`
     pub fn first<P, R>(self, params: P) -> BoxFuture<(Self, Option<R>)>
         where P: Into<Params>,
               R: FromRow
@@ -246,11 +255,13 @@ impl<T> Stmt<T>
         Box::new(fut)
     }
 
+    /// See `Queriable::batch`
     pub fn batch<P>(self, params_vec: Vec<P>) -> BoxFuture<Self>
-        where P: Into<Params>
+        where Params: From<P>,
+              P: 'static
     {
-        let params_vec: Vec<Params> = params_vec.into_iter().map(Into::into).collect();
-        let fut = loop_fn((self, params_vec.into_iter()), |(this, mut params_iter)| {
+        let params_iter = params_vec.into_iter().map(Params::from);
+        let fut = loop_fn((self, params_iter), |(this, mut params_iter)| {
             match params_iter.next() {
                 Some(params) => {
                     let fut = this.execute(params)
@@ -264,11 +275,25 @@ impl<T> Stmt<T>
         Box::new(fut)
     }
 
-    pub fn unwrap(self) -> T {
-        match self.conn_like {
+    /// This will close statement (it it's not in the cache) and resolve to a wrapped queryable.
+    pub fn close(mut self) -> BoxFuture<T> {
+        let cached = self.cached.take();
+        let fut = match self.conn_like {
             Some(A(conn_like)) => {
-                conn_like
+                if let Some(StmtCacheResult::NotCached(stmt_id)) = cached {
+                    A(conn_like.close_stmt(stmt_id))
+                } else {
+                    B(ok(conn_like))
+                }
             },
+            _ => unreachable!(),
+        };
+        Box::new(fut)
+    }
+
+    pub (crate) fn unwrap(mut self) -> (T, Option<StmtCacheResult>) {
+        match self.conn_like {
+            Some(A(conn_like)) => (conn_like, self.cached.take()),
             _ => unreachable!(),
         }
     }
@@ -276,13 +301,14 @@ impl<T> Stmt<T>
 
 impl<T: ConnectionLike + 'static> ConnectionLike for Stmt<T> {
     fn take_stream(self) -> (Streamless<Self>, io::Stream) where Self: Sized {
-        let Stmt { conn_like, inner } = self;
+        let Stmt { conn_like, inner, cached } = self;
         match conn_like {
             Some(A(conn_like)) => {
                 let (streamless, stream) = conn_like.take_stream();
                 let this = Stmt {
                     conn_like: Some(B(streamless)),
                     inner,
+                    cached,
                 };
                 (Streamless::new(this), stream)
             },
@@ -300,16 +326,16 @@ impl<T: ConnectionLike + 'static> ConnectionLike for Stmt<T> {
         }
     }
 
-    fn cache_stmt(&mut self, query: String, stmt: InnerStmt) {
-        self.conn_like_mut().cache_stmt(query, stmt);
+    fn stmt_cache_ref(&self) -> &StmtCache {
+        self.conn_like_ref().stmt_cache_ref()
+    }
+
+    fn stmt_cache_mut(&mut self) -> &mut StmtCache {
+        self.conn_like_mut().stmt_cache_mut()
     }
 
     fn get_affected_rows(&self) -> u64 {
         self.conn_like_ref().get_affected_rows()
-    }
-
-    fn get_cached_stmt(&self, query: &String) -> Option<&InnerStmt> {
-        self.conn_like_ref().get_cached_stmt(query)
     }
 
     fn get_capabilities(&self) -> CapabilityFlags {
@@ -336,7 +362,11 @@ impl<T: ConnectionLike + 'static> ConnectionLike for Stmt<T> {
         self.conn_like_ref().get_max_allowed_packet()
     }
 
-    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)> {
+    fn get_opts(&self) -> &Opts {
+        self.conn_like_ref().get_opts()
+    }
+
+    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)> {
         self.conn_like_ref().get_pending_result()
     }
 
@@ -368,7 +398,7 @@ impl<T: ConnectionLike + 'static> ConnectionLike for Stmt<T> {
         self.conn_like_mut().set_last_insert_id(last_insert_id);
     }
 
-    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<InnerStmt>)>) {
+    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<OkPacket>, Option<StmtCacheResult>)>) {
         self.conn_like_mut().set_pending_result(meta);
     }
 

@@ -22,6 +22,7 @@ use url::percent_encoding::percent_decode;
 
 const DEFAULT_MIN_CONNS: usize = 10;
 const DEFAULT_MAX_CONNS: usize = 100;
+const DEFAULT_STMT_CACHE_SIZE: usize = 10;
 
 /// Mysql connection options.
 ///
@@ -61,6 +62,9 @@ pub struct Opts {
 
     /// Commands to execute on each new database connection.
     init: Vec<String>,
+
+    /// Number of prepared statements cached on the client side (per connection). Defaults to `10`.
+    stmt_cache_size: usize,
 }
 
 impl Opts {
@@ -138,6 +142,11 @@ impl Opts {
     pub fn get_conn_ttl(&self) -> Option<u32> {
         self.conn_ttl
     }
+
+    /// Number of prepared statements cached on the client side (per connection). Defaults to `10`.
+    pub fn get_stmt_cache_size(&self) -> usize {
+        self.stmt_cache_size
+    }
 }
 
 impl Default for Opts {
@@ -154,6 +163,7 @@ impl Default for Opts {
             pool_min: 10,
             pool_max: 100,
             conn_ttl: None,
+            stmt_cache_size: DEFAULT_STMT_CACHE_SIZE,
         }
     }
 }
@@ -256,6 +266,16 @@ impl OptsBuilder {
         self.opts.conn_ttl = conn_ttl.map(Into::into);
         self
     }
+
+    /// Number of prepared statements cached on the client side (per connection). Defaults to `10`.
+    ///
+    /// Call with `None` to reset to default.
+    pub fn stmt_cache_size<T>(&mut self, cache_size: T) -> &mut Self
+        where T: Into<Option<usize>>
+    {
+        self.opts.stmt_cache_size = cache_size.into().unwrap_or(DEFAULT_STMT_CACHE_SIZE);
+        self
+    }
 }
 
 impl From<OptsBuilder> for Opts {
@@ -342,6 +362,16 @@ fn from_url(url: &str) -> Result<Opts> {
                     return Err(ErrorKind::UrlInvalidParamValue("tcp_keepalive_ms".into(), value)
                         .into())
                 },
+            }
+        } else if key == "stmt_cache_size" {
+            match usize::from_str(&*value) {
+                Ok(stmt_cache_size) => {
+                    opts.stmt_cache_size = stmt_cache_size;
+                },
+                _ => {
+                    return Err(ErrorKind::UrlInvalidParamValue("stmt_cache_size".into(), value)
+                        .into());
+                }
             }
         } else {
             return Err(ErrorKind::UrlUnknownParameter(key).into());
