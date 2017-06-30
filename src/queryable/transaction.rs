@@ -7,20 +7,14 @@
 // modified, or distributed except according to those terms.
 
 use BoxFuture;
-use Column;
-use Opts;
-use conn::stmt_cache::StmtCache;
-use connection_like::{ConnectionLike, StmtCacheResult};
+use connection_like::{ConnectionLike, ConnectionLikeWrapper};
 use connection_like::streamless::Streamless;
-use consts::{CapabilityFlags, Command, StatusFlags};
 use errors::*;
 use io;
 use lib_futures::future::{Either, Future, IntoFuture, err, ok};
 use lib_futures::future::Either::*;
-use local_infile_handler::LocalInfileHandler;
 use queryable::Queryable;
 use std::fmt;
-use std::sync::Arc;
 
 /// Options for transaction
 #[derive(Eq, PartialEq, Debug, Hash, Clone, Default)]
@@ -151,20 +145,6 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
         Box::new(fut)
     }
 
-    fn conn_like_ref(&self) -> &T {
-        match self.0 {
-            Some(A(ref conn_like)) => conn_like,
-            _ => unreachable!()
-        }
-    }
-
-    fn conn_like_mut(&mut self) -> &mut T {
-        match self.0 {
-            Some(A(ref mut conn_like)) => conn_like,
-            _ => unreachable!()
-        }
-    }
-
     fn unwrap(self) -> T {
         match self {
             Transaction(Some(A(conn_like))) => conn_like,
@@ -193,8 +173,12 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
     }
 }
 
-impl<T: Queryable + ConnectionLike> ConnectionLike for Transaction<T> {
-    fn take_stream(self) -> (Streamless<Self>, io::Stream) where Self: Sized {
+impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Transaction<T> {
+    type ConnLike = T;
+
+    fn take_stream(self) -> (Streamless<Self>, io::Stream)
+        where Self: Sized
+    {
         let Transaction(conn_like) = self;
         match conn_like {
             Some(A(conn_like)) => {
@@ -206,7 +190,7 @@ impl<T: Queryable + ConnectionLike> ConnectionLike for Transaction<T> {
         }
     }
 
-    fn return_stream(&mut self, stream: io::Stream) -> () {
+    fn return_stream(&mut self, stream: io::Stream) {
         let conn_like = self.0.take().unwrap();
         match conn_like {
             B(streamless) => {
@@ -216,99 +200,17 @@ impl<T: Queryable + ConnectionLike> ConnectionLike for Transaction<T> {
         }
     }
 
-    fn stmt_cache_ref(&self) -> &StmtCache {
-        self.conn_like_ref().stmt_cache_ref()
+    fn conn_like_ref(&self) -> &Self::ConnLike {
+        match self.0 {
+            Some(A(ref conn_like)) => conn_like,
+            _ => unreachable!()
+        }
     }
 
-    fn stmt_cache_mut(&mut self) -> &mut StmtCache {
-        self.conn_like_mut().stmt_cache_mut()
-    }
-
-    fn get_affected_rows(&self) -> u64 {
-        self.conn_like_ref().get_affected_rows()
-    }
-
-    fn get_capabilities(&self) -> CapabilityFlags {
-        self.conn_like_ref().get_capabilities()
-    }
-
-    fn get_in_transaction(&self) -> bool {
-        self.conn_like_ref().get_in_transaction()
-    }
-
-    fn get_last_command(&self) -> Command {
-        self.conn_like_ref().get_last_command()
-    }
-
-    fn get_last_insert_id(&self) -> Option<u64> {
-        self.conn_like_ref().get_last_insert_id()
-    }
-
-    fn get_local_infile_handler(&self) -> Option<Arc<LocalInfileHandler>> {
-        self.conn_like_ref().get_local_infile_handler()
-    }
-
-    fn get_max_allowed_packet(&self) -> u64 {
-        self.conn_like_ref().get_max_allowed_packet()
-    }
-
-    fn get_opts(&self) -> &Opts {
-        self.conn_like_ref().get_opts()
-    }
-
-    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)> {
-        self.conn_like_ref().get_pending_result()
-    }
-
-    fn get_server_version(&self) -> (u16, u16, u16) {
-        self.conn_like_ref().get_server_version()
-    }
-
-    fn get_status(&self) -> StatusFlags {
-        self.conn_like_ref().get_status()
-    }
-
-    fn get_seq_id(&self) -> u8 {
-        self.conn_like_ref().get_seq_id()
-    }
-
-    fn set_affected_rows(&mut self, affected_rows: u64) {
-        self.conn_like_mut().set_affected_rows(affected_rows);
-    }
-
-    fn set_in_transaction(&mut self, in_transaction: bool) {
-        self.conn_like_mut().set_in_transaction(in_transaction);
-    }
-
-    fn set_last_command(&mut self, last_command: Command) -> () {
-        self.conn_like_mut().set_last_command(last_command);
-    }
-
-    fn set_last_insert_id(&mut self, last_insert_id: u64) -> () {
-        self.conn_like_mut().set_last_insert_id(last_insert_id);
-    }
-
-    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>) {
-        self.conn_like_mut().set_pending_result(meta);
-    }
-
-    fn set_status(&mut self, status: StatusFlags) -> () {
-        self.conn_like_mut().set_status(status);
-    }
-
-    fn set_warnings(&mut self, warnings: u16) -> () {
-        self.conn_like_mut().set_warnings(warnings);
-    }
-
-    fn set_seq_id(&mut self, seq_id: u8) -> () {
-        self.conn_like_mut().set_seq_id(seq_id);
-    }
-
-    fn touch(&mut self) -> () {
-        self.conn_like_mut().touch();
-    }
-
-    fn on_disconnect(&mut self) {
-        self.conn_like_mut().on_disconnect();
+    fn conn_like_mut(&mut self) -> &mut Self::ConnLike {
+        match self.0 {
+            Some(A(ref mut conn_like)) => conn_like,
+            _ => unreachable!()
+        }
     }
 }
