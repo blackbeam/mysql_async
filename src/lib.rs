@@ -31,7 +31,7 @@
 //! use tokio::reactor::Core;
 //! # use std::env;
 //!
-//! #[derive(Debug, PartialEq, Eq)]
+//! #[derive(Debug, PartialEq, Eq, Clone)]
 //! struct Payment {
 //!     customer_id: i32,
 //!     amount: i32,
@@ -71,13 +71,13 @@
 //!         )
 //!     }).and_then(|conn| {
 //!         // Save payments
-//!         let params = payments.iter().map(|payment| {
+//!         let params = payments.clone().into_iter().map(|payment| {
 //!             params! {
 //!                 "customer_id" => payment.customer_id,
 //!                 "amount" => payment.amount,
 //!                 "account_name" => payment.account_name.clone(),
 //!             }
-//!         }).collect();
+//!         });
 //!
 //!         conn.batch_exec(r"INSERT INTO payment (customer_id, amount, account_name)
 //!                         VALUES (:customer_id, :amount, :account_name)", params)

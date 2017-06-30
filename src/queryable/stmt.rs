@@ -256,11 +256,12 @@ impl<T> Stmt<T>
     }
 
     /// See `Queriable::batch`
-    pub fn batch<P>(self, params_vec: Vec<P>) -> BoxFuture<Self>
-        where Params: From<P>,
+    pub fn batch<I, P>(self, params_iter: I) -> BoxFuture<Self>
+        where I: IntoIterator<Item=P> + 'static,
+              Params: From<P>,
               P: 'static
     {
-        let params_iter = params_vec.into_iter().map(Params::from);
+        let params_iter = params_iter.into_iter().map(Params::from);
         let fut = loop_fn((self, params_iter), |(this, mut params_iter)| {
             match params_iter.next() {
                 Some(params) => {

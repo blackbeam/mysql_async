@@ -171,13 +171,14 @@ pub trait Queryable: ConnectionLike
 
     /// Returns future that prepares statement and performs batch execution.
     /// Results will be dropped.
-    fn batch_exec<Q, P>(self, query: Q, params_vec: Vec<P>) -> BoxFuture<Self>
+    fn batch_exec<Q, I, P>(self, query: Q, params_iter: I) -> BoxFuture<Self>
         where Q: AsRef<str>,
-              P: Into<Params>
+              I: IntoIterator<Item=P> + 'static,
+              Params: From<P>,
+              P: 'static
     {
-        let params_vec: Vec<Params> = params_vec.into_iter().map(Into::into).collect();
         let fut = self.prepare(query)
-            .and_then(|stmt| stmt.batch(params_vec))
+            .and_then(|stmt| stmt.batch(params_iter))
             .and_then(|stmt| stmt.close());
         Box::new(fut)
     }
