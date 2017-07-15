@@ -32,7 +32,10 @@ pub trait Protocol {
         where T: ConnectionLike;
 }
 
+/// Phantom struct used to specify MySql text protocol.
 pub struct TextProtocol;
+
+/// Phantom struct used to specify MySql binary protocol.
 pub struct BinaryProtocol;
 
 impl Protocol for TextProtocol {

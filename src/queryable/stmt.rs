@@ -57,6 +57,7 @@ impl InnerStmt {
     }
 }
 
+/// Prepared statement
 pub struct Stmt<T> {
     conn_like: Option<Either<T, Streamless<T>>>,
     inner: InnerStmt,
