@@ -181,7 +181,10 @@ pub use self::queryable::query_result::QueryResult;
 #[doc(inline)]
 pub use self::queryable::transaction::{Transaction, TransactionOptions};
 
+#[doc(inline)]
 pub use self::queryable::{TextProtocol, BinaryProtocol};
+
+#[doc(inline)]
 pub use self::queryable::stmt::Stmt;
 
 /// Futures used in this crate
