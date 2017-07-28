@@ -125,6 +125,8 @@ extern crate futures as lib_futures;
 #[macro_use]
 extern crate lazy_static;
 extern crate mio;
+#[cfg(feature = "ssl")]
+extern crate native_tls;
 extern crate regex;
 extern crate serde;
 extern crate serde_json;
@@ -132,6 +134,8 @@ extern crate sha1;
 pub extern crate time;
 extern crate tokio_core as tokio;
 extern crate tokio_io;
+#[cfg(feature = "ssl")]
+extern crate tokio_tls;
 extern crate twox_hash;
 extern crate url;
 
@@ -156,6 +160,7 @@ pub type BoxFuture<T> = Box<lib_futures::Future<Item = T, Error = errors::Error>
 
 #[doc(inline)]
 pub use self::conn::Conn;
+
 #[doc(inline)]
 pub use self::conn::pool::Pool;
 

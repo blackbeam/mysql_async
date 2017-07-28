@@ -13,6 +13,8 @@ use local_infile_handler::{
     LocalInfileHandlerObject,
 };
 
+use std::borrow::Cow;
+use std::path::Path;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -23,6 +25,55 @@ use url::percent_encoding::percent_decode;
 const DEFAULT_MIN_CONNS: usize = 10;
 const DEFAULT_MAX_CONNS: usize = 100;
 const DEFAULT_STMT_CACHE_SIZE: usize = 10;
+
+/// Ssl Options.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct SslOpts {
+    pkcs12_path: Cow<'static, Path>,
+    password: Option<Cow<'static, str>>,
+    skip_domain_validation: bool,
+}
+
+impl SslOpts {
+    pub fn new<T: Into<Cow<'static, Path>>>(pkcs12_path: T) -> SslOpts {
+        SslOpts {
+            pkcs12_path: pkcs12_path.into(),
+            password: None,
+            skip_domain_validation: false,
+        }
+    }
+
+    /// Sets path to the pkcs12 archive.
+    pub fn set_pkcs12_path<T: Into<Cow<'static, Path>>>(&mut self, pkcs12_path: T) -> &mut Self {
+        self.pkcs12_path = pkcs12_path.into();
+        self
+    }
+
+    /// Sets the password for a pkcs12 archive (defaults to `None`).
+    pub fn set_password<T: Into<Cow<'static, str>>>(&mut self, password: Option<T>) -> &mut Self {
+        self.password = password.map(Into::into);
+        self
+    }
+
+    /// The way to not validate the server's domain
+    /// name against its certificate (defaults to `false`).
+    pub fn set_danger_skip_domain_validation(&mut self, value: bool) -> &mut Self {
+        self.skip_domain_validation = value;
+        self
+    }
+
+    pub fn pkcs12_path(&self) -> &Path {
+        self.pkcs12_path.as_ref()
+    }
+
+    pub fn password(&self) -> Option<&str> {
+        self.password.as_ref().map(AsRef::as_ref)
+    }
+
+    pub fn skip_domain_validation(&self) -> bool {
+        self.skip_domain_validation
+    }
+}
 
 /// Mysql connection options.
 ///
@@ -65,6 +116,12 @@ pub struct Opts {
 
     /// Number of prepared statements cached on the client side (per connection). Defaults to `10`.
     stmt_cache_size: usize,
+
+    /// Driver will require SSL connection if this option isn't `None` (default to `None`).
+    ///
+    /// This option requires `ssl` feature to work.
+    ssl_opts: Option<SslOpts>,
+
 }
 
 impl Opts {
@@ -147,6 +204,13 @@ impl Opts {
     pub fn get_stmt_cache_size(&self) -> usize {
         self.stmt_cache_size
     }
+
+    /// Driver will require SSL connection if this option isn't `None` (default to `None`).
+    ///
+    /// This option requires `ssl` feature to work.
+    pub fn get_ssl_opts(&self) -> Option<&SslOpts> {
+        self.ssl_opts.as_ref()
+    }
 }
 
 impl Default for Opts {
@@ -164,6 +228,7 @@ impl Default for Opts {
             pool_max: 100,
             conn_ttl: None,
             stmt_cache_size: DEFAULT_STMT_CACHE_SIZE,
+            ssl_opts: None,
         }
     }
 }
@@ -274,6 +339,14 @@ impl OptsBuilder {
         where T: Into<Option<usize>>
     {
         self.opts.stmt_cache_size = cache_size.into().unwrap_or(DEFAULT_STMT_CACHE_SIZE);
+        self
+    }
+
+    /// Driver will require SSL connection if this option isn't `None` (default to `None`).
+    ///
+    /// This option requires `ssl` feature to work.
+    pub fn ssl_opts<T: Into<Option<SslOpts>>>(&mut self, ssl_opts: T) -> &mut Self {
+        self.opts.ssl_opts = ssl_opts.into();
         self
     }
 }
