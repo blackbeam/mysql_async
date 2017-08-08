@@ -22,23 +22,21 @@ pub struct Reduce<T, P, F, U> {
 }
 
 impl<T, P, F, U> Reduce<T, P, F, U>
-    where F: FnMut(U, Row) -> U,
-          P: Protocol + 'static,
-          T: ConnectionLike + Sized + 'static
+where
+    F: FnMut(U, Row) -> U,
+    P: Protocol + 'static,
+    T: ConnectionLike + Sized + 'static,
 {
     pub fn new(query_result: QueryResult<T, P>, init: U, fun: F) -> Reduce<T, P, F, U> {
-        Reduce {
-            fut: query_result.get_row(),
-            acc: Some(init),
-            fun,
-        }
+        Reduce { fut: query_result.get_row(), acc: Some(init), fun }
     }
 }
 
 impl<T, P, F, U> Future for Reduce<T, P, F, U>
-    where F: FnMut(U, Row) -> U,
-          P: Protocol + 'static,
-          T: ConnectionLike + Sized + 'static
+where
+    F: FnMut(U, Row) -> U,
+    P: Protocol + 'static,
+    T: ConnectionLike + Sized + 'static,
 {
     type Item = (QueryResult<T, P>, U);
     type Error = Error;
@@ -51,7 +49,7 @@ impl<T, P, F, U> Future for Reduce<T, P, F, U>
                     let prev_acc_val = self.acc.take().unwrap();
                     let new_acc_value = (self.fun)(prev_acc_val, row);
                     self.acc = Some(new_acc_value);
-                },
+                }
                 None => {
                     return Ok(Ready((query_result, self.acc.take().unwrap())));
                 }

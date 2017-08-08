@@ -32,10 +32,11 @@ impl StmtCache {
     }
 
     pub fn get<T>(&mut self, key: &T) -> Option<&InnerStmt>
-        where String: Borrow<T>,
-              String: PartialEq<T>,
-              T: Hash + Eq,
-              T: ?Sized
+    where
+        String: Borrow<T>,
+        String: PartialEq<T>,
+        T: Hash + Eq,
+        T: ?Sized,
     {
         if self.map.contains_key(key) {
             if let Some(pos) = self.order.iter().position(|x| x == key) {
@@ -53,7 +54,9 @@ impl StmtCache {
         self.map.insert(key.clone(), value);
         self.order.push_back(key);
         if self.order.len() > self.cap {
-            self.order.pop_front().and_then(|stmt| self.map.remove(&stmt))
+            self.order.pop_front().and_then(
+                |stmt| self.map.remove(&stmt),
+            )
         } else {
             None
         }

@@ -69,30 +69,29 @@ impl Endpoint {
                 file.read_to_end(&mut der)?;
                 let identity = Pkcs12::from_der(&*der, ssl_opts.password().unwrap_or(""))
                     .chain_err(|| "Can't parse der")?;
-                let mut builder = TlsConnector::builder()
-                    .chain_err(|| "Can't create TlsConnectorBuilder)")?;
-                builder.identity(identity)
-                    .chain_err(|| "Can't set identity for TlsConnectorBuilder")?;
-                builder.build().chain_err(|| "Can't build TlsConnectorBuilder")
+                let mut builder = TlsConnector::builder().chain_err(
+                    || "Can't create TlsConnectorBuilder)",
+                )?;
+                builder.identity(identity).chain_err(
+                    || "Can't set identity for TlsConnectorBuilder",
+                )?;
+                builder.build().chain_err(
+                    || "Can't build TlsConnectorBuilder",
+                )
             })
             .into_future()
-            .and_then(move |tls_connector| {
-                match self {
-                    Endpoint::Plain(stream) => {
-                        let fut = if ssl_opts.skip_domain_validation() {
-                            TlsConnectorExt::danger_connect_async_without_providing_domain_for_certificate_verification_and_server_name_indication(&tls_connector, stream)
-                        } else {
-                            TlsConnectorExt::connect_async(&tls_connector, &*domain,stream)
-                        };
-                        fut.then(|result| result.chain_err(|| "Can't connect TlsConnector"))
-                    },
-                    Endpoint::Secure(_) => unreachable!(),
+            .and_then(move |tls_connector| match self {
+                Endpoint::Plain(stream) => {
+                    let fut = if ssl_opts.skip_domain_validation() {
+                        TlsConnectorExt::danger_connect_async_without_providing_domain_for_certificate_verification_and_server_name_indication(&tls_connector, stream)
+                    } else {
+                        TlsConnectorExt::connect_async(&tls_connector, &*domain, stream)
+                    };
+                    fut.then(|result| result.chain_err(|| "Can't connect TlsConnector"))
                 }
-
+                Endpoint::Secure(_) => unreachable!(),
             })
-            .map(|tls_stream| {
-                Endpoint::Secure(tls_stream)
-            });
+            .map(|tls_stream| Endpoint::Secure(tls_stream));
         Box::new(fut)
     }
 }
@@ -175,7 +174,8 @@ impl fmt::Debug for Stream {
 
 impl Stream {
     pub fn connect<S>(addr: S, handle: &Handle) -> ConnectingStream
-        where S: ToSocketAddrs,
+    where
+        S: ToSocketAddrs,
     {
         new_connecting_stream(addr, handle)
     }
@@ -206,7 +206,7 @@ impl Stream {
                     self
                 });
                 Box::new(fut)
-            },
+            }
             None => unreachable!(),
         }
     }
@@ -268,19 +268,19 @@ impl stream::Stream for Stream {
                 match self.read(&mut buf[..]) {
                     Ok(0) => {
                         break;
-                    },
+                    }
                     Ok(size) => {
                         let buf_handle = self.buf.as_mut().unwrap();
                         buf_handle.extend(&buf[..size]);
-                    },
+                    }
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                         would_block = true;
                         break;
-                    },
+                    }
                     Err(error) => {
                         self.closed = true;
                         return Err(Error::from(error));
-                    },
+                    }
                 };
             }
         } else {
@@ -291,12 +291,14 @@ impl stream::Stream for Stream {
         // or data was written to packet parser
         let mut should_poll = false;
 
-        let next_packet = self.next_packet.take().expect("Stream.next_packet should not be None");
+        let next_packet = self.next_packet.take().expect(
+            "Stream.next_packet should not be None",
+        );
         let next_packet = match next_packet {
             ParseResult::Done(packet, seq_id) => {
                 self.next_packet = Some(NewPacket::empty().parse());
                 return Ok(Ready(Some((packet, seq_id))));
-            },
+            }
             ParseResult::NeedHeader(mut new_packet, needed) => {
                 let buf_handle = self.buf.as_mut().unwrap();
                 let buf_len = buf_handle.len();
@@ -308,7 +310,7 @@ impl stream::Stream for Stream {
                 }
 
                 new_packet
-            },
+            }
             ParseResult::Incomplete(mut new_packet, needed) => {
                 let buf_handle = self.buf.as_mut().unwrap();
                 let buf_len = buf_handle.len();
@@ -320,7 +322,7 @@ impl stream::Stream for Stream {
                 }
 
                 new_packet
-            },
+            }
         };
 
         self.next_packet = Some(next_packet.parse());

@@ -50,10 +50,7 @@ pub fn new(stream: Stream, data: Vec<u8>, mut seq_id: u8) -> WritePacket {
         }
     };
 
-    WritePacket {
-        future: write_all(stream, data),
-        seq_id: seq_id,
-    }
+    WritePacket { future: write_all(stream, data), seq_id: seq_id }
 }
 
 impl Future for WritePacket {

@@ -80,8 +80,7 @@ pub trait LocalInfileHandler {
 pub struct LocalInfileHandlerObject(Arc<LocalInfileHandler>);
 
 impl LocalInfileHandlerObject {
-    pub fn new<T: LocalInfileHandler + 'static>(handler: T) -> Self
-    {
+    pub fn new<T: LocalInfileHandler + 'static>(handler: T) -> Self {
         LocalInfileHandlerObject(Arc::new(handler))
     }
 

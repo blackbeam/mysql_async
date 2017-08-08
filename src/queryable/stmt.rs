@@ -68,55 +68,54 @@ pub struct Stmt<T> {
 }
 
 pub fn new<T>(conn_like: T, inner: InnerStmt, cached: StmtCacheResult) -> Stmt<T>
-    where T: ConnectionLike + Sized + 'static
+where
+    T: ConnectionLike + Sized + 'static,
 {
     Stmt::new(conn_like, inner, cached)
 }
 
 impl<T> Stmt<T>
-    where T: ConnectionLike + Sized + 'static
+where
+    T: ConnectionLike + Sized + 'static,
 {
     fn new(conn_like: T, inner: InnerStmt, cached: StmtCacheResult) -> Stmt<T> {
-        Stmt {
-            conn_like: Some(A(conn_like)),
-            inner,
-            cached: Some(cached),
-        }
+        Stmt { conn_like: Some(A(conn_like)), inner, cached: Some(cached) }
     }
 
-    fn send_long_data(self,
-                      params: Vec<Value>,
-                      large_ids: Vec<u16>)
-                      -> BoxFuture<(Self, Vec<Value>)>
-    {
-        let fut = loop_fn(
-            (self, params, large_ids, 0),
-            |(this, params, mut large_ids, next_chunk)| {
-                let data_cap = this.get_max_allowed_packet() as usize - 8;
-                match large_ids.pop() {
-                    Some(id) => {
-                        let buf = match params[id as usize] {
-                            Bytes(ref x) => {
-                                let statement_id = this.inner.statement_id;
-                                let mut chunks = x.chunks(data_cap);
-                                match chunks.nth(next_chunk) {
-                                    Some(chunk) => {
-                                        let mut buf = Vec::with_capacity(chunk.len() + 7);
-                                        buf.write_u32::<LE>(statement_id).unwrap();
-                                        buf.write_u16::<LE>(id).unwrap();
-                                        buf.write_all(chunk).unwrap();
-                                        Some(buf)
-                                    },
-                                    None => None,
+    fn send_long_data(
+        self,
+        params: Vec<Value>,
+        large_ids: Vec<u16>,
+    ) -> BoxFuture<(Self, Vec<Value>)> {
+        let fut = loop_fn((self, params, large_ids, 0), |(this,
+          params,
+          mut large_ids,
+          next_chunk)| {
+            let data_cap = this.get_max_allowed_packet() as usize - 8;
+            match large_ids.pop() {
+                Some(id) => {
+                    let buf = match params[id as usize] {
+                        Bytes(ref x) => {
+                            let statement_id = this.inner.statement_id;
+                            let mut chunks = x.chunks(data_cap);
+                            match chunks.nth(next_chunk) {
+                                Some(chunk) => {
+                                    let mut buf = Vec::with_capacity(chunk.len() + 7);
+                                    buf.write_u32::<LE>(statement_id).unwrap();
+                                    buf.write_u16::<LE>(id).unwrap();
+                                    buf.write_all(chunk).unwrap();
+                                    Some(buf)
                                 }
-                            },
-                            _ => unreachable!(),
-                        };
-                        match buf {
-                            Some(buf) => {
-                                let chunk_len = buf.len() - 7;
-                                let fut = this
-                                    .write_command_data(Command::COM_STMT_SEND_LONG_DATA, buf)
+                                None => None,
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
+                    match buf {
+                        Some(buf) => {
+                            let chunk_len = buf.len() - 7;
+                            let fut =
+                                this.write_command_data(Command::COM_STMT_SEND_LONG_DATA, buf)
                                     .map(move |this| {
                                         let next = if chunk_len < data_cap {
                                             (this, params, large_ids, 0)
@@ -126,67 +125,80 @@ impl<T> Stmt<T>
                                         };
                                         Loop::Continue(next)
                                     });
-                                A(A(fut))
-                            },
-                            None => A(B(ok(Loop::Continue((this, params, large_ids, 0)))))
+                            A(A(fut))
                         }
-                    },
-                    None => B(ok(Loop::Break((this, params)))),
+                        None => A(B(ok(Loop::Continue((this, params, large_ids, 0))))),
+                    }
                 }
-            });
+                None => B(ok(Loop::Break((this, params)))),
+            }
+        });
         Box::new(fut)
     }
 
     /// See `Queriable::execute`
     pub fn execute<P>(self, params: P) -> BoxFuture<QueryResult<Self, BinaryProtocol>>
-        where P: Into<Params>
+    where
+        P: Into<Params>,
     {
         let params = params.into();
         let fut = match params {
             Params::Positional(params) => {
                 if self.inner.num_params as usize != params.len() {
-                    let error = ErrorKind::MismatchedStmtParams(self.inner.num_params,
-                                                                params.len() as u16).into();
+                    let error =
+                        ErrorKind::MismatchedStmtParams(self.inner.num_params, params.len() as u16)
+                            .into();
                     return Box::new(err(error));
                 }
 
-                let fut = self.inner.params.as_ref().ok_or_else(|| unreachable!())
+                let fut = self.inner
+                    .params
+                    .as_ref()
+                    .ok_or_else(|| unreachable!())
                     .and_then(|params_def| {
-                        Value::to_bin_payload(&*params_def,
-                                              &*params,
-                                              self.get_max_allowed_packet() as usize)
+                        Value::to_bin_payload(
+                            &*params_def,
+                            &*params,
+                            self.get_max_allowed_packet() as usize,
+                        )
                     })
                     .into_future()
                     .and_then(|bin_payload| match bin_payload {
                         (bitmap, row_data, Some(large_ids)) => {
-                            let fut = self.send_long_data(params, large_ids.clone())
-                                .and_then(|(this, params)| {
+                            let fut = self.send_long_data(params, large_ids.clone()).and_then(
+                                |(this,
+                                  params)| {
                                     let mut data = Vec::new();
-                                    write_data(&mut data,
-                                               this.inner.statement_id,
-                                               bitmap,
-                                               row_data,
-                                               params,
-                                               this.inner.params.as_ref().unwrap(),
-                                               large_ids);
+                                    write_data(
+                                        &mut data,
+                                        this.inner.statement_id,
+                                        bitmap,
+                                        row_data,
+                                        params,
+                                        this.inner.params.as_ref().unwrap(),
+                                        large_ids,
+                                    );
                                     this.write_command_data(Command::COM_STMT_EXECUTE, data)
-                                });
+                                },
+                            );
                             A(fut)
-                        },
+                        }
                         (bitmap, row_data, None) => {
                             let mut data = Vec::new();
-                            write_data(&mut data,
-                                       self.inner.statement_id,
-                                       bitmap,
-                                       row_data,
-                                       params,
-                                       self.inner.params.as_ref().unwrap(),
-                                       Vec::new());
+                            write_data(
+                                &mut data,
+                                self.inner.statement_id,
+                                bitmap,
+                                row_data,
+                                params,
+                                self.inner.params.as_ref().unwrap(),
+                                Vec::new(),
+                            );
                             B(self.write_command_data(Command::COM_STMT_EXECUTE, data))
-                        },
+                        }
                     });
                 A(fut)
-            },
+            }
             Params::Named(_) => {
                 if self.inner.named_params.is_none() {
                     let error = ErrorKind::NamedParamsForPositionalQuery.into();
@@ -201,7 +213,7 @@ impl<T> Stmt<T>
                         }
                     };
                 return self.execute(positional_params);
-            },
+            }
             Params::Empty => {
                 if self.inner.num_params > 0 {
                     let error = ErrorKind::MismatchedStmtParams(self.inner.num_params, 0).into();
@@ -221,8 +233,9 @@ impl<T> Stmt<T>
 
     /// See `Queriable::first`
     pub fn first<P, R>(self, params: P) -> BoxFuture<(Self, Option<R>)>
-        where P: Into<Params>,
-              R: FromRow
+    where
+        P: Into<Params>,
+        R: FromRow,
     {
         let fut = self.execute(params)
             .and_then(|result| result.collect_and_drop::<Row>())
@@ -236,9 +249,10 @@ impl<T> Stmt<T>
 
     /// See `Queriable::batch`
     pub fn batch<I, P>(self, params_iter: I) -> BoxFuture<Self>
-        where I: IntoIterator<Item=P> + 'static,
-              Params: From<P>,
-              P: 'static
+    where
+        I: IntoIterator<Item = P> + 'static,
+        Params: From<P>,
+        P: 'static,
     {
         let params_iter = params_iter.into_iter().map(Params::from);
         let fut = loop_fn((self, params_iter), |(this, mut params_iter)| {
@@ -249,7 +263,7 @@ impl<T> Stmt<T>
                         .map(|this| Loop::Continue((this, params_iter)));
                     A(fut)
                 }
-                None => B(ok(Loop::Break(this)))
+                None => B(ok(Loop::Break(this))),
             }
         });
         Box::new(fut)
@@ -265,13 +279,13 @@ impl<T> Stmt<T>
                 } else {
                     B(ok(conn_like))
                 }
-            },
+            }
             _ => unreachable!(),
         };
         Box::new(fut)
     }
 
-    pub (crate) fn unwrap(mut self) -> (T, Option<StmtCacheResult>) {
+    pub(crate) fn unwrap(mut self) -> (T, Option<StmtCacheResult>) {
         match self.conn_like {
             Some(A(conn_like)) => (conn_like, self.cached.take()),
             _ => unreachable!(),
@@ -283,19 +297,16 @@ impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Stmt<T> {
     type ConnLike = T;
 
     fn take_stream(self) -> (Streamless<Self>, io::Stream)
-        where Self: Sized
+    where
+        Self: Sized,
     {
         let Stmt { conn_like, inner, cached } = self;
         match conn_like {
             Some(A(conn_like)) => {
                 let (streamless, stream) = conn_like.take_stream();
-                let this = Stmt {
-                    conn_like: Some(B(streamless)),
-                    inner,
-                    cached,
-                };
+                let this = Stmt { conn_like: Some(B(streamless)), inner, cached };
                 (Streamless::new(this), stream)
-            },
+            }
             _ => unreachable!(),
         }
     }
@@ -305,37 +316,35 @@ impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Stmt<T> {
         match conn_like {
             B(streamless) => {
                 self.conn_like = Some(A(streamless.return_stream(stream)));
-            },
+            }
             _ => unreachable!(),
         }
     }
 
     fn conn_like_ref(&self) -> &Self::ConnLike {
         match self.conn_like {
-            Some(A(ref conn_like)) => {
-                conn_like
-            },
+            Some(A(ref conn_like)) => conn_like,
             _ => unreachable!(),
         }
     }
 
     fn conn_like_mut(&mut self) -> &mut Self::ConnLike {
         match self.conn_like {
-            Some(A(ref mut conn_like)) => {
-                conn_like
-            },
+            Some(A(ref mut conn_like)) => conn_like,
             _ => unreachable!(),
         }
     }
 }
 
-fn write_data(writer: &mut Vec<u8>,
-              stmt_id: u32,
-              bitmap: Vec<u8>,
-              row_data: Vec<u8>,
-              params: Vec<Value>,
-              params_def: &Vec<Column>,
-              large_ids: Vec<u16>) {
+fn write_data(
+    writer: &mut Vec<u8>,
+    stmt_id: u32,
+    bitmap: Vec<u8>,
+    row_data: Vec<u8>,
+    params: Vec<Value>,
+    params_def: &Vec<Column>,
+    large_ids: Vec<u16>,
+) {
     let capacity = 9 + bitmap.len() + 1 + params.len() * 2 + row_data.len();
     writer.reserve(capacity);
     writer.write_u32::<LE>(stmt_id).unwrap();

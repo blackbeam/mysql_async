@@ -50,8 +50,10 @@ pub fn lenenc_le(mut data: &[u8]) -> Option<(u64, u8)> {
 
 pub fn u32_le(data: &[u8]) -> Option<u32> {
     if data.len() >= 4 {
-        Some(((data[3] as u32) << 24) + ((data[2] as u32) << 16) + ((data[1] as u32) << 8) +
-             data[0] as u32)
+        Some(
+            ((data[3] as u32) << 24) + ((data[2] as u32) << 16) + ((data[1] as u32) << 8) +
+                data[0] as u32,
+        )
     } else {
         None
     }
@@ -59,7 +61,9 @@ pub fn u32_le(data: &[u8]) -> Option<u32> {
 
 pub fn u24_le(data: &[u8]) -> Option<u32> {
     if data.len() >= 3 {
-        Some(((data[2] as u32) << 16) + ((data[1] as u32) << 8) + data[0] as u32)
+        Some(
+            ((data[2] as u32) << 16) + ((data[1] as u32) << 8) + data[0] as u32,
+        )
     } else {
         None
     }
@@ -74,7 +78,8 @@ pub fn u16_le(data: &[u8]) -> Option<u16> {
 }
 
 pub fn write_lenenc_int<W>(writer: &mut W, x: u64) -> Result<()>
-    where W: Write,
+where
+    W: Write,
 {
     if x < 251 {
         writer.write_u8(x as u8)?;
@@ -92,7 +97,8 @@ pub fn write_lenenc_int<W>(writer: &mut W, x: u64) -> Result<()>
 }
 
 pub fn write_lenenc_bytes<W>(writer: &mut W, bytes: &[u8]) -> Result<()>
-    where W: Write,
+where
+    W: Write,
 {
     write_lenenc_int(writer, bytes.len() as u64)?;
     writer.write_all(bytes)?;
@@ -100,7 +106,8 @@ pub fn write_lenenc_bytes<W>(writer: &mut W, bytes: &[u8]) -> Result<()>
 }
 
 pub fn read_lenenc_int<R>(reader: &mut R) -> Result<u64>
-    where R: io::Read,
+where
+    R: io::Read,
 {
     let head_byte = reader.read_u8()?;
     let length = match head_byte {
@@ -114,7 +121,8 @@ pub fn read_lenenc_int<R>(reader: &mut R) -> Result<u64>
 }
 
 pub fn read_lenenc_bytes<R>(reader: &mut R) -> Result<Vec<u8>>
-    where R: io::Read,
+where
+    R: io::Read,
 {
     let len = read_lenenc_int(reader)?;
     let mut out = vec![0u8; len as usize];
@@ -124,12 +132,14 @@ pub fn read_lenenc_bytes<R>(reader: &mut R) -> Result<Vec<u8>>
 
 
 
-pub fn read_bin_value<R>(reader: &mut R,
-                         col_type: ColumnType,
-                         unsigned: bool,
-                         num_flag: bool)
-                         -> Result<Value>
-    where R: io::Read,
+pub fn read_bin_value<R>(
+    reader: &mut R,
+    col_type: ColumnType,
+    unsigned: bool,
+    num_flag: bool,
+) -> Result<Value>
+where
+    R: io::Read,
 {
     match col_type {
         ColumnType::MYSQL_TYPE_STRING |
@@ -151,14 +161,14 @@ pub fn read_bin_value<R>(reader: &mut R,
             } else {
                 Ok(Bytes(read_lenenc_bytes(reader)?))
             }
-        },
+        }
         ColumnType::MYSQL_TYPE_TINY => {
             if unsigned {
                 Ok(Int(reader.read_u8()? as i64))
             } else {
                 Ok(Int(reader.read_i8()? as i64))
             }
-        },
+        }
         ColumnType::MYSQL_TYPE_SHORT |
         ColumnType::MYSQL_TYPE_YEAR => {
             if unsigned {
@@ -166,7 +176,7 @@ pub fn read_bin_value<R>(reader: &mut R,
             } else {
                 Ok(Int(reader.read_i16::<LE>()? as i64))
             }
-        },
+        }
         ColumnType::MYSQL_TYPE_LONG |
         ColumnType::MYSQL_TYPE_INT24 => {
             if unsigned {
@@ -174,14 +184,14 @@ pub fn read_bin_value<R>(reader: &mut R,
             } else {
                 Ok(Int(reader.read_i32::<LE>()? as i64))
             }
-        },
+        }
         ColumnType::MYSQL_TYPE_LONGLONG => {
             if unsigned {
                 Ok(UInt(reader.read_u64::<LE>()?))
             } else {
                 Ok(Int(reader.read_i64::<LE>()?))
             }
-        },
+        }
         ColumnType::MYSQL_TYPE_FLOAT => Ok(Float(reader.read_f32::<LE>()? as f64)),
         ColumnType::MYSQL_TYPE_DOUBLE => Ok(Float(reader.read_f64::<LE>()?)),
         ColumnType::MYSQL_TYPE_TIMESTAMP |
@@ -209,7 +219,7 @@ pub fn read_bin_value<R>(reader: &mut R,
                 micro_second = reader.read_u32::<LE>()?;
             }
             Ok(Date(year, month, day, hour, minute, second, micro_second))
-        },
+        }
         ColumnType::MYSQL_TYPE_TIME => {
             let len = reader.read_u8()?;
             let mut is_negative = false;
@@ -228,8 +238,15 @@ pub fn read_bin_value<R>(reader: &mut R,
             if len == 12u8 {
                 micro_seconds = reader.read_u32::<LE>()?;
             }
-            Ok(Time(is_negative, days, hours, minutes, seconds, micro_seconds))
-        },
+            Ok(Time(
+                is_negative,
+                days,
+                hours,
+                minutes,
+                seconds,
+                micro_seconds,
+            ))
+        }
         _ => Ok(NULL),
     }
 }
@@ -364,18 +381,19 @@ impl HandshakePacket {
 
     pub fn srv_ver_parsed(&self) -> Result<(u16, u16, u16)> {
         let ver_str = self.srv_ver().into_owned();
-        VERSION_RE.captures(&ver_str[..])
+        VERSION_RE
+            .captures(&ver_str[..])
             .and_then(|capts| {
-                Some((*&capts[1].parse::<u16>().unwrap_or(0),
-                      *&capts[2].parse::<u16>().unwrap_or(0),
-                      *&capts[3].parse::<u16>().unwrap_or(0)))
+                Some((
+                    *&capts[1].parse::<u16>().unwrap_or(0),
+                    *&capts[2].parse::<u16>().unwrap_or(0),
+                    *&capts[3].parse::<u16>().unwrap_or(0),
+                ))
             })
-            .and_then(|version| {
-                if version == (0, 0, 0) {
-                    None
-                } else {
-                    Some(version)
-                }
+            .and_then(|version| if version == (0, 0, 0) {
+                None
+            } else {
+                Some(version)
             })
             .ok_or(ErrorKind::CantParseVersion(ver_str).into())
     }
@@ -408,7 +426,7 @@ impl HandshakePacket {
                     auth_plug_data_2 = &auth_plug_data_2[..auth_plug_data_2.len() - 1];
                 }
                 Some(auth_plug_data_2)
-            },
+            }
             None => None,
         }
     }
@@ -460,7 +478,9 @@ impl HandshakePacket {
 
     #[allow(dead_code)]
     pub fn auth_plugin_name(&self) -> Option<Cow<str>> {
-        self.auth_plugin_name_bytes().map(|bytes| String::from_utf8_lossy(bytes))
+        self.auth_plugin_name_bytes().map(|bytes| {
+            String::from_utf8_lossy(bytes)
+        })
     }
 }
 
@@ -566,8 +586,8 @@ impl OkPacket {
         if packet.is(PacketType::Ok) {
             let mut offset = 1;
 
-            let (affected_rows, affected_rows_len) = lenenc_le(&packet.payload[offset..])
-                .expect("should be here 5");
+            let (affected_rows, affected_rows_len) =
+                lenenc_le(&packet.payload[offset..]).expect("should be here 5");
             offset += affected_rows_len as usize;
 
             let (last_insert_id, last_insert_id_len) = lenenc_le(&packet.payload[offset..])
@@ -584,16 +604,16 @@ impl OkPacket {
             let info;
             let mut session_state_changes = None;
             if capabilities.contains(consts::CLIENT_SESSION_TRACK) {
-                let (info_len, info_len_len) = lenenc_le(&packet.payload[offset..])
-                    .expect("should be here 9");
+                let (info_len, info_len_len) =
+                    lenenc_le(&packet.payload[offset..]).expect("should be here 9");
                 offset += info_len_len as usize;
                 info = (offset, offset + info_len as usize);
                 if status_flags.contains(consts::SERVER_SESSION_STATE_CHANGED) {
                     let (sess_state_changes_len, sess_state_changes_len_len) =
                         lenenc_le(&packet.payload[offset..]).expect("should be here 10");
                     offset += sess_state_changes_len_len as usize;
-                    session_state_changes = Some((offset,
-                                                  offset + sess_state_changes_len as usize));
+                    session_state_changes =
+                        Some((offset, offset + sess_state_changes_len as usize));
                 }
             } else {
                 info = (offset, packet.payload.len());
@@ -646,7 +666,9 @@ impl OkPacket {
     }
 
     pub fn session_state_changes(&self) -> Option<Cow<str>> {
-        self.session_state_changes_bytes().map(String::from_utf8_lossy)
+        self.session_state_changes_bytes().map(
+            String::from_utf8_lossy,
+        )
     }
 
     pub fn unwrap(self) -> Packet {
@@ -705,11 +727,13 @@ impl ErrPacket {
 
 impl fmt::Debug for ErrPacket {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f,
-               "ERROR {} ({}): {}",
-               self.error_code(),
-               self.state(),
-               self.message())
+        write!(
+            f,
+            "ERROR {} ({}): {}",
+            self.error_code(),
+            self.state(),
+            self.message()
+        )
     }
 }
 
@@ -749,9 +773,7 @@ pub struct LocalInfilePacket<'a> {
 impl<'a> LocalInfilePacket<'a> {
     pub fn new(packet: &'a Packet) -> Option<LocalInfilePacket<'a>> {
         if packet.as_ref()[0] == 0xFB {
-            Some(LocalInfilePacket {
-                file_name: &packet.as_ref()[1..],
-            })
+            Some(LocalInfilePacket { file_name: &packet.as_ref()[1..] })
         } else {
             None
         }
@@ -797,22 +819,29 @@ impl Row {
     /// Will copy value at index `index` if it was not taken by `Row::take` earlier,
     /// then will convert it to `T`.
     pub fn get<T, I>(&mut self, index: I) -> Option<T>
-        where T: FromValue,
-              I: ColumnIndex,
+    where
+        T: FromValue,
+        I: ColumnIndex,
     {
         index.idx(&*self.columns).and_then(|idx| {
-            self.values.get(idx).and_then(|x| x.as_ref()).map(|x| from_value::<T>(x.clone()))
+            self.values.get(idx).and_then(|x| x.as_ref()).map(|x| {
+                from_value::<T>(x.clone())
+            })
         })
     }
 
     /// Will take value of a column with index `index` if it exists and wasn't taken earlier then
     /// will convert it to `T`.
     pub fn take<T, I>(&mut self, index: I) -> Option<T>
-        where T: FromValue,
-              I: ColumnIndex,
+    where
+        T: FromValue,
+        I: ColumnIndex,
     {
-        index.idx(&*self.columns)
-            .and_then(|idx| self.values.get_mut(idx).and_then(|x| x.take()).map(from_value::<T>))
+        index.idx(&*self.columns).and_then(|idx| {
+            self.values.get_mut(idx).and_then(|x| x.take()).map(
+                from_value::<T>,
+            )
+        })
     }
 
     /// Unwraps values of a row.
@@ -823,7 +852,9 @@ impl Row {
     pub fn unwrap(self) -> Vec<Value> {
         self.values
             .into_iter()
-            .map(|x| x.expect("Can't unwrap row if some of columns was taken"))
+            .map(|x| {
+                x.expect("Can't unwrap row if some of columns was taken")
+            })
             .collect()
     }
 
@@ -840,10 +871,10 @@ impl fmt::Debug for Row {
             match *val {
                 Some(ref val) => {
                     debug.field(val);
-                },
+                }
                 None => {
                     debug.field(&"<taken>");
-                },
+                }
             }
         }
         debug.finish()
@@ -930,8 +961,17 @@ pub struct Column {
 impl Column {
     #[doc(hidden)]
     pub fn new(packet: Packet) -> io::Result<Column> {
-        let (schema, table, org_table, name, org_name, character_set, column_length, column_type,
-            flags, decimals, default_values) = {
+        let (schema,
+             table,
+             org_table,
+             name,
+             org_name,
+             character_set,
+             column_length,
+             column_type,
+             flags,
+             decimals,
+             default_values) = {
             let mut reader = &packet.as_ref()[4..];
             let mut len = reader.read_lenenc_int()? as usize;
             let (schema, mut reader) = reader.split_at(len);
@@ -1016,6 +1056,8 @@ impl Column {
 
     /// Default values (see [`Column`](https://mariadb.com/kb/en/mariadb/resultset)).
     pub fn default_values<'a>(&'a self) -> Option<&'a [u8]> {
-        self.default_values.map(|(offset, len)| &self.payload[offset..offset + len])
+        self.default_values.map(|(offset, len)| {
+            &self.payload[offset..offset + len]
+        })
     }
 }

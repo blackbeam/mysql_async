@@ -9,10 +9,7 @@
 use consts::{self, CapabilityFlags};
 use errors::*;
 
-use local_infile_handler::{
-    LocalInfileHandler,
-    LocalInfileHandlerObject,
-};
+use local_infile_handler::{LocalInfileHandler, LocalInfileHandlerObject};
 
 use std::borrow::Cow;
 use std::path::Path;
@@ -122,7 +119,6 @@ pub struct Opts {
     ///
     /// This option requires `ssl` feature to work.
     ssl_opts: Option<SslOpts>,
-
 }
 
 impl Opts {
@@ -213,11 +209,12 @@ impl Opts {
         self.ssl_opts.as_ref()
     }
 
-    pub (crate) fn get_capabilities(&self) -> CapabilityFlags {
+    pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
         let mut out = consts::CLIENT_PROTOCOL_41 | consts::CLIENT_SECURE_CONNECTION |
-                  consts::CLIENT_LONG_PASSWORD | consts::CLIENT_TRANSACTIONS |
-                  consts::CLIENT_LOCAL_FILES | consts::CLIENT_MULTI_STATEMENTS |
-                  consts::CLIENT_MULTI_RESULTS | consts::CLIENT_PS_MULTI_RESULTS;
+            consts::CLIENT_LONG_PASSWORD | consts::CLIENT_TRANSACTIONS |
+            consts::CLIENT_LOCAL_FILES |
+            consts::CLIENT_MULTI_STATEMENTS | consts::CLIENT_MULTI_RESULTS |
+            consts::CLIENT_PS_MULTI_RESULTS;
 
         if self.db_name.is_some() {
             out |= consts::CLIENT_CONNECT_WITH_DB;
@@ -322,7 +319,8 @@ impl OptsBuilder {
 
     /// Handler for local infile requests (defaults to `None`).
     pub fn local_infile_handler<T>(&mut self, handler: Option<T>) -> &mut Self
-        where T: LocalInfileHandler + 'static,
+    where
+        T: LocalInfileHandler + 'static,
     {
         self.opts.local_infile_handler = handler.map(LocalInfileHandlerObject::new);
         self
@@ -353,7 +351,8 @@ impl OptsBuilder {
     ///
     /// Call with `None` to reset to default.
     pub fn stmt_cache_size<T>(&mut self, cache_size: T) -> &mut Self
-        where T: Into<Option<usize>>
+    where
+        T: Into<Option<usize>>,
     {
         self.opts.stmt_cache_size = cache_size.into().unwrap_or(DEFAULT_STMT_CACHE_SIZE);
         self
@@ -377,7 +376,11 @@ impl From<OptsBuilder> for Opts {
 fn get_opts_user_from_url(url: &Url) -> Option<String> {
     let user = url.username();
     if user != "" {
-        Some(percent_decode(user.as_ref()).decode_utf8_lossy().into_owned())
+        Some(
+            percent_decode(user.as_ref())
+                .decode_utf8_lossy()
+                .into_owned(),
+        )
     } else {
         None
     }
@@ -385,7 +388,11 @@ fn get_opts_user_from_url(url: &Url) -> Option<String> {
 
 fn get_opts_pass_from_url(url: &Url) -> Option<String> {
     if let Some(pass) = url.password() {
-        Some(percent_decode(pass.as_ref()).decode_utf8_lossy().into_owned())
+        Some(
+            percent_decode(pass.as_ref())
+                .decode_utf8_lossy()
+                .into_owned(),
+        )
     } else {
         None
     }
@@ -393,8 +400,11 @@ fn get_opts_pass_from_url(url: &Url) -> Option<String> {
 
 fn get_opts_db_name_from_url(url: &Url) -> Option<String> {
     if let Some(mut segments) = url.path_segments() {
-        segments.next()
-            .map(|db_name| percent_decode(db_name.as_ref()).decode_utf8_lossy().into_owned())
+        segments.next().map(|db_name| {
+            percent_decode(db_name.as_ref())
+                .decode_utf8_lossy()
+                .into_owned()
+        })
     } else {
         None
     }
@@ -403,14 +413,18 @@ fn get_opts_db_name_from_url(url: &Url) -> Option<String> {
 fn from_url_basic(url_str: &str) -> Result<(Opts, Vec<(String, String)>)> {
     let url = Url::parse(url_str)?;
     if url.scheme() != "mysql" {
-        return Err(ErrorKind::UrlUnsupportedScheme(url.scheme().to_string()).into());
+        return Err(
+            ErrorKind::UrlUnsupportedScheme(url.scheme().to_string()).into(),
+        );
     }
     if url.cannot_be_a_base() || !url.has_host() {
         return Err(ErrorKind::UrlInvalid.into());
     }
     let user = get_opts_user_from_url(&url);
     let pass = get_opts_pass_from_url(&url);
-    let ip_or_hostname = url.host_str().map(String::from).unwrap_or("127.0.0.1".into());
+    let ip_or_hostname = url.host_str().map(String::from).unwrap_or(
+        "127.0.0.1".into(),
+    );
     let tcp_port = url.port().unwrap_or(3306);
     let db_name = get_opts_db_name_from_url(&url);
 
@@ -433,34 +447,48 @@ fn from_url(url: &str) -> Result<Opts> {
         if key == "pool_min" {
             match usize::from_str(&*value) {
                 Ok(value) => opts.pool_min = value,
-                _ => return Err(ErrorKind::UrlInvalidParamValue("pool_min".into(), value).into()),
+                _ => {
+                    return Err(
+                        ErrorKind::UrlInvalidParamValue("pool_min".into(), value).into(),
+                    )
+                }
             }
         } else if key == "pool_max" {
             match usize::from_str(&*value) {
                 Ok(value) => opts.pool_max = value,
-                _ => return Err(ErrorKind::UrlInvalidParamValue("pool_max".into(), value).into()),
+                _ => {
+                    return Err(
+                        ErrorKind::UrlInvalidParamValue("pool_max".into(), value).into(),
+                    )
+                }
             }
         } else if key == "conn_ttl" {
             match u32::from_str(&*value) {
                 Ok(value) => opts.conn_ttl = Some(value),
-                _ => return Err(ErrorKind::UrlInvalidParamValue("conn_ttl".into(), value).into()),
+                _ => {
+                    return Err(
+                        ErrorKind::UrlInvalidParamValue("conn_ttl".into(), value).into(),
+                    )
+                }
             }
         } else if key == "tcp_keepalive" {
             match u32::from_str(&*value) {
                 Ok(value) => opts.tcp_keepalive = Some(value),
                 _ => {
-                    return Err(ErrorKind::UrlInvalidParamValue("tcp_keepalive_ms".into(), value)
-                        .into())
-                },
+                    return Err(
+                        ErrorKind::UrlInvalidParamValue("tcp_keepalive_ms".into(), value).into(),
+                    )
+                }
             }
         } else if key == "stmt_cache_size" {
             match usize::from_str(&*value) {
                 Ok(stmt_cache_size) => {
                     opts.stmt_cache_size = stmt_cache_size;
-                },
+                }
                 _ => {
-                    return Err(ErrorKind::UrlInvalidParamValue("stmt_cache_size".into(), value)
-                        .into());
+                    return Err(
+                        ErrorKind::UrlInvalidParamValue("stmt_cache_size".into(), value).into(),
+                    );
                 }
             }
         } else {
@@ -468,7 +496,9 @@ fn from_url(url: &str) -> Result<Opts> {
         }
     }
     if opts.pool_min > opts.pool_max {
-        return Err(ErrorKind::InvalidPoolConstraints(opts.pool_min, opts.pool_max).into());
+        return Err(
+            ErrorKind::InvalidPoolConstraints(opts.pool_min, opts.pool_max).into(),
+        );
     }
     Ok(opts)
 }
@@ -489,15 +519,17 @@ mod test {
     #[test]
     fn should_convert_url_into_opts() {
         let opts = "mysql://usr:pw@192.168.1.1:3309/dbname";
-        assert_eq!(Opts {
-                       user: Some("usr".to_string()),
-                       pass: Some("pw".to_string()),
-                       ip_or_hostname: "192.168.1.1".to_string(),
-                       tcp_port: 3309,
-                       db_name: Some("dbname".to_string()),
-                       ..Opts::default()
-                   },
-                   opts.into());
+        assert_eq!(
+            Opts {
+                user: Some("usr".to_string()),
+                pass: Some("pw".to_string()),
+                ip_or_hostname: "192.168.1.1".to_string(),
+                tcp_port: 3309,
+                db_name: Some("dbname".to_string()),
+                ..Opts::default()
+            },
+            opts.into()
+        );
     }
 
     #[test]

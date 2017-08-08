@@ -17,7 +17,7 @@ use lib_futures::future::Either::*;
 use local_infile_handler::LocalInfileHandler;
 use proto::{Column, LocalInfilePacket, Packet, read_lenenc_int};
 use queryable::Protocol;
-use queryable::query_result::{QueryResult, self};
+use queryable::query_result::{self, QueryResult};
 use queryable::stmt::InnerStmt;
 use self::read_packet::ReadPacket;
 use self::streamless::Streamless;
@@ -56,7 +56,8 @@ pub trait ConnectionLikeWrapper {
     type ConnLike: ConnectionLike;
 
     fn take_stream(self) -> (Streamless<Self>, io::Stream)
-        where Self: Sized;
+    where
+        Self: Sized;
     fn return_stream(&mut self, stream: io::Stream) -> ();
     fn conn_like_ref(&self) -> &Self::ConnLike;
 
@@ -64,10 +65,14 @@ pub trait ConnectionLikeWrapper {
 }
 
 impl<T, U> ConnectionLike for T
-where T: ConnectionLikeWrapper<ConnLike=U>,
-      U: ConnectionLike + 'static
+where
+    T: ConnectionLikeWrapper<ConnLike = U>,
+    U: ConnectionLike + 'static,
 {
-    fn take_stream(self) -> (Streamless<Self>, io::Stream) where Self: Sized {
+    fn take_stream(self) -> (Streamless<Self>, io::Stream)
+    where
+        Self: Sized,
+    {
         <Self as ConnectionLikeWrapper>::take_stream(self)
     }
 
@@ -174,7 +179,8 @@ where T: ConnectionLikeWrapper<ConnLike=U>,
 
 pub trait ConnectionLike {
     fn take_stream(self) -> (Streamless<Self>, io::Stream)
-        where Self: Sized;
+    where
+        Self: Sized;
     fn return_stream(&mut self, stream: io::Stream) -> ();
     fn stmt_cache_ref(&self) -> &StmtCache;
     fn stmt_cache_mut(&mut self) -> &mut StmtCache;
@@ -202,12 +208,14 @@ pub trait ConnectionLike {
     fn on_disconnect(&mut self);
 
     fn cache_stmt(mut self, query: String, stmt: &InnerStmt) -> BoxFuture<(Self, StmtCacheResult)>
-        where Self: Sized + 'static
+    where
+        Self: Sized + 'static,
     {
         let fut = if self.get_opts().get_stmt_cache_size() > 0 {
             if let Some(old_stmt) = self.stmt_cache_mut().put(query, stmt.clone()) {
-                A(self.close_stmt(old_stmt.statement_id)
-                    .map(|this| (this, StmtCacheResult::Cached)))
+                A(self.close_stmt(old_stmt.statement_id).map(|this| {
+                    (this, StmtCacheResult::Cached)
+                }))
             } else {
                 B(ok((self, StmtCacheResult::Cached)))
             }
@@ -223,39 +231,40 @@ pub trait ConnectionLike {
 
     /// Returns future that reads packet from a server end resolves to `(Self, Packet)`.
     fn read_packet(self) -> ReadPacket<Self>
-        where Self: Sized,
-              Self: 'static
+    where
+        Self: Sized,
+        Self: 'static,
     {
         ReadPacket::new(self)
     }
 
     /// Returns future that reads packets from a server and resolves to `(Self, Vec<Packet>)`.
     fn read_packets(self, n: usize) -> BoxFuture<(Self, Vec<Packet>)>
-        where Self: Sized + 'static,
+    where
+        Self: Sized + 'static,
     {
         if n == 0 {
             return Box::new(ok((self, Vec::new())));
         }
-        let fut = loop_fn(
-            (Vec::new(), n - 1, self),
-            |(mut acc, num, conn_like)| {
-                conn_like
-                    .read_packet()
-                    .and_then(move |(conn_like, packet)| {
-                        acc.push(packet);
-                        if num == 0 {
-                            Ok(Loop::Break((conn_like, acc)))
-                        } else {
-                            Ok(Loop::Continue((acc, num - 1, conn_like)))
-                        }
-                    })
-            });
+        let fut = loop_fn((Vec::new(), n - 1, self), |(mut acc, num, conn_like)| {
+            conn_like.read_packet().and_then(
+                move |(conn_like, packet)| {
+                    acc.push(packet);
+                    if num == 0 {
+                        Ok(Loop::Break((conn_like, acc)))
+                    } else {
+                        Ok(Loop::Continue((acc, num - 1, conn_like)))
+                    }
+                },
+            )
+        });
         Box::new(fut)
     }
 
     fn prepare_stmt<Q>(mut self, query: Q) -> BoxFuture<(Self, InnerStmt, StmtCacheResult)>
-        where Q: AsRef<str>,
-              Self: Sized + 'static
+    where
+        Q: AsRef<str>,
+        Self: Sized + 'static,
     {
         match parse_named_params(query.as_ref()) {
             Ok((named_params, query)) => {
@@ -265,9 +274,7 @@ pub trait ConnectionLike {
                     Box::new(ok((self, inner_stmt, StmtCacheResult::Cached)))
                 } else {
                     let fut = self.write_command_data(Command::COM_STMT_PREPARE, &*query)
-                        .and_then(|this| {
-                            this.read_packet()
-                        })
+                        .and_then(|this| this.read_packet())
                         .and_then(|(this, packet)| {
                             InnerStmt::new(packet.as_ref(), named_params)
                                 .into_future()
@@ -277,10 +284,9 @@ pub trait ConnectionLike {
                             this.read_packets(inner_stmt.num_params as usize)
                                 .and_then(|(this, packets)| {
                                     let params = if packets.len() > 0 {
-                                        let params = packets.into_iter()
-                                            .map(|packet| {
-                                                Column::new(packet).map_err(Error::from)
-                                            })
+                                        let params = packets
+                                            .into_iter()
+                                            .map(|packet| Column::new(packet).map_err(Error::from))
                                             .collect::<Result<Vec<Column>>>();
                                         Some(params)
                                     } else {
@@ -293,27 +299,23 @@ pub trait ConnectionLike {
                                     }
                                     B(ok((this, inner_stmt)))
                                 })
-                                .and_then(|(this, inner_stmt)| {
-                                    if inner_stmt.num_params > 0 {
-                                        if this.get_capabilities().contains(CLIENT_DEPRECATE_EOF) {
-                                            A(ok((this, inner_stmt)))
-                                        } else {
-                                            B(this.read_packet()
-                                                .map(|(this, _)| (this, inner_stmt)))
-                                        }
-                                    } else {
+                                .and_then(|(this, inner_stmt)| if inner_stmt.num_params > 0 {
+                                    if this.get_capabilities().contains(CLIENT_DEPRECATE_EOF) {
                                         A(ok((this, inner_stmt)))
+                                    } else {
+                                        B(this.read_packet().map(|(this, _)| (this, inner_stmt)))
                                     }
+                                } else {
+                                    A(ok((this, inner_stmt)))
                                 })
                         })
                         .and_then(|(this, mut inner_stmt)| {
                             this.read_packets(inner_stmt.num_columns as usize)
                                 .and_then(|(this, packets)| {
                                     let columns = if packets.len() > 0 {
-                                        let columns = packets.into_iter()
-                                            .map(|packet| {
-                                                Column::new(packet).map_err(Error::from)
-                                            })
+                                        let columns = packets
+                                            .into_iter()
+                                            .map(|packet| Column::new(packet).map_err(Error::from))
                                             .collect::<Result<Vec<Column>>>();
                                         Some(columns)
                                     } else {
@@ -326,36 +328,32 @@ pub trait ConnectionLike {
                                     }
                                     B(ok((this, inner_stmt)))
                                 })
-                                .and_then(|(this, inner_stmt)| {
-                                    if inner_stmt.num_columns > 0 {
-                                        if this.get_capabilities().contains(CLIENT_DEPRECATE_EOF) {
-                                            A(ok((this, inner_stmt)))
-                                        } else {
-                                            B(this.read_packet()
-                                                .map(|(this, _)| (this, inner_stmt)))
-                                        }
-                                    } else {
+                                .and_then(|(this, inner_stmt)| if inner_stmt.num_columns > 0 {
+                                    if this.get_capabilities().contains(CLIENT_DEPRECATE_EOF) {
                                         A(ok((this, inner_stmt)))
+                                    } else {
+                                        B(this.read_packet().map(|(this, _)| (this, inner_stmt)))
                                     }
+                                } else {
+                                    A(ok((this, inner_stmt)))
                                 })
                         })
                         .and_then(|(this, inner_stmt)| {
-                            this.cache_stmt(query, &inner_stmt)
-                                .map(|(this, stmt_cache_result)| {
-                                    (this, inner_stmt, stmt_cache_result)
-                                })
+                            this.cache_stmt(query, &inner_stmt).map(|(this,
+                              stmt_cache_result)| {
+                                (this, inner_stmt, stmt_cache_result)
+                            })
                         });
                     Box::new(fut)
                 }
-            },
-            Err(err) => {
-                Box::new(Err(err).into_future())
             }
+            Err(err) => Box::new(Err(err).into_future()),
         }
     }
 
     fn close_stmt(self, statement_id: u32) -> WritePacket<Self>
-        where Self: Sized + 'static
+    where
+        Self: Sized + 'static,
     {
         let stmt_id = [
             (statement_id & 0xFF) as u8,
@@ -368,97 +366,96 @@ pub trait ConnectionLike {
 
     /// Returns future that reads result set from a server and resolves to `QueryResult`.
     fn read_result_set<P>(self, cached: Option<StmtCacheResult>) -> BoxFuture<QueryResult<Self, P>>
-        where P: Protocol + 'static,
-              Self: Sized + 'static
+    where
+        P: Protocol + 'static,
+        Self: Sized + 'static,
     {
-        let fut = self.read_packet()
-            .and_then(|(this, packet)| {
-                match packet.as_ref()[0] {
-                    0x00 => A(A(ok(query_result::new(this, None, cached)))),
-                    0xFB => {
-                        let fut = LocalInfilePacket::new(&packet)
-                            .ok_or(ErrorKind::UnexpectedPacket.into())
-                            .and_then(|local_infile| match this.get_local_infile_handler() {
-                                Some(handler) => handler.handle(local_infile.file_name()),
-                                None => Err(ErrorKind::NoLocalInfileHandler.into())
-                            })
-                            .into_future()
-                            .and_then(|reader| {
-                                let mut buf = Vec::with_capacity(4096);
-                                unsafe { buf.set_len(4096); }
-                                loop_fn((this, buf, reader), |(this, buf, reader)| {
-                                    read(reader, buf)
-                                        .map_err(Into::into)
-                                        .and_then(|(reader, mut buf, count)| {
-                                            unsafe { buf.set_len(count); }
-                                            (
-                                                this.write_packet(&buf[..count]),
-                                                ok(buf),
-                                                ok(reader),
-                                                ok(count),
-                                            )
-                                        })
-                                        .map(|(this, buf, reader, count)| {
-                                            if count > 0 {
-                                                Loop::Continue((this, buf, reader))
-                                            } else {
-                                                Loop::Break(this)
-                                            }
-                                        })
-                                })
-                                .and_then(|this| this.read_packet())
-                                .map(|(this, _)| query_result::new(this, None, cached))
-                            });
-                        A(B(fut))
-                    },
-                    _ => {
-                        let fut = read_lenenc_int(&mut packet.as_ref())
-                            .into_future()
-                            .and_then(|column_count| {
-                                this.read_packets(column_count as usize)
-                            })
-                            .and_then(|(this, packets)| {
-                                packets
-                                    .into_iter()
-                                    .map(|packet| {
-                                        Column::new(packet).map_err(Error::from)
-                                    })
-                                    .collect::<Result<Vec<Column>>>()
-                                    .into_future()
-                                    .and_then(|columns| {
-                                        if this.get_capabilities().contains(CLIENT_DEPRECATE_EOF) {
-                                            A(ok((this, columns)))
-                                        } else {
-                                            B(this
-                                                .read_packet()
-                                                .map(|(this, _)| (this, columns)))
+        let fut = self.read_packet().and_then(
+            |(this, packet)| match packet.as_ref()
+                [0] {
+                0x00 => A(A(ok(query_result::new(this, None, cached)))),
+                0xFB => {
+                    let fut = LocalInfilePacket::new(&packet)
+                        .ok_or(ErrorKind::UnexpectedPacket.into())
+                        .and_then(|local_infile| match this.get_local_infile_handler() {
+                            Some(handler) => handler.handle(local_infile.file_name()),
+                            None => Err(ErrorKind::NoLocalInfileHandler.into()),
+                        })
+                        .into_future()
+                        .and_then(|reader| {
+                            let mut buf = Vec::with_capacity(4096);
+                            unsafe {
+                                buf.set_len(4096);
+                            }
+                            loop_fn((this, buf, reader), |(this, buf, reader)| {
+                                read(reader, buf)
+                                    .map_err(Into::into)
+                                    .and_then(|(reader, mut buf, count)| {
+                                        unsafe {
+                                            buf.set_len(count);
                                         }
+                                        (
+                                            this.write_packet(&buf[..count]),
+                                            ok(buf),
+                                            ok(reader),
+                                            ok(count),
+                                        )
                                     })
-                            })
-                            .map(|(mut this, columns)| {
-                                let columns = Arc::new(columns);
-                                this.set_pending_result(Some((Clone::clone(&columns), None)));
-                                query_result::new(this, Some(columns), cached)
-                            });
-                        B(fut)
-                    }
+                                    .map(|(this, buf, reader, count)| if count > 0 {
+                                        Loop::Continue((this, buf, reader))
+                                    } else {
+                                        Loop::Break(this)
+                                    })
+                            }).and_then(|this| this.read_packet())
+                                .map(|(this, _)| query_result::new(this, None, cached))
+                        });
+                    A(B(fut))
                 }
-            });
+                _ => {
+                    let fut = read_lenenc_int(&mut packet.as_ref())
+                        .into_future()
+                        .and_then(|column_count| this.read_packets(column_count as usize))
+                        .and_then(|(this, packets)| {
+                            packets
+                                .into_iter()
+                                .map(|packet| Column::new(packet).map_err(Error::from))
+                                .collect::<Result<Vec<Column>>>()
+                                .into_future()
+                                .and_then(|columns| if this.get_capabilities().contains(
+                                    CLIENT_DEPRECATE_EOF,
+                                )
+                                {
+                                    A(ok((this, columns)))
+                                } else {
+                                    B(this.read_packet().map(|(this, _)| (this, columns)))
+                                })
+                        })
+                        .map(|(mut this, columns)| {
+                            let columns = Arc::new(columns);
+                            this.set_pending_result(Some((Clone::clone(&columns), None)));
+                            query_result::new(this, Some(columns), cached)
+                        });
+                    B(fut)
+                }
+            },
+        );
         Box::new(fut)
     }
 
     /// Returns future that writes packet to a server end resolves to `Self`.
     fn write_packet<T>(self, data: T) -> WritePacket<Self>
-        where T: Into<Vec<u8>>, // TODO: Switch to `AsRef<u8> + 'static`?
-              Self: Sized + 'static
+    where
+        T: Into<Vec<u8>>, // TODO: Switch to `AsRef<u8> + 'static`?
+        Self: Sized + 'static,
     {
         WritePacket::new(self, data)
     }
 
     /// Returns future that writes command to a server end resolves to `Self`.
     fn write_command_data<T>(mut self, cmd: Command, cmd_data: T) -> WritePacket<Self>
-        where Self: Sized + 'static,
-              T: AsRef<[u8]>
+    where
+        Self: Sized + 'static,
+        T: AsRef<[u8]>,
     {
         let mut data = Vec::with_capacity(1 + cmd_data.as_ref().len());
         data.push(cmd as u8);

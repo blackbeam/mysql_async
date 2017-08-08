@@ -194,14 +194,8 @@ pub use self::queryable::stmt::Stmt;
 
 /// Futures used in this crate
 mod futures {
-    pub use queryable::query_result::{
-        ForEachAndDrop,
-        MapAndDrop,
-        ReduceAndDrop,
-        ForEach,
-        Map,
-        Reduce,
-    };
+    pub use queryable::query_result::{ForEachAndDrop, MapAndDrop, ReduceAndDrop, ForEach, Map,
+                                      Reduce};
 }
 
 /// Traits used in this crate

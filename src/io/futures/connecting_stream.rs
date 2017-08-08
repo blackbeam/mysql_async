@@ -38,7 +38,8 @@ pub struct ConnectingStream {
 }
 
 pub fn new<S>(addr: S, handle: &Handle) -> ConnectingStream
-    where S: ToSocketAddrs,
+where
+    S: ToSocketAddrs,
 {
     match addr.to_socket_addrs() {
         Ok(addresses) => {
@@ -51,11 +52,13 @@ pub fn new<S>(addr: S, handle: &Handle) -> ConnectingStream
             if streams.len() > 0 {
                 ConnectingStream { step: Step::WaitForStream(select_ok(streams)) }
             } else {
-                let err = io::Error::new(io::ErrorKind::InvalidInput,
-                                         "could not resolve to any address");
+                let err = io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "could not resolve to any address",
+                );
                 ConnectingStream { step: Step::Fail(failed(err.into())) }
             }
-        },
+        }
         Err(err) => ConnectingStream { step: Step::Fail(failed(err.into())) },
     }
 }
@@ -73,7 +76,7 @@ impl Future for ConnectingStream {
                     buf: Some(VecDeque::new()),
                     endpoint: Some(stream.into()),
                 }))
-            },
+            }
             Out::Fail(_) => unreachable!(),
         }
     }

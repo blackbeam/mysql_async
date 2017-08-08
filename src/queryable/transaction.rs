@@ -21,7 +21,7 @@ use std::fmt;
 pub struct TransactionOptions {
     consistent_snapshot: bool,
     isolation_level: Option<IsolationLevel>,
-    readonly: Option<bool>
+    readonly: Option<bool>,
 }
 
 impl TransactionOptions {
@@ -35,14 +35,16 @@ impl TransactionOptions {
     }
 
     pub fn set_isolation_level<T>(&mut self, value: T) -> &mut Self
-        where T: Into<Option<IsolationLevel>>
+    where
+        T: Into<Option<IsolationLevel>>,
     {
         self.isolation_level = value.into();
         self
     }
 
     pub fn set_readonly<T>(&mut self, value: T) -> &mut Self
-        where T: Into<Option<bool>>
+    where
+        T: Into<Option<bool>>,
     {
         self.readonly = value.into();
         self
@@ -89,18 +91,15 @@ impl fmt::Display for IsolationLevel {
 pub struct Transaction<T>(Option<Either<T, Streamless<T>>>);
 
 pub fn new<T>(conn_like: T, options: TransactionOptions) -> BoxFuture<Transaction<T>>
-    where T: Queryable + ConnectionLike
+where
+    T: Queryable + ConnectionLike,
 {
     Transaction::new(conn_like, options)
 }
 
 impl<T: Queryable + ConnectionLike> Transaction<T> {
-    fn new(conn_like: T,options: TransactionOptions) -> BoxFuture<Transaction<T>> {
-        let TransactionOptions {
-            consistent_snapshot,
-            isolation_level,
-            readonly,
-        } = options;
+    fn new(conn_like: T, options: TransactionOptions) -> BoxFuture<Transaction<T>> {
+        let TransactionOptions { consistent_snapshot, isolation_level, readonly } = options;
 
         if conn_like.get_in_transaction() {
             return Box::new(err(ErrorKind::NestedTransaction.into()));
@@ -111,36 +110,33 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
         }
 
         let fut = if let Some(isolation_level) = isolation_level {
-            A(conn_like.drop_query(format!("SET TRANSACTION ISOLATION LEVEL {}", isolation_level)))
+            A(conn_like.drop_query(format!(
+                "SET TRANSACTION ISOLATION LEVEL {}",
+                isolation_level
+            )))
         } else {
             B(ok(conn_like))
         };
 
         let fut = fut.into_future()
-            .and_then(
-                move |conn_like| if let Some(readonly) = readonly {
-                    if readonly {
-                        A(A(conn_like.drop_query("SET TRANSACTION READ ONLY")))
-                    } else {
-                        A(B(conn_like.drop_query("SET TRANSACTION READ WRITE")))
-                    }
+            .and_then(move |conn_like| if let Some(readonly) = readonly {
+                if readonly {
+                    A(A(conn_like.drop_query("SET TRANSACTION READ ONLY")))
                 } else {
-                    B(ok(conn_like))
+                    A(B(conn_like.drop_query("SET TRANSACTION READ WRITE")))
                 }
-            )
-            .and_then(
-                move |conn_like| if consistent_snapshot {
-                    conn_like.drop_query("START TRANSACTION WITH CONSISTENT SNAPSHOT")
-                } else {
-                    conn_like.drop_query("START TRANSACTION")
-                }
-            )
-            .map(
-                |mut conn_like| {
-                    conn_like.set_in_transaction(true);
-                    Transaction(Some(A(conn_like)))
-                }
-            );
+            } else {
+                B(ok(conn_like))
+            })
+            .and_then(move |conn_like| if consistent_snapshot {
+                conn_like.drop_query("START TRANSACTION WITH CONSISTENT SNAPSHOT")
+            } else {
+                conn_like.drop_query("START TRANSACTION")
+            })
+            .map(|mut conn_like| {
+                conn_like.set_in_transaction(true);
+                Transaction(Some(A(conn_like)))
+            });
 
         Box::new(fut)
     }
@@ -154,21 +150,19 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
 
     /// Returns future that will perform `COMMIT` query and resolve to a wrapped `Queryable`.
     pub fn commit(self) -> BoxFuture<T> {
-        let fut = self.drop_query("COMMIT")
-            .map(|mut this| {
-                this.set_in_transaction(false);
-                this.unwrap()
-            });
+        let fut = self.drop_query("COMMIT").map(|mut this| {
+            this.set_in_transaction(false);
+            this.unwrap()
+        });
         Box::new(fut)
     }
 
     /// Returns future that will perform `ROLLBACK` query and resolve to a wrapped `Queryable`.
     pub fn rollback(self) -> BoxFuture<T> {
-        let fut = self.drop_query("ROLLBACK")
-            .map(|mut this| {
-                this.set_in_transaction(false);
-                this.unwrap()
-            });
+        let fut = self.drop_query("ROLLBACK").map(|mut this| {
+            this.set_in_transaction(false);
+            this.unwrap()
+        });
         Box::new(fut)
     }
 }
@@ -177,7 +171,8 @@ impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Transaction<T> {
     type ConnLike = T;
 
     fn take_stream(self) -> (Streamless<Self>, io::Stream)
-        where Self: Sized
+    where
+        Self: Sized,
     {
         let Transaction(conn_like) = self;
         match conn_like {
@@ -185,7 +180,7 @@ impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Transaction<T> {
                 let (streamless, stream) = conn_like.take_stream();
                 let this = Transaction(Some(B(streamless)));
                 (Streamless::new(this), stream)
-            },
+            }
             _ => unreachable!(),
         }
     }
@@ -195,7 +190,7 @@ impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Transaction<T> {
         match conn_like {
             B(streamless) => {
                 self.0 = Some(A(streamless.return_stream(stream)));
-            },
+            }
             _ => unreachable!(),
         }
     }
@@ -203,14 +198,14 @@ impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Transaction<T> {
     fn conn_like_ref(&self) -> &Self::ConnLike {
         match self.0 {
             Some(A(ref conn_like)) => conn_like,
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
     fn conn_like_mut(&mut self) -> &mut Self::ConnLike {
         match self.0 {
             Some(A(ref mut conn_like)) => conn_like,
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 }

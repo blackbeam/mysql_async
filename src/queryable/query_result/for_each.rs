@@ -20,23 +20,22 @@ pub struct ForEach<T, P, F> {
     fun: F,
 }
 
-impl <T, P, F> ForEach<T, P, F>
-    where F: FnMut(Row),
-          P: Protocol + 'static,
-          T: ConnectionLike + Sized + 'static
+impl<T, P, F> ForEach<T, P, F>
+where
+    F: FnMut(Row),
+    P: Protocol + 'static,
+    T: ConnectionLike + Sized + 'static,
 {
     pub fn new(query_result: QueryResult<T, P>, fun: F) -> ForEach<T, P, F> {
-        ForEach {
-            fut: query_result.get_row(),
-            fun,
-        }
+        ForEach { fut: query_result.get_row(), fun }
     }
 }
 
 impl<T, P, F> Future for ForEach<T, P, F>
-    where F: FnMut(Row),
-          P: Protocol + 'static,
-          T: ConnectionLike + Sized + 'static
+where
+    F: FnMut(Row),
+    P: Protocol + 'static,
+    T: ConnectionLike + Sized + 'static,
 {
     type Item = (QueryResult<T, P>);
     type Error = Error;
@@ -47,7 +46,7 @@ impl<T, P, F> Future for ForEach<T, P, F>
             match row_opt {
                 Some(row) => {
                     (self.fun)(row);
-                },
+                }
                 None => {
                     return Ok(Ready(query_result));
                 }

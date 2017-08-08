@@ -23,23 +23,21 @@ pub struct Map<T, P, F, U> {
 }
 
 impl<T, P, F, U> Map<T, P, F, U>
-    where F: FnMut(Row) -> U,
-          P: Protocol + 'static,
-          T: ConnectionLike + Sized + 'static
+where
+    F: FnMut(Row) -> U,
+    P: Protocol + 'static,
+    T: ConnectionLike + Sized + 'static,
 {
     pub fn new(query_result: QueryResult<T, P>, fun: F) -> Map<T, P, F, U> {
-        Map {
-            fut: query_result.get_row(),
-            acc: Vec::new(),
-            fun,
-        }
+        Map { fut: query_result.get_row(), acc: Vec::new(), fun }
     }
 }
 
 impl<T, P, F, U> Future for Map<T, P, F, U>
-    where F: FnMut(Row) -> U,
-          P: Protocol + 'static,
-          T: ConnectionLike + Sized + 'static
+where
+    F: FnMut(Row) -> U,
+    P: Protocol + 'static,
+    T: ConnectionLike + Sized + 'static,
 {
     type Item = (QueryResult<T, P>, Vec<U>);
     type Error = Error;
@@ -51,9 +49,11 @@ impl<T, P, F, U> Future for Map<T, P, F, U>
                 Some(row) => {
                     let val = (self.fun)(row);
                     self.acc.push(val);
-                },
+                }
                 None => {
-                    return Ok(Ready((query_result, mem::replace(&mut self.acc, Vec::new()))));
+                    return Ok(Ready(
+                        (query_result, mem::replace(&mut self.acc, Vec::new())),
+                    ));
                 }
             }
             self.fut = query_result.get_row();

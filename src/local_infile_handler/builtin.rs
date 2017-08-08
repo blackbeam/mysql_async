@@ -44,46 +44,41 @@ impl File {
         let (registration, set_readiness) = Registration::new2();
         let path = path.into();
 
-        thread::spawn(
-            move || {
-                let mut file = match fs::File::open(path) {
-                    Ok(file) => file,
-                    Err(err) => {
-                        to_main.send(Message::BufFilled(Err(err))).unwrap();
-                        set_readiness.set_readiness(Ready::readable()).unwrap();
-                        return;
-                    }
-                };
-                set_readiness.set_readiness(Ready::readable()).unwrap();
+        thread::spawn(move || {
+            let mut file = match fs::File::open(path) {
+                Ok(file) => file,
+                Err(err) => {
+                    to_main.send(Message::BufFilled(Err(err))).unwrap();
+                    set_readiness.set_readiness(Ready::readable()).unwrap();
+                    return;
+                }
+            };
+            set_readiness.set_readiness(Ready::readable()).unwrap();
 
-                loop {
-                    match from_main.recv() {
-                        Ok(Message::FillBuf(size)) => {
-                            let mut buf = Vec::with_capacity(size);
+            loop {
+                match from_main.recv() {
+                    Ok(Message::FillBuf(size)) => {
+                        let mut buf = Vec::with_capacity(size);
+                        unsafe {
+                            buf.set_len(size);
+                        }
+                        let result = file.read(&mut buf[..]).map(|count| {
                             unsafe {
-                                buf.set_len(size);
+                                buf.set_len(count);
                             }
-                            let result = file.read(&mut buf[..])
-                                .map(
-                                    |count| {
-                                        unsafe {
-                                            buf.set_len(count);
-                                        }
-                                        buf
-                                    }
-                                );
-                            to_main.send(Message::BufFilled(result)).unwrap();
-                            set_readiness.set_readiness(Ready::readable()).unwrap();
-                        }
-                        Ok(Message::Done) |
-                        Err(_) => {
-                            break;
-                        }
-                        Ok(x) => panic!("Unexpected message for file io thread: {:?}", x),
+                            buf
+                        });
+                        to_main.send(Message::BufFilled(result)).unwrap();
+                        set_readiness.set_readiness(Ready::readable()).unwrap();
                     }
+                    Ok(Message::Done) |
+                    Err(_) => {
+                        break;
+                    }
+                    Ok(x) => panic!("Unexpected message for file io thread: {:?}", x),
                 }
             }
-        );
+        });
 
         File {
             to_thread,
@@ -118,19 +113,20 @@ impl Read for File {
                     match self.to_thread.send(Message::FillBuf(buf.len())) {
                         Ok(_) => (),
                         Err(_) => {
-                            return Err(
-                                io::Error::new(
-                                    io::ErrorKind::Other,
-                                    "Read thread disconnected",
-                                )
-                            )
+                            return Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                "Read thread disconnected",
+                            ))
                         }
                     }
                 }
                 Err(io::ErrorKind::WouldBlock.into())
             }
             Err(TryRecvError::Disconnected) => {
-                Err(io::Error::new(io::ErrorKind::Other, "Read thread disconnected"))
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Read thread disconnected",
+                ))
             }
             _ => panic!("Unexpected message"),
         }
@@ -191,7 +187,9 @@ impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
             Err(_) => bail!("Invalid file name"),
         };
         if self.white_list.contains(&path) {
-            Ok(Box::new(PollEvented::new(File::new(path), &self.handle)?) as Box<AsyncRead>)
+            Ok(Box::new(
+                PollEvented::new(File::new(path), &self.handle)?,
+            ) as Box<AsyncRead>)
         } else {
             bail!(format!("Path `{}' is not in white list", path.display()));
         }

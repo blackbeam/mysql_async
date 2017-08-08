@@ -55,8 +55,10 @@ impl fmt::Debug for Pool {
             .field("max", &self.max)
             .field("new connections count", &self.inner_ref().new.len())
             .field("idle connections count", &self.inner_ref().idle.len())
-            .field("disconnecting connections count",
-                   &self.inner_ref().disconnecting.len())
+            .field(
+                "disconnecting connections count",
+                &self.inner_ref().disconnecting.len(),
+            )
             .finish()
     }
 }
@@ -93,10 +95,9 @@ impl Pool {
 
     /// Shortcut for `get_conn` followed by `start_transaction`.
     pub fn start_transaction(&self, options: TransactionOptions) -> BoxFuture<Transaction<Conn>> {
-        let fut = self.get_conn()
-            .and_then(|conn| {
-                Queryable::start_transaction(conn, options)
-            });
+        let fut = self.get_conn().and_then(|conn| {
+            Queryable::start_transaction(conn, options)
+        });
         Box::new(fut)
     }
 
@@ -117,9 +118,8 @@ impl Pool {
     /// Returns true if futures is in queue.
     fn in_queue(&self) -> bool {
         let inner = self.inner_ref();
-        let count =
-            inner.new.len() + inner.disconnecting.len() +
-            inner.dropping.len() + inner.rollback.len();
+        let count = inner.new.len() + inner.disconnecting.len() + inner.dropping.len() +
+            inner.rollback.len();
         count > 0
     }
 
@@ -131,14 +131,12 @@ impl Pool {
         }
         while self.inner_ref().idle.len() > 0 {
             let conn = self.inner_mut().idle.pop();
-            let conn = conn.and_then(|mut conn| {
-                if conn.expired() {
-                    self.inner_mut().disconnecting.push(conn.disconnect());
-                    None
-                } else {
-                    conn.pool = Some(self.clone());
-                    Some(conn)
-                }
+            let conn = conn.and_then(|mut conn| if conn.expired() {
+                self.inner_mut().disconnecting.push(conn.disconnect());
+                None
+            } else {
+                conn.pool = Some(self.clone());
+                Some(conn)
             });
             if conn.is_some() {
                 return conn;
@@ -312,7 +310,7 @@ impl Pool {
                     self.inner_mut().tasks.push(task::current());
                     Ok(NotReady)
                 }
-            },
+            }
         }
     }
 }
@@ -343,9 +341,7 @@ mod test {
 
         let pool = Pool::new(&**DATABASE_URL, &lp.handle());
         let fut = pool.get_conn()
-            .and_then(|conn| {
-                conn.ping().map(|_| ())
-            })
+            .and_then(|conn| conn.ping().map(|_| ()))
             .and_then(|_| pool.disconnect());
 
         lp.run(fut).unwrap();
@@ -355,8 +351,10 @@ mod test {
     fn should_start_transaction() {
         let mut lp = Core::new().unwrap();
 
-        let pool = Pool::new(format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL),
-                             &lp.handle());
+        let pool = Pool::new(
+            format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL),
+            &lp.handle(),
+        );
         let fut = pool.start_transaction(TransactionOptions::default())
             .and_then(|transaction| {
                 transaction.drop_query("CREATE TEMPORARY TABLE tmp(id int)")
@@ -364,11 +362,12 @@ mod test {
             .and_then(|transaction| {
                 transaction.batch_exec("INSERT INTO tmp (id) VALUES (?)", vec![(1,), (2,)])
             })
-            .and_then(|transaction| {
-                transaction.prep_exec("SELECT * FROM tmp", ())
-            })
+            .and_then(|transaction| transaction.prep_exec("SELECT * FROM tmp", ()))
             .map(|_| ())
-            .and_then({let pool = pool.clone(); move |_| pool.get_conn()})
+            .and_then({
+                let pool = pool.clone();
+                move |_| pool.get_conn()
+            })
             .and_then(|conn| conn.first("SELECT COUNT(*) FROM tmp"))
             .and_then(|(_, row_opt)| {
                 assert_eq!(row_opt, Some((0u8,)));
@@ -382,8 +381,10 @@ mod test {
     fn should_hold_bounds() {
         let mut lp = Core::new().unwrap();
 
-        let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL),
-                             &lp.handle());
+        let pool = Pool::new(
+            format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL),
+            &lp.handle(),
+        );
         let pool_clone = pool.clone();
         let fut = pool.get_conn()
             .join(pool.get_conn())

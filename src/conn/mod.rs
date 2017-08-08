@@ -176,14 +176,16 @@ impl Conn {
     fn switch_to_ssl_if_needed(self) -> BoxFuture<Conn> {
         let fut = if self.opts.get_capabilities().contains(CLIENT_SSL) {
             let ssl_request = SslRequest::new(&self.opts);
-            let fut = self.write_packet(ssl_request.as_ref())
-                .and_then(|conn| {
-                    let ssl_opts = conn.get_opts().get_ssl_opts().cloned().expect("unreachable");
-                    let domain = conn.get_opts().get_ip_or_hostname().into();
-                    let (streamless, stream) = conn.take_stream();
-                    stream.make_secure(domain, ssl_opts)
-                        .map(move |stream| streamless.return_stream(stream))
-                });
+            let fut = self.write_packet(ssl_request.as_ref()).and_then(|conn| {
+                let ssl_opts = conn.get_opts().get_ssl_opts().cloned().expect(
+                    "unreachable",
+                );
+                let domain = conn.get_opts().get_ip_or_hostname().into();
+                let (streamless, stream) = conn.take_stream();
+                stream.make_secure(domain, ssl_opts).map(move |stream| {
+                    streamless.return_stream(stream)
+                })
+            });
             A(fut)
         } else {
             B(ok(self))
@@ -242,21 +244,22 @@ impl Conn {
 
     /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
     fn read_max_allowed_packet(self) -> BoxFuture<Self> {
-        let fut = self.first("SELECT @@max_allowed_packet")
-            .map(|(mut this, row_opt)| {
-                this.max_allowed_packet = row_opt.unwrap_or((1024 * 1024 * 2,)).0;
-                this
-            });
+        let fut = self.first("SELECT @@max_allowed_packet").map(|(mut this,
+          row_opt)| {
+            this.max_allowed_packet = row_opt.unwrap_or((1024 * 1024 * 2,)).0;
+            this
+        });
         Box::new(fut)
     }
 
     /// Returns future that resolves to `Conn` with `wait_timeout` stored in it.
     fn read_wait_timeout(self) -> BoxFuture<Self> {
-        let fut = self.first("SELECT @@wait_timeout")
-            .map(|(mut this, row_opt)| {
+        let fut = self.first("SELECT @@wait_timeout").map(
+            |(mut this, row_opt)| {
                 this.wait_timeout = row_opt.unwrap_or((28800,)).0;
                 this
-            });
+            },
+        );
         Box::new(fut)
     }
 
@@ -294,20 +297,24 @@ impl Conn {
     fn drop_result(mut self) -> BoxFuture<Conn> {
         let fut = match self.has_result.take() {
             Some((columns, None)) => {
-                A(B(query_result::assemble::<_, TextProtocol>(
-                    self,
-                    Some(columns),
-                    None,
-                ).drop_result()))
+                A(B(
+                    query_result::assemble::<_, TextProtocol>(
+                        self,
+                        Some(columns),
+                        None,
+                    ).drop_result(),
+                ))
             }
             Some((columns, cached)) => {
-                A(A(query_result::assemble::<_, BinaryProtocol>(
-                    self,
-                    Some(columns),
-                    cached,
-                ).drop_result()))
-            },
-            None => B(ok(self))
+                A(A(
+                    query_result::assemble::<_, BinaryProtocol>(
+                        self,
+                        Some(columns),
+                        cached,
+                    ).drop_result(),
+                ))
+            }
+            None => B(ok(self)),
         };
         Box::new(fut)
     }
@@ -366,8 +373,7 @@ impl ConnectionLike for Conn {
         &self.opts
     }
 
-    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)>
-    {
+    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)> {
         self.has_result.as_ref()
     }
 
@@ -496,15 +502,23 @@ mod test {
         opts.stmt_cache_size(0);
         let fut = Conn::new(opts, &lp.handle())
             .and_then(|conn| conn.drop_exec("DO ?", (1,)))
-            .and_then(|conn| conn.prepare("DO 2").and_then(|stmt| {
-                stmt.first::<_, (::Value,)>(())
-                    .and_then(|(stmt, _)| stmt.first::<_, (::Value,)>(()))
-                    .and_then(|(stmt, _)| stmt.close())
-            }))
-            .and_then(|conn| conn.prep_exec("DO 3", ()).and_then(|result| result.drop_result()))
+            .and_then(|conn| {
+                conn.prepare("DO 2").and_then(|stmt| {
+                    stmt.first::<_, (::Value,)>(())
+                        .and_then(|(stmt, _)| stmt.first::<_, (::Value,)>(()))
+                        .and_then(|(stmt, _)| stmt.close())
+                })
+            })
+            .and_then(|conn| {
+                conn.prep_exec("DO 3", ()).and_then(
+                    |result| result.drop_result(),
+                )
+            })
             .and_then(|conn| conn.batch_exec("DO 4", vec![(), ()]))
             .and_then(|conn| conn.first_exec::<_, _, (u8,)>("DO 5", ()))
-            .and_then(|(conn, _)| conn.first("SHOW SESSION STATUS LIKE 'Com_stmt_close';"))
+            .and_then(|(conn, _)| {
+                conn.first("SHOW SESSION STATUS LIKE 'Com_stmt_close';")
+            })
             .and_then(|(conn, row)| {
                 assert_eq!(from_row::<(String, usize)>(row.unwrap()).1, 5);
                 conn.disconnect()
@@ -529,11 +543,16 @@ mod test {
             .and_then(|conn| conn.drop_exec("DO 3", ()))
             .and_then(|conn| conn.drop_exec("DO 5", ()))
             .and_then(|conn| conn.drop_exec("DO 6", ()))
-            .and_then(|conn| conn.first("SHOW SESSION STATUS LIKE 'Com_stmt_close';"))
+            .and_then(|conn| {
+                conn.first("SHOW SESSION STATUS LIKE 'Com_stmt_close';")
+            })
             .and_then(|(conn, row_opt)| {
                 let (_, count): (String, usize) = row_opt.unwrap();
                 assert_eq!(count, 3);
-                let order = conn.stmt_cache_ref().iter().map(Clone::clone).collect::<Vec<String>>();
+                let order = conn.stmt_cache_ref()
+                    .iter()
+                    .map(Clone::clone)
+                    .collect::<Vec<String>>();
                 assert_eq!(order, &["DO 3", "DO 5", "DO 6"]);
                 conn.disconnect()
             });
@@ -551,7 +570,8 @@ mod test {
                     conn,
                     r"SELECT 'hello', 123
                     UNION ALL
-                    SELECT 'world', 231")
+                    SELECT 'world', 231",
+                )
             })
             .and_then(|result| {
                 result.reduce_and_drop(vec![], |mut acc, row| {
@@ -559,9 +579,7 @@ mod test {
                     acc
                 })
             })
-            .and_then(|(conn, out)| {
-                Queryable::disconnect(conn).map(|_| out)
-            });
+            .and_then(|(conn, out)| Queryable::disconnect(conn).map(|_| out));
 
         let result = lp.run(fut).unwrap();
         assert_eq!((String::from("hello"), 123), result[0]);
@@ -582,9 +600,7 @@ mod test {
             .and_then(|conn| {
                 Queryable::first::<_, (u8,)>(conn, "SELECT COUNT(*) FROM tmp")
             })
-            .and_then(|(conn, row)| {
-                conn.disconnect().map(move |_| row)
-            });
+            .and_then(|(conn, row)| conn.disconnect().map(move |_| row));
 
         let result = lp.run(fut).unwrap();
         assert_eq!(result, Some((1,)));
@@ -602,7 +618,8 @@ mod test {
                     UNION ALL
                     SELECT 'world', 231;
                     SELECT 'foo', 255;
-                ")
+                ",
+                )
             })
             .and_then(|result| result.collect::<(String, u8)>())
             .and_then(|(result, rows_1)| (result.collect_and_drop(), Ok(rows_1)))
@@ -636,10 +653,13 @@ mod test {
                     UNION ALL
                     SELECT 'world', 231;
                     SELECT 'foo', 255;
-                ")
+                ",
+                )
             })
             .and_then(|result| result.map(|row| from_row::<(String, u8)>(row)))
-            .and_then(|(result, rows_1)| (result.map_and_drop(from_row), Ok(rows_1)))
+            .and_then(|(result, rows_1)| {
+                (result.map_and_drop(from_row), Ok(rows_1))
+            })
             .and_then(|((conn, rows_2), rows_1)| {
                 Queryable::disconnect(conn).map(|_| vec![rows_1, rows_2])
             });
@@ -668,12 +688,15 @@ mod test {
                     r"SELECT 5
                     UNION ALL
                     SELECT 6;
-                    SELECT 7;")
+                    SELECT 7;",
+                )
             })
-            .and_then(|result| result.reduce(0, |mut acc, row| {
-                acc += from_row(row);
-                acc
-            }))
+            .and_then(|result| {
+                result.reduce(0, |mut acc, row| {
+                    acc += from_row(row);
+                    acc
+                })
+            })
             .and_then(|(result, reduced)| (result.collect_and_drop(), Ok(reduced)))
             .and_then(|((conn, rows_2), reduced)| {
                 Queryable::disconnect(conn).map(move |_| vec![vec![reduced], rows_2])
@@ -705,10 +728,15 @@ mod test {
                     r"SELECT 2
                     UNION ALL
                     SELECT 3;
-                    SELECT 5;")
+                    SELECT 5;",
+                )
             })
-            .and_then(|result| result.for_each(|row| *acc.borrow_mut() *= from_row(row)))
-            .and_then(|result| result.for_each_and_drop(|row| *acc.borrow_mut() *= from_row(row)))
+            .and_then(|result| {
+                result.for_each(|row| *acc.borrow_mut() *= from_row(row))
+            })
+            .and_then(|result| {
+                result.for_each_and_drop(|row| *acc.borrow_mut() *= from_row(row))
+            })
             .and_then(Queryable::disconnect);
 
         lp.run(fut).unwrap();
@@ -746,7 +774,9 @@ mod test {
                 assert_eq!(collected, vec![(42u8,)]);
                 stmt.execute(("foo",))
             })
-            .and_then(|result| result.map_and_drop(|row| from_row::<(String,)>(row)))
+            .and_then(|result| {
+                result.map_and_drop(|row| from_row::<(String,)>(row))
+            })
             .and_then(|(stmt, mut mapped)| {
                 assert_eq!(mapped.len(), 1);
                 assert_eq!(mapped.pop(), Some(("foo".into(),)));
@@ -759,9 +789,11 @@ mod test {
                 })
             })
             .and_then(|(stmt, reduced)| {
-                stmt.close()
-                    .and_then(|conn| conn.disconnect())
-                    .map(move |_| reduced)
+                stmt.close().and_then(|conn| conn.disconnect()).map(
+                    move |_| {
+                        reduced
+                    },
+                )
             });
 
         let output = lp.run(fut).unwrap();
@@ -771,6 +803,7 @@ mod test {
             .and_then(|conn| {
                 Queryable::prepare(conn, r"SELECT :foo, :bar, :foo, 3")
             })
+            .and_then(|stmt| stmt.execute(params! { "foo" => 2, "bar" => 3 }))
             .and_then(|result| result.collect_and_drop::<(u8, u8, u8, u8)>())
             .and_then(|(stmt, collected)| {
                 assert_eq!(collected, vec![(2, 3, 2, 3)]);
@@ -781,8 +814,10 @@ mod test {
             })
             .and_then(|(stmt, mut mapped)| {
                 assert_eq!(mapped.len(), 1);
-                assert_eq!(mapped.pop(),
-                           Some(("quux".into(), "baz".into(), "quux".into(), 3)));
+                assert_eq!(
+                    mapped.pop(),
+                    Some(("quux".into(), "baz".into(), "quux".into(), 3))
+                );
                 stmt.execute(params! { "foo" => 2, "bar" => 3 })
             })
             .and_then(|result| {
@@ -792,9 +827,11 @@ mod test {
                 })
             })
             .and_then(|(stmt, reduced)| {
-                stmt.close()
-                    .and_then(|conn| conn.disconnect())
-                    .map(move |_| reduced)
+                stmt.close().and_then(|conn| conn.disconnect()).map(
+                    move |_| {
+                        reduced
+                    },
+                )
             });
 
         let output = lp.run(fut).unwrap();
@@ -808,10 +845,7 @@ mod test {
 
         let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| {
-                Queryable::prep_exec(
-                    conn,
-                    r"SELECT :a, :b, :a",
-                    params! { "a" => 2, "b" => 3 })
+                Queryable::prep_exec(conn, r"SELECT :a, :b, :a", params! { "a" => 2, "b" => 3 })
             })
             .and_then(|result| {
                 result.map_and_drop(|row| {
@@ -820,8 +854,7 @@ mod test {
                 })
             })
             .and_then(|(conn, output)| {
-                Queryable::disconnect(conn)
-                    .map(move |_| output[0])
+                Queryable::disconnect(conn).map(move |_| output[0])
             });
 
         let output = lp.run(fut).unwrap();
@@ -837,7 +870,8 @@ mod test {
                 Queryable::first_exec(
                     conn,
                     r"SELECT :a UNION ALL SELECT :b",
-                    params! { "a" => 2, "b" => 3 })
+                    params! { "a" => 2, "b" => 3 },
+                )
             })
             .and_then(|(conn, row_opt)| {
                 Queryable::disconnect(conn).map(move |_| row_opt.unwrap())
@@ -861,12 +895,8 @@ mod test {
             .and_then(|transaction| {
                 Queryable::drop_query(transaction, "INSERT INTO tmp VALUES (1, 'foo'), (2, 'bar')")
             })
-            .and_then(|transaction| {
-                transaction.commit()
-            })
-            .and_then(|conn| {
-                Queryable::first(conn, "SELECT COUNT(*) FROM tmp")
-            })
+            .and_then(|transaction| transaction.commit())
+            .and_then(|conn| Queryable::first(conn, "SELECT COUNT(*) FROM tmp"))
             .map(|(conn, output_opt)| {
                 assert_eq!(output_opt, Some((2u8,)));
                 conn
@@ -875,7 +905,10 @@ mod test {
                 Queryable::start_transaction(conn, Default::default())
             })
             .and_then(|transaction| {
-                Queryable::drop_query(transaction, "INSERT INTO tmp VALUES (3, 'baz'), (4, 'quux')")
+                Queryable::drop_query(
+                    transaction,
+                    "INSERT INTO tmp VALUES (3, 'baz'), (4, 'quux')",
+                )
             })
             .and_then(|transaction| {
                 Queryable::first_exec(transaction, "SELECT COUNT(*) FROM tmp", ())
@@ -884,12 +917,8 @@ mod test {
                 assert_eq!(output_opt, Some((4u8,)));
                 transaction
             })
-            .and_then(|transaction| {
-                transaction.rollback()
-            })
-            .and_then(|conn| {
-                Queryable::first(conn, "SELECT COUNT(*) FROM tmp")
-            })
+            .and_then(|transaction| transaction.rollback())
+            .and_then(|conn| Queryable::first(conn, "SELECT COUNT(*) FROM tmp"))
             .map(|(conn, output_opt)| {
                 assert_eq!(output_opt, Some((2u8,)));
                 conn
@@ -921,11 +950,10 @@ mod test {
                 let _ = file.write(b"CCCCCC\n");
                 Queryable::drop_query(
                     conn,
-                    "LOAD DATA LOCAL INFILE 'local_infile.txt' INTO TABLE tmp;")
+                    "LOAD DATA LOCAL INFILE 'local_infile.txt' INTO TABLE tmp;",
+                )
             })
-            .and_then(|conn| {
-                Queryable::prep_exec(conn, "SELECT * FROM tmp;", ())
-            })
+            .and_then(|conn| Queryable::prep_exec(conn, "SELECT * FROM tmp;", ()))
             .and_then(|result| {
                 result.map_and_drop(|row| from_row::<(String,)>(row).0)
             })
