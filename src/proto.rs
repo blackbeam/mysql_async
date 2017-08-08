@@ -9,13 +9,13 @@
 use byteorder::LittleEndian as LE;
 use byteorder::{ReadBytesExt, WriteBytesExt};
 
-use consts::{self, CapabilityFlags, ColumnType, StatusFlags};
+use consts::{self, CapabilityFlags, ColumnType, StatusFlags, UTF8_GENERAL_CI};
 
 use errors::*;
 
-use regex::Regex;
+use Opts;
 
-use scramble::scramble;
+use regex::Regex;
 
 use std::borrow::Cow;
 use std::cmp;
@@ -465,40 +465,50 @@ impl HandshakePacket {
 }
 
 #[derive(Debug)]
+pub struct SslRequest {
+    data: Vec<u8>,
+}
+
+impl SslRequest {
+    pub fn new(opts: &Opts) -> SslRequest {
+        let capabilities = opts.get_capabilities();
+        let mut data = vec![0u8; 4 + 4 + 1 + 23];
+        // Buffer is preallocated so no panic during unwrap.
+        {
+            let mut writer = &mut data[..];
+            writer.write_u32::<LE>(capabilities.bits()).unwrap();
+            writer.write_u32::<LE>(1024 * 1024).unwrap();
+            writer.write_u8(UTF8_GENERAL_CI).unwrap();
+        }
+        SslRequest { data }
+    }
+
+    pub fn as_ref(&self) -> &[u8] {
+        &*self.data
+    }
+}
+
+#[derive(Debug)]
 pub struct HandshakeResponse {
     data: Vec<u8>,
 }
 
 impl HandshakeResponse {
-    pub fn new<U, P, D>(handshake: &HandshakePacket,
-                        user: Option<U>,
-                        passwd: Option<P>,
-                        database: Option<D>)
-                        -> HandshakeResponse
-        where U: AsRef<[u8]> + Clone,
-              P: AsRef<[u8]>,
-              D: AsRef<[u8]> + Clone,
-    {
-        let mut client_flags =
-            consts::CLIENT_PROTOCOL_41 | consts::CLIENT_SECURE_CONNECTION |
-            consts::CLIENT_LONG_PASSWORD | consts::CLIENT_TRANSACTIONS |
-            consts::CLIENT_LOCAL_FILES | consts::CLIENT_MULTI_STATEMENTS |
-            consts::CLIENT_MULTI_RESULTS | consts::CLIENT_PS_MULTI_RESULTS;
-        if let Some(ref database) = database {
-            if database.as_ref().len() > 0 {
-                client_flags.insert(consts::CLIENT_CONNECT_WITH_DB);
-            }
-        }
+    pub fn new(
+        scramble_buf: &Option<[u8; 20]>,
+        server_version: (u16, u16, u16),
+        opts: &Opts,
+    ) -> HandshakeResponse {
+        let client_flags = opts.get_capabilities();
 
-        let scramble_buf = passwd.and_then(|passwd| {
-            scramble(handshake.auth_plug_data_1(),
-                     handshake.auth_plug_data_2(),
-                     passwd.as_ref())
-        });
-
-        let user_len = user.clone().map(|user| user.as_ref().len()).unwrap_or(0);
-        let database_len = database.clone().map(|database| database.as_ref().len()).unwrap_or(0);
-        let scramble_len = scramble_buf.map(|scramble_buf| scramble_buf.len()).unwrap_or(0);
+        let user_len = opts.get_user().clone().map(|user| user.len()).unwrap_or(0);
+        let database_len = opts.get_db_name()
+            .clone()
+            .map(|database| database.len())
+            .unwrap_or(0);
+        let scramble_len = scramble_buf
+            .map(|scramble_buf| scramble_buf.len())
+            .unwrap_or(0);
 
         let mut payload_len = 4 + 4 + 1 + 23 + user_len + 1 + 1 + scramble_len;
         if database_len > 0 {
@@ -511,22 +521,20 @@ impl HandshakeResponse {
             writer.write_u32::<LE>(client_flags.bits()).unwrap();
             writer.write_all(&[0u8; 4]).unwrap();
             let mut collation = consts::UTF8_GENERAL_CI;
-            if let Ok(version) = handshake.srv_ver_parsed() {
-                if version >= (5, 5, 3) {
-                    collation = consts::UTF8MB4_GENERAL_CI;
-                }
+            if server_version >= (5, 5, 3) {
+                collation = consts::UTF8MB4_GENERAL_CI;
             }
             writer.write_u8(collation).unwrap();
             writer.write_all(&[0u8; 23]).unwrap();
-            if let Some(user) = user {
+            if let Some(user) = opts.get_user() {
                 writer.write_all(user.as_ref()).unwrap();
             }
             writer.write_u8(0).unwrap();
             writer.write_u8(scramble_len as u8).unwrap();
-            if let Some(scramble_buf) = scramble_buf {
+            if let Some(ref scramble_buf) = *scramble_buf {
                 writer.write_all(&scramble_buf[..]).unwrap();
             }
-            if let Some(database) = database {
+            if let Some(database) = opts.get_db_name() {
                 if database_len > 0 {
                     writer.write_all(database.as_ref()).unwrap();
                     writer.write_u8(0).unwrap();
@@ -534,7 +542,7 @@ impl HandshakeResponse {
             }
         }
 
-        HandshakeResponse { data: data }
+        HandshakeResponse { data }
     }
 
     pub fn as_ref(&self) -> &[u8] {

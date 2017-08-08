@@ -6,6 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use consts::{self, CapabilityFlags};
 use errors::*;
 
 use local_infile_handler::{
@@ -210,6 +211,22 @@ impl Opts {
     /// This option requires `ssl` feature to work.
     pub fn get_ssl_opts(&self) -> Option<&SslOpts> {
         self.ssl_opts.as_ref()
+    }
+
+    pub (crate) fn get_capabilities(&self) -> CapabilityFlags {
+        let mut out = consts::CLIENT_PROTOCOL_41 | consts::CLIENT_SECURE_CONNECTION |
+                  consts::CLIENT_LONG_PASSWORD | consts::CLIENT_TRANSACTIONS |
+                  consts::CLIENT_LOCAL_FILES | consts::CLIENT_MULTI_STATEMENTS |
+                  consts::CLIENT_MULTI_RESULTS | consts::CLIENT_PS_MULTI_RESULTS;
+
+        if self.db_name.is_some() {
+            out |= consts::CLIENT_CONNECT_WITH_DB;
+        }
+        if self.ssl_opts.is_some() {
+            out |= consts::CLIENT_SSL;
+        }
+
+        out
     }
 }
 

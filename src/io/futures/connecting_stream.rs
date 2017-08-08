@@ -71,7 +71,7 @@ impl Future for ConnectingStream {
                     closed: false,
                     next_packet: Some(NewPacket::empty().parse()),
                     buf: Some(VecDeque::new()),
-                    endpoint: Some(stream),
+                    endpoint: Some(stream.into()),
                 }))
             },
             Out::Fail(_) => unreachable!(),

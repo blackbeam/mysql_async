@@ -10,20 +10,19 @@ use BoxFuture;
 use conn::pool::Pool;
 use connection_like::{ConnectionLike, StmtCacheResult};
 use connection_like::streamless::Streamless;
-use consts;
+use consts::{self, CLIENT_SSL};
 use errors::*;
 use io::Stream;
-use lib_futures::future::{Future, IntoFuture, Loop, err, loop_fn, ok};
+use lib_futures::future::{Future, IntoFuture, Loop, loop_fn, ok};
 use lib_futures::future::Either::*;
-use lib_futures::stream::Stream as FuturesStream;
 use local_infile_handler::LocalInfileHandler;
 use opts::Opts;
 use queryable::{BinaryProtocol, Queryable, TextProtocol};
 use queryable::query_result;
 use proto::Column;
-use proto::{ErrPacket, PacketType, HandshakePacket, HandshakeResponse};
+use proto::{HandshakePacket, HandshakeResponse, SslRequest};
+use scramble::scramble;
 use self::stmt_cache::StmtCache;
-use std::io;
 use std::fmt;
 use std::mem;
 use std::sync::Arc;
@@ -57,6 +56,7 @@ pub struct Conn {
     last_io: SteadyTime,
     wait_timeout: u32,
     stmt_cache: StmtCache,
+    scramble: Option<[u8; 20]>,
 }
 
 impl fmt::Debug for Conn {
@@ -90,139 +90,153 @@ impl Conn {
     /// Hacky way to move connection through &mut. `self` becomes unusable.
     fn take(&mut self) -> Conn {
         let handle = self.handle.clone();
-        mem::replace(self,
-                     Conn {
-                         stream: Default::default(),
-                         id: Default::default(),
-                         version: Default::default(),
-                         seq_id: Default::default(),
-                         last_command: consts::Command::COM_QUIT,
-                         max_allowed_packet: Default::default(),
-                         capabilities: consts::CapabilityFlags::empty(),
-                         status: consts::StatusFlags::empty(),
-                         last_insert_id: Default::default(),
-                         affected_rows: Default::default(),
-                         warnings: Default::default(),
-                         pool: Default::default(),
-                         has_result: Default::default(),
-                         in_transaction: false,
-                         opts: Default::default(),
-                         handle: handle,
-                         last_io: SteadyTime::now(),
-                         wait_timeout: 0,
-                         stmt_cache: StmtCache::new(0),
-                     })
+        mem::replace(
+            self,
+            Conn {
+                stream: Default::default(),
+                id: Default::default(),
+                version: Default::default(),
+                seq_id: Default::default(),
+                last_command: consts::Command::COM_QUIT,
+                max_allowed_packet: Default::default(),
+                capabilities: consts::CapabilityFlags::empty(),
+                status: consts::StatusFlags::empty(),
+                last_insert_id: Default::default(),
+                affected_rows: Default::default(),
+                warnings: Default::default(),
+                pool: Default::default(),
+                has_result: Default::default(),
+                in_transaction: false,
+                opts: Default::default(),
+                handle: handle,
+                last_io: SteadyTime::now(),
+                wait_timeout: 0,
+                stmt_cache: StmtCache::new(0),
+                scramble: None,
+            },
+        )
+    }
+
+    fn empty(opts: Opts, handle: &Handle) -> Conn {
+        Conn {
+            last_command: consts::Command::COM_PING,
+            capabilities: opts.get_capabilities(),
+            status: consts::StatusFlags::empty(),
+            last_insert_id: 0,
+            affected_rows: 0,
+            stream: None,
+            seq_id: 0,
+            max_allowed_packet: 1024 * 1024,
+            warnings: 0,
+            version: (0, 0, 0),
+            id: 0,
+            has_result: None,
+            pool: None,
+            in_transaction: false,
+            handle: handle.clone(),
+            last_io: SteadyTime::now(),
+            wait_timeout: 0,
+            stmt_cache: StmtCache::new(opts.get_stmt_cache_size()),
+            opts: opts,
+            scramble: None,
+        }
+    }
+
+    fn setup_stream(mut self) -> Result<Conn> {
+        if let Some(stream) = self.stream.take() {
+            stream.set_keepalive_ms(self.opts.get_tcp_keepalive())?;
+            self.stream = Some(stream);
+            Ok(self)
+        } else {
+            unreachable!();
+        }
+    }
+
+    fn handle_handshake(self) -> BoxFuture<Conn> {
+        let fut = self.read_packet().map(move |(mut conn, packet)| {
+            let handshake = HandshakePacket::new(packet);
+            conn.capabilities = handshake.capabilities() & conn.opts.get_capabilities();
+            conn.version = handshake.srv_ver_parsed().unwrap_or((0, 0, 0));
+            conn.id = handshake.conn_id();
+            conn.status = handshake.status_flags().unwrap_or(
+                consts::StatusFlags::empty(),
+            );
+            conn.scramble = conn.opts.get_pass().and_then(|pass| {
+                scramble(
+                    handshake.auth_plug_data_1(),
+                    handshake.auth_plug_data_2(),
+                    pass.as_ref(),
+                )
+            });
+            conn
+        });
+        Box::new(fut)
+    }
+
+    fn switch_to_ssl_if_needed(self) -> BoxFuture<Conn> {
+        let fut = if self.opts.get_capabilities().contains(CLIENT_SSL) {
+            let ssl_request = SslRequest::new(&self.opts);
+            let fut = self.write_packet(ssl_request.as_ref())
+                .and_then(|conn| {
+                    let ssl_opts = conn.get_opts().get_ssl_opts().cloned().expect("unreachable");
+                    let domain = conn.get_opts().get_ip_or_hostname().into();
+                    let (streamless, stream) = conn.take_stream();
+                    stream.make_secure(domain, ssl_opts)
+                        .map(move |stream| streamless.return_stream(stream))
+                });
+            A(fut)
+        } else {
+            B(ok(self))
+        };
+        Box::new(fut)
+    }
+
+    fn do_handshake_response(self) -> BoxFuture<Conn> {
+        let handshake_response = HandshakeResponse::new(&self.scramble, self.version, &self.opts);
+        Box::new(self.write_packet(handshake_response.as_ref()))
+    }
+
+    fn drop_packet(self) -> BoxFuture<Conn> {
+        Box::new(self.read_packet().map(|(conn, _)| conn))
+    }
+
+    fn run_init_commands(self) -> BoxFuture<Conn> {
+        let init = self.opts.get_init().iter().map(Clone::clone).collect();
+
+        let fut = loop_fn((init, self), |(mut init, conn): (Vec<String>, Conn)| {
+            match init.pop() {
+                None => A(ok(Loop::Break(conn))),
+                Some(query) => {
+                    let fut = conn.drop_query(query).map(
+                        |conn| Loop::Continue((init, conn)),
+                    );
+                    B(fut)
+                }
+            }
+        });
+
+        Box::new(fut)
     }
 
     pub fn new<T: Into<Opts>>(opts: T, handle: &Handle) -> BoxFuture<Conn> {
-        let handle = handle.clone();
-        let opts = opts.into();
+        let mut conn = Conn::empty(opts.into(), handle);
 
-        let connecting_stream =
-            Stream::connect((opts.get_ip_or_hostname(), opts.get_tcp_port()), &handle);
-        let fut = (connecting_stream, ok(opts))
-            .into_future()
-            .and_then(|(stream, opts)| {
-                let fut = stream.set_keepalive_ms(opts.get_tcp_keepalive())
-                    .into_future()
-                    .and_then(|_| {
-                        stream.into_future()
-                            .map_err(|(err, _)| err)
-                    });
-                (fut, ok(opts))
-            })
-            .and_then(|((packet_opt, stream), opts)| {
-                let fut = match packet_opt {
-                    Some((packet, seq_id)) => {
-                        if packet.is(PacketType::Err) {
-                            let err_packet = ErrPacket::new(packet);
-                            A(err(ErrorKind::Server(err_packet.unwrap()).into()))
-                        } else {
-                            let handshake = HandshakePacket::new(packet);
-                            let handshake_response = HandshakeResponse::new(&handshake,
-                                                                            opts.get_user(),
-                                                                            opts.get_pass(),
-                                                                            opts.get_db_name());
-                            let fut = stream.write_packet(handshake_response.as_ref().to_vec(),
-                                                          seq_id + 1);
-                            B((fut, ok(handshake)).into_future())
-                        }
-                    },
-                    None => {
-                        let error = io::Error::new(io::ErrorKind::NotConnected,
-                                                   "No connection to the server");
-                        A(err(error.into()))
-                    }
-                };
-                (fut, ok(opts))
-            })
-            .and_then(|(((stream, _), handshake), opts)| {
-                let fut = stream.into_future()
-                    .map_err(|(err, _)| err);
-                (fut, ok(handshake), ok(opts))
-            })
-            .and_then(move |((packet_opt, stream), handshake, opts)| {
-                match packet_opt {
-                    Some((packet, seq_id)) => {
-                        if packet.is(PacketType::Err) {
-                            let err_packet = ErrPacket::new(packet);
-                            return A(err(ErrorKind::Server(err_packet.unwrap()).into()));
-                        }
-                        let conn = Conn {
-                            last_command: consts::Command::COM_PING,
-                            capabilities: consts::CLIENT_PROTOCOL_41 |
-                                consts::CLIENT_SECURE_CONNECTION |
-                                consts::CLIENT_LONG_PASSWORD |
-                                consts::CLIENT_TRANSACTIONS |
-                                consts::CLIENT_LOCAL_FILES |
-                                consts::CLIENT_MULTI_STATEMENTS |
-                                consts::CLIENT_MULTI_RESULTS |
-                                consts::CLIENT_PS_MULTI_RESULTS,
-                            status: handshake.status_flags()
-                                .unwrap_or(consts::StatusFlags::empty()),
-                            last_insert_id: 0,
-                            affected_rows: 0,
-                            stream: Some(stream),
-                            seq_id: seq_id,
-                            max_allowed_packet: 65536,
-                            warnings: 0,
-                            version: handshake.srv_ver_parsed()
-                                .expect("Can't parse server version"),
-                            id: handshake.conn_id(),
-                            has_result: None,
-                            pool: None,
-                            in_transaction: false,
-                            handle: handle.clone(),
-                            last_io: SteadyTime::now(),
-                            wait_timeout: 0,
-                            stmt_cache: StmtCache::new(opts.get_stmt_cache_size()),
-                            opts: opts,
-                        };
-                        B(conn.read_max_allowed_packet())
-                    },
-                    None => {
-                        let error = io::Error::new(io::ErrorKind::NotConnected,
-                                                   "No connection to the server");
-                        A(err(error.into()))
-                    }
-                }
-            })
-            .and_then(|conn| {
-                conn.read_wait_timeout()
-            })
-            .and_then(|conn| {
-                let init = conn.opts.get_init().iter().map(Clone::clone).collect();
-                loop_fn((init, conn), |(mut init, conn): (Vec<String>, Conn)| {
-                    match init.pop() {
-                        None => A(ok(Loop::Break(conn))),
-                        Some(query) => {
-                            let fut = conn.drop_query(query)
-                                .map(|conn| Loop::Continue((init, conn)));
-                            B(fut)
-                        },
-                    }
-                })
-            });
+        let fut = Stream::connect(
+            (conn.opts.get_ip_or_hostname(), conn.opts.get_tcp_port()),
+            &conn.handle,
+        ).map(move |stream| {
+            conn.stream = Some(stream);
+            conn
+        })
+            .and_then(Conn::setup_stream)
+            .and_then(Conn::handle_handshake)
+            .and_then(Conn::switch_to_ssl_if_needed)
+            .and_then(Conn::do_handshake_response)
+            .and_then(Conn::drop_packet)
+            .and_then(Conn::read_max_allowed_packet)
+            .and_then(Conn::read_wait_timeout)
+            .and_then(Conn::run_init_commands);
+
         Box::new(fut)
     }
 
@@ -414,6 +428,7 @@ impl ConnectionLike for Conn {
 mod test {
     use Conn;
     use OptsBuilder;
+    use SslOpts;
     use WhiteListFsLocalInfileHandler;
     use from_row;
     use prelude::*;
@@ -421,12 +436,25 @@ mod test {
     use test_misc::DATABASE_URL;
     use tokio::reactor::Core;
 
+    fn get_opts() -> OptsBuilder {
+        let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
+        // to suppress warning on unused mut
+        builder.stmt_cache_size(None);
+        #[cfg(feature = "ssl")]
+        {
+            let mut ssl_opts = SslOpts::new("./test/client.p12".as_ref());
+            ssl_opts.set_password(Some("pass"));
+            ssl_opts.set_danger_skip_domain_validation(true);
+            builder.ssl_opts(ssl_opts);
+        }
+        builder
+    }
 
     #[test]
     fn should_connect() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| Queryable::ping(conn))
             .and_then(|conn| Queryable::disconnect(conn));
 
@@ -437,14 +465,12 @@ mod test {
     fn should_execute_init_queries_on_new_connection() {
         let mut lp = Core::new().unwrap();
 
-        let mut opts_builder = OptsBuilder::from_opts(&**DATABASE_URL);
+        let mut opts_builder = OptsBuilder::from_opts(get_opts());
         opts_builder.init(vec!["SET @a = 42", "SET @b = 'foo'"]);
         let fut = Conn::new(opts_builder, &lp.handle())
             .and_then(|conn| Queryable::query(conn, "SELECT @a, @b"))
             .and_then(|result| result.collect_and_drop::<(u8, String)>())
-            .and_then(|(conn, rows)| {
-                Queryable::disconnect(conn).map(|_| rows)
-            });
+            .and_then(|(conn, rows)| Queryable::disconnect(conn).map(|_| rows));
 
         let result = lp.run(fut).unwrap();
         assert_eq!(result, vec![(42, "foo".into())]);
@@ -454,7 +480,7 @@ mod test {
     fn should_reset_the_connection() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| conn.drop_exec("SELECT ?", (1,)))
             .and_then(|conn| conn.reset())
             .and_then(|conn| conn.drop_exec("SELECT ?", (1,)))
@@ -466,7 +492,7 @@ mod test {
     #[test]
     fn should_not_cache_statements_if_stmt_cache_size_is_zero() {
         let mut lp = Core::new().unwrap();
-        let mut opts = OptsBuilder::from_opts(&**DATABASE_URL);
+        let mut opts = OptsBuilder::from_opts(get_opts());
         opts.stmt_cache_size(0);
         let fut = Conn::new(opts, &lp.handle())
             .and_then(|conn| conn.drop_exec("DO ?", (1,)))
@@ -492,7 +518,7 @@ mod test {
         use connection_like::ConnectionLike;
 
         let mut lp = Core::new().unwrap();
-        let mut opts = OptsBuilder::from_opts(&**DATABASE_URL);
+        let mut opts = OptsBuilder::from_opts(get_opts());
         opts.stmt_cache_size(3);
         let fut = Conn::new(opts, &lp.handle())
             .and_then(|conn| conn.drop_exec("DO 1", ()))
@@ -519,7 +545,7 @@ mod test {
     fn should_perform_queries() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| {
                 Queryable::query(
                     conn,
@@ -546,7 +572,7 @@ mod test {
     fn should_drop_query() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| {
                 conn.drop_query("CREATE TEMPORARY TABLE tmp (id int DEFAULT 10, name text)")
             })
@@ -568,7 +594,7 @@ mod test {
     fn should_handle_mutliresult_set() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| {
                 Queryable::query(
                     conn,
@@ -601,7 +627,7 @@ mod test {
     fn should_map_resultset() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| {
                 Queryable::query(
                     conn,
@@ -635,7 +661,7 @@ mod test {
     fn should_reduce_resultset() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| {
                 Queryable::query(
                     conn,
@@ -672,7 +698,7 @@ mod test {
         let acc: RefCell<u8> = RefCell::new(1);
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| {
                 Queryable::query(
                     conn,
@@ -693,14 +719,14 @@ mod test {
     fn should_prepare_statement() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT ?"))
             .and_then(|stmt| stmt.close())
             .and_then(|conn| conn.disconnect());
 
         lp.run(fut).unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT :foo"))
             .and_then(|stmt| stmt.close())
             .and_then(|conn| conn.disconnect());
@@ -712,7 +738,7 @@ mod test {
     fn should_execute_statement() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT ?"))
             .and_then(|stmt| stmt.execute((42,)))
             .and_then(|result| result.collect_and_drop::<(u8,)>())
@@ -741,10 +767,9 @@ mod test {
         let output = lp.run(fut).unwrap();
         assert_eq!(output, 10);
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
-            .and_then(|conn| Queryable::prepare(conn, r"SELECT :foo, :bar, :foo, 3"))
-            .and_then(|stmt| {
-                stmt.execute(params! { "foo" => 2, "bar" => 3 })
+        let fut = Conn::new(get_opts(), &lp.handle())
+            .and_then(|conn| {
+                Queryable::prepare(conn, r"SELECT :foo, :bar, :foo, 3")
             })
             .and_then(|result| result.collect_and_drop::<(u8, u8, u8, u8)>())
             .and_then(|(stmt, collected)| {
@@ -781,7 +806,7 @@ mod test {
 
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| {
                 Queryable::prep_exec(
                     conn,
@@ -807,7 +832,7 @@ mod test {
     fn should_first_exec_statement() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| {
                 Queryable::first_exec(
                     conn,
@@ -826,7 +851,7 @@ mod test {
     fn should_run_transactions() {
         let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+        let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| {
                 Queryable::drop_query(conn, "CREATE TEMPORARY TABLE tmp (id INT, name TEXT)")
             })
@@ -879,9 +904,11 @@ mod test {
         use std::io::Write;
 
         let mut lp = Core::new().unwrap();
-        let mut opts = OptsBuilder::from_opts(&**DATABASE_URL);
-        opts.local_infile_handler(
-            Some(WhiteListFsLocalInfileHandler::new(&["local_infile.txt"][..], &lp.handle())));
+        let mut opts = OptsBuilder::from_opts(get_opts());
+        opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(
+            &["local_infile.txt"][..],
+            &lp.handle(),
+        )));
 
         let fut = Conn::new(opts, &lp.handle())
             .and_then(|conn| {
@@ -921,14 +948,14 @@ mod test {
         use queryable::Queryable;
         use tokio::reactor::Core;
         use test;
-        use test_misc::DATABASE_URL;
+        use super::get_opts;
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
             let mut lp = Core::new().unwrap();
 
             bencher.iter(|| {
-                let fut = Conn::new(&**DATABASE_URL, &lp.handle())
+                let fut = Conn::new(get_opts(), &lp.handle())
                     .and_then(|conn| Queryable::ping(conn))
                     .and_then(|conn| Queryable::disconnect(conn));
                 lp.run(fut).unwrap();
