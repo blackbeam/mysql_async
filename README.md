@@ -7,7 +7,7 @@ Tokio based asynchronous MySql client library for rust programming language.
 Library hosted on [crates.io](https://crates.io/crates/mysql_async/).
 ```toml
 [dependencies]
-mysql = "<desired version>"
+mysql_async = "<desired version>"
 ```
 
 ### Example
