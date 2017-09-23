@@ -12,7 +12,7 @@ use Conn;
 use Row;
 use Value;
 use connection_like::ConnectionLike;
-use consts::{Command, CLIENT_DEPRECATE_EOF};
+use consts::{Command, CapabilityFlags};
 use errors::*;
 use lib_futures::future::Future;
 use proto::{Packet, PacketType};
@@ -48,7 +48,7 @@ impl Protocol for TextProtocol {
     where
         T: ConnectionLike,
     {
-        if conn_like.get_capabilities().contains(CLIENT_DEPRECATE_EOF) {
+        if conn_like.get_capabilities().contains(CapabilityFlags::CLIENT_DEPRECATE_EOF) {
             packet.is(PacketType::Ok)
         } else {
             packet.is(PacketType::Eof)

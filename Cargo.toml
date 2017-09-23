@@ -10,28 +10,25 @@ repository = "https://github.com/blackbeam/mysql_async"
 version = "0.11.1"
 
 [dependencies]
-bitflags = "0.9"
+bitflags = "1"
 byteorder = "1"
 chrono = "0.4"
-error-chain = "0.10"
+error-chain = "0.11"
 fnv = "1"
 futures = "0.1"
 lazy_static = "0.2"
 mio = "0.6"
-native-tls = { version = "0.1", optional = true }
+native-tls = { path = "../rust-native-tls", optional = true }
+regex = "0.2"
 serde = "1"
 serde_json = "1"
 sha1 = "0.2"
 time = "0.1"
 tokio-core = "0.1"
 tokio-io = "0.1"
-tokio-tls = { version = "0.1", optional = true }
+tokio-tls = { path = "../tokio-tls", optional = true }
 twox-hash = "1"
 url = "1"
-
-[dependencies.regex]
-default-features = false
-version = "0.2"
 
 [features]
 nightly = []

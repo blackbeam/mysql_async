@@ -404,7 +404,7 @@ impl HandshakePacket {
 
     pub fn auth_plug_data_len(&self) -> Option<u8> {
         let offset = 1 + self.srv_ver_len + 1 + 4 + 8 + 1 + 2 + 1 + 2 + 2;
-        if self.more_data && self.capabilities().contains(consts::CLIENT_PLUGIN_AUTH) {
+        if self.more_data && self.capabilities().contains(CapabilityFlags::CLIENT_PLUGIN_AUTH) {
             Some(cmp::max(13, self.packet.payload[offset] - 8))
         } else {
             None
@@ -603,12 +603,12 @@ impl OkPacket {
 
             let info;
             let mut session_state_changes = None;
-            if capabilities.contains(consts::CLIENT_SESSION_TRACK) {
+            if capabilities.contains(CapabilityFlags::CLIENT_SESSION_TRACK) {
                 let (info_len, info_len_len) =
                     lenenc_le(&packet.payload[offset..]).expect("should be here 9");
                 offset += info_len_len as usize;
                 info = (offset, offset + info_len as usize);
-                if status_flags.contains(consts::SERVER_SESSION_STATE_CHANGED) {
+                if status_flags.contains(StatusFlags::SERVER_SESSION_STATE_CHANGED) {
                     let (sess_state_changes_len, sess_state_changes_len_len) =
                         lenenc_le(&packet.payload[offset..]).expect("should be here 10");
                     offset += sess_state_changes_len_len as usize;

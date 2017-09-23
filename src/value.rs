@@ -225,8 +225,8 @@ impl Value {
                 values.push(read_bin_value(
                     &mut reader,
                     c.column_type,
-                    c.flags.contains(consts::UNSIGNED_FLAG),
-                    c.flags.contains(consts::NUM_FLAG),
+                    c.flags.contains(consts::ColumnFlags::UNSIGNED_FLAG),
+                    c.flags.contains(consts::ColumnFlags::NUM_FLAG),
                 )?);
             } else {
                 values.push(Value::NULL);

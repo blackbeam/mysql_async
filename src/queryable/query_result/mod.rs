@@ -11,7 +11,7 @@ use Column;
 use Row;
 use connection_like::{ConnectionLike, ConnectionLikeWrapper, StmtCacheResult};
 use connection_like::streamless::Streamless;
-use consts::SERVER_MORE_RESULTS_EXISTS;
+use consts::StatusFlags;
 use errors::*;
 use io;
 use lib_futures::future::{AndThen, Either, Future, FutureResult, Loop, loop_fn, ok};
@@ -141,7 +141,7 @@ where
         }
         let fut = self.read_packet().and_then(|(this, packet)| {
             if P::is_last_result_set_packet(&this, &packet) {
-                if this.get_status().contains(SERVER_MORE_RESULTS_EXISTS) {
+                if this.get_status().contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS) {
                     let (inner, cached) = this.into_inner();
                     A(A(inner.read_result_set(cached).map(
                         |new_this| (new_this, None),

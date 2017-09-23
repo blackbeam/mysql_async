@@ -9,7 +9,7 @@
 use BoxFuture;
 use Opts;
 use conn::named_params::parse_named_params;
-use consts::{CapabilityFlags, Command, StatusFlags, CLIENT_DEPRECATE_EOF};
+use consts::{CapabilityFlags, Command, StatusFlags};
 use errors::*;
 use io;
 use lib_futures::future::{Future, IntoFuture, Loop, err, ok, loop_fn};
@@ -300,7 +300,9 @@ pub trait ConnectionLike {
                                     B(ok((this, inner_stmt)))
                                 })
                                 .and_then(|(this, inner_stmt)| if inner_stmt.num_params > 0 {
-                                    if this.get_capabilities().contains(CLIENT_DEPRECATE_EOF) {
+                                    if this
+                                        .get_capabilities()
+                                        .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF) {
                                         A(ok((this, inner_stmt)))
                                     } else {
                                         B(this.read_packet().map(|(this, _)| (this, inner_stmt)))
@@ -329,7 +331,9 @@ pub trait ConnectionLike {
                                     B(ok((this, inner_stmt)))
                                 })
                                 .and_then(|(this, inner_stmt)| if inner_stmt.num_columns > 0 {
-                                    if this.get_capabilities().contains(CLIENT_DEPRECATE_EOF) {
+                                    if this
+                                        .get_capabilities()
+                                        .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF) {
                                         A(ok((this, inner_stmt)))
                                     } else {
                                         B(this.read_packet().map(|(this, _)| (this, inner_stmt)))
@@ -422,7 +426,7 @@ pub trait ConnectionLike {
                                 .collect::<Result<Vec<Column>>>()
                                 .into_future()
                                 .and_then(|columns| if this.get_capabilities().contains(
-                                    CLIENT_DEPRECATE_EOF,
+                                    CapabilityFlags::CLIENT_DEPRECATE_EOF,
                                 )
                                 {
                                     A(ok((this, columns)))

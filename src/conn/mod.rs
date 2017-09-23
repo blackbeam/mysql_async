@@ -10,7 +10,7 @@ use BoxFuture;
 use conn::pool::Pool;
 use connection_like::{ConnectionLike, StmtCacheResult};
 use connection_like::streamless::Streamless;
-use consts::{self, CLIENT_SSL};
+use consts::{self, CapabilityFlags};
 use errors::*;
 use io::Stream;
 use lib_futures::future::{Future, IntoFuture, Loop, loop_fn, ok};
@@ -174,7 +174,7 @@ impl Conn {
     }
 
     fn switch_to_ssl_if_needed(self) -> BoxFuture<Conn> {
-        let fut = if self.opts.get_capabilities().contains(CLIENT_SSL) {
+        let fut = if self.opts.get_capabilities().contains(CapabilityFlags::CLIENT_SSL) {
             let ssl_request = SslRequest::new(&self.opts);
             let fut = self.write_packet(ssl_request.as_ref()).and_then(|conn| {
                 let ssl_opts = conn.get_opts().get_ssl_opts().cloned().expect(

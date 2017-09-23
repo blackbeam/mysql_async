@@ -6,7 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use consts::{self, CapabilityFlags};
+use consts::CapabilityFlags;
 use errors::*;
 
 use local_infile_handler::{LocalInfileHandler, LocalInfileHandlerObject};
@@ -210,17 +210,17 @@ impl Opts {
     }
 
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
-        let mut out = consts::CLIENT_PROTOCOL_41 | consts::CLIENT_SECURE_CONNECTION |
-            consts::CLIENT_LONG_PASSWORD | consts::CLIENT_TRANSACTIONS |
-            consts::CLIENT_LOCAL_FILES |
-            consts::CLIENT_MULTI_STATEMENTS | consts::CLIENT_MULTI_RESULTS |
-            consts::CLIENT_PS_MULTI_RESULTS;
+        let mut out = CapabilityFlags::CLIENT_PROTOCOL_41 | CapabilityFlags::CLIENT_SECURE_CONNECTION |
+            CapabilityFlags::CLIENT_LONG_PASSWORD | CapabilityFlags::CLIENT_TRANSACTIONS |
+            CapabilityFlags::CLIENT_LOCAL_FILES |
+            CapabilityFlags::CLIENT_MULTI_STATEMENTS | CapabilityFlags::CLIENT_MULTI_RESULTS |
+            CapabilityFlags::CLIENT_PS_MULTI_RESULTS;
 
         if self.db_name.is_some() {
-            out |= consts::CLIENT_CONNECT_WITH_DB;
+            out |= CapabilityFlags::CLIENT_CONNECT_WITH_DB;
         }
         if self.ssl_opts.is_some() {
-            out |= consts::CLIENT_SSL;
+            out |= CapabilityFlags::CLIENT_SSL;
         }
 
         out
