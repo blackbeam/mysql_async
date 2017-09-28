@@ -6,11 +6,12 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use proto::ErrPacket;
-use proto::Row;
+use myc::params::MissingNamedParameterError;
+use myc::packets::ErrPacket;
+use Row;
 use std::io;
 use url;
-use value::Value;
+use Value;
 
 error_chain! {
     foreign_links {
@@ -45,9 +46,9 @@ error_chain! {
         FromRow(row: Row) {
             description("Error converting from mysql row")
         }
-        Server(packet: ErrPacket) {
+        Server(state: String, code: u16, message: String) {
             description("Mysql server error")
-            display("ERROR {} ({}): {}", packet.error_code(), packet.state(), packet.message())
+            display("ERROR {} ({}): {}", state, code, message)
         }
         CantParseVersion(ver_str: String) {
             description("Can't parse server version")
@@ -94,8 +95,24 @@ error_chain! {
     }
 }
 
+impl<'a> From<ErrPacket<'a>> for Error {
+    fn from(err: ErrPacket<'a>) -> Self {
+        ErrorKind::Server(
+            err.sql_state_str().into_owned(),
+            err.error_code(),
+            err.message_str().into_owned(),
+        ).into()
+    }
+}
+
 impl From<(Error, ::io::Stream)> for Error {
     fn from((err, _): (Error, ::io::Stream)) -> Self {
         err
+    }
+}
+
+impl From<MissingNamedParameterError> for Error {
+    fn from(err: MissingNamedParameterError) -> Self {
+        ErrorKind::MissingNamedParameter(err.0).into()
     }
 }

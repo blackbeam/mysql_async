@@ -15,7 +15,8 @@ use io;
 use lib_futures::future::{Future, IntoFuture, Loop, err, ok, loop_fn};
 use lib_futures::future::Either::*;
 use local_infile_handler::LocalInfileHandler;
-use proto::{Column, LocalInfilePacket, Packet, read_lenenc_int};
+use myc::io::ReadMysqlExt;
+use myc::packets::{Column, RawPacket, column_from_payload, parse_local_infile_packet};
 use queryable::Protocol;
 use queryable::query_result::{self, QueryResult};
 use queryable::stmt::InnerStmt;
@@ -239,7 +240,7 @@ pub trait ConnectionLike {
     }
 
     /// Returns future that reads packets from a server and resolves to `(Self, Vec<Packet>)`.
-    fn read_packets(self, n: usize) -> BoxFuture<(Self, Vec<Packet>)>
+    fn read_packets(self, n: usize) -> BoxFuture<(Self, Vec<RawPacket>)>
     where
         Self: Sized + 'static,
     {
@@ -276,9 +277,9 @@ pub trait ConnectionLike {
                     let fut = self.write_command_data(Command::COM_STMT_PREPARE, &*query)
                         .and_then(|this| this.read_packet())
                         .and_then(|(this, packet)| {
-                            InnerStmt::new(packet.as_ref(), named_params)
-                                .into_future()
-                                .map(|inner_stmt| (this, inner_stmt))
+                            InnerStmt::new(&*packet.0, named_params).into_future().map(
+                                |inner_stmt| (this, inner_stmt),
+                            )
                         })
                         .and_then(|(this, mut inner_stmt)| {
                             this.read_packets(inner_stmt.num_params as usize)
@@ -286,7 +287,9 @@ pub trait ConnectionLike {
                                     let params = if packets.len() > 0 {
                                         let params = packets
                                             .into_iter()
-                                            .map(|packet| Column::new(packet).map_err(Error::from))
+                                            .map(|packet| {
+                                                column_from_payload(packet.0).map_err(Error::from)
+                                            })
                                             .collect::<Result<Vec<Column>>>();
                                         Some(params)
                                     } else {
@@ -300,9 +303,10 @@ pub trait ConnectionLike {
                                     B(ok((this, inner_stmt)))
                                 })
                                 .and_then(|(this, inner_stmt)| if inner_stmt.num_params > 0 {
-                                    if this
-                                        .get_capabilities()
-                                        .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF) {
+                                    if this.get_capabilities().contains(
+                                        CapabilityFlags::CLIENT_DEPRECATE_EOF,
+                                    )
+                                    {
                                         A(ok((this, inner_stmt)))
                                     } else {
                                         B(this.read_packet().map(|(this, _)| (this, inner_stmt)))
@@ -317,7 +321,9 @@ pub trait ConnectionLike {
                                     let columns = if packets.len() > 0 {
                                         let columns = packets
                                             .into_iter()
-                                            .map(|packet| Column::new(packet).map_err(Error::from))
+                                            .map(|packet| {
+                                                column_from_payload(packet.0).map_err(Error::from)
+                                            })
                                             .collect::<Result<Vec<Column>>>();
                                         Some(columns)
                                     } else {
@@ -331,9 +337,10 @@ pub trait ConnectionLike {
                                     B(ok((this, inner_stmt)))
                                 })
                                 .and_then(|(this, inner_stmt)| if inner_stmt.num_columns > 0 {
-                                    if this
-                                        .get_capabilities()
-                                        .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF) {
+                                    if this.get_capabilities().contains(
+                                        CapabilityFlags::CLIENT_DEPRECATE_EOF,
+                                    )
+                                    {
                                         A(ok((this, inner_stmt)))
                                     } else {
                                         B(this.read_packet().map(|(this, _)| (this, inner_stmt)))
@@ -375,14 +382,13 @@ pub trait ConnectionLike {
         Self: Sized + 'static,
     {
         let fut = self.read_packet().and_then(
-            |(this, packet)| match packet.as_ref()
-                [0] {
+            |(this, packet)| match packet.0[0] {
                 0x00 => A(A(ok(query_result::new(this, None, cached)))),
                 0xFB => {
-                    let fut = LocalInfilePacket::new(&packet)
-                        .ok_or(ErrorKind::UnexpectedPacket.into())
+                    let fut = parse_local_infile_packet(&*packet.0)
+                        .chain_err(|| Error::from(ErrorKind::UnexpectedPacket))
                         .and_then(|local_infile| match this.get_local_infile_handler() {
-                            Some(handler) => handler.handle(local_infile.file_name()),
+                            Some(handler) => handler.handle(local_infile.file_name_ref()),
                             None => Err(ErrorKind::NoLocalInfileHandler.into()),
                         })
                         .into_future()
@@ -416,13 +422,15 @@ pub trait ConnectionLike {
                     A(B(fut))
                 }
                 _ => {
-                    let fut = read_lenenc_int(&mut packet.as_ref())
+                    let fut = (&*packet.0)
+                        .read_lenenc_int()
+                        .map_err(Into::into)
                         .into_future()
                         .and_then(|column_count| this.read_packets(column_count as usize))
                         .and_then(|(this, packets)| {
                             packets
                                 .into_iter()
-                                .map(|packet| Column::new(packet).map_err(Error::from))
+                                .map(|packet| column_from_payload(packet.0).map_err(Error::from))
                                 .collect::<Result<Vec<Column>>>()
                                 .into_future()
                                 .and_then(|columns| if this.get_capabilities().contains(

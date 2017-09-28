@@ -21,12 +21,9 @@ use io::futures::new_write_packet;
 use io::futures::WritePacket;
 #[cfg(feature = "ssl")]
 use native_tls::{Pkcs12, TlsConnector};
+use myc::packets::{PacketParser, ParseResult, RawPacket};
 use opts::SslOpts;
-use proto::NewPacket;
-use proto::Packet;
-use proto::ParseResult;
 use std::cmp;
-use std::collections::vec_deque::VecDeque;
 use std::io;
 use std::io::Read;
 use std::net::ToSocketAddrs;
@@ -163,7 +160,7 @@ pub struct Stream {
     endpoint: Option<Endpoint>,
     closed: bool,
     next_packet: Option<ParseResult>,
-    buf: Option<VecDeque<u8>>,
+    buf: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for Stream {
@@ -256,10 +253,10 @@ impl AsyncWrite for Stream {
 }
 
 impl stream::Stream for Stream {
-    type Item = (Packet, u8);
+    type Item = (RawPacket, u8);
     type Error = Error;
 
-    fn poll(&mut self) -> Poll<Option<(Packet, u8)>, Error> {
+    fn poll(&mut self) -> Poll<Option<(RawPacket, u8)>, Error> {
         // should read everything from self.endpoint
         let mut would_block = false;
         if !self.closed {
@@ -271,7 +268,7 @@ impl stream::Stream for Stream {
                     }
                     Ok(size) => {
                         let buf_handle = self.buf.as_mut().unwrap();
-                        buf_handle.extend(&buf[..size]);
+                        buf_handle.extend_from_slice(&buf[..size]);
                     }
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                         would_block = true;
@@ -296,27 +293,23 @@ impl stream::Stream for Stream {
         );
         let next_packet = match next_packet {
             ParseResult::Done(packet, seq_id) => {
-                self.next_packet = Some(NewPacket::empty().parse());
+                self.next_packet = Some(PacketParser::empty().parse());
                 return Ok(Ready(Some((packet, seq_id))));
-            }
-            ParseResult::NeedHeader(mut new_packet, needed) => {
-                let buf_handle = self.buf.as_mut().unwrap();
-                let buf_len = buf_handle.len();
-                for byte in buf_handle.drain(..cmp::min(needed, buf_len)) {
-                    new_packet.push_header(byte);
-                }
-                if buf_len != 0 {
-                    should_poll = true;
-                }
-
-                new_packet
             }
             ParseResult::Incomplete(mut new_packet, needed) => {
                 let buf_handle = self.buf.as_mut().unwrap();
                 let buf_len = buf_handle.len();
-                for byte in buf_handle.drain(..cmp::min(needed, buf_len)) {
-                    new_packet.push(byte);
+
+                let to = cmp::min(needed, buf_len);
+                new_packet.extend_from_slice(&buf_handle[..to]);
+                unsafe {
+                    let src = buf_handle.as_ptr().offset(to as isize);
+                    let dst = buf_handle.as_mut_ptr();
+                    let len = buf_handle.len() - to;
+                    ::std::ptr::copy(src, dst, len);
+                    buf_handle.set_len(len);
                 }
+
                 if buf_len != 0 {
                     should_poll = true;
                 }

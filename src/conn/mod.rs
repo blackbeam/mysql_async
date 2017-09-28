@@ -7,6 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use BoxFuture;
+use Column;
 use conn::pool::Pool;
 use connection_like::{ConnectionLike, StmtCacheResult};
 use connection_like::streamless::Streamless;
@@ -16,12 +17,11 @@ use io::Stream;
 use lib_futures::future::{Future, IntoFuture, Loop, loop_fn, ok};
 use lib_futures::future::Either::*;
 use local_infile_handler::LocalInfileHandler;
+use myc::packets::{parse_handshake_packet, HandshakeResponse, SslRequest};
+use myc::scramble::scramble;
 use opts::Opts;
 use queryable::{BinaryProtocol, Queryable, TextProtocol};
 use queryable::query_result;
-use proto::Column;
-use proto::{HandshakePacket, HandshakeResponse, SslRequest};
-use scramble::scramble;
 use self::stmt_cache::StmtCache;
 use std::fmt;
 use std::mem;
@@ -153,29 +153,33 @@ impl Conn {
     }
 
     fn handle_handshake(self) -> BoxFuture<Conn> {
-        let fut = self.read_packet().map(move |(mut conn, packet)| {
-            let handshake = HandshakePacket::new(packet);
-            conn.capabilities = handshake.capabilities() & conn.opts.get_capabilities();
-            conn.version = handshake.srv_ver_parsed().unwrap_or((0, 0, 0));
-            conn.id = handshake.conn_id();
-            conn.status = handshake.status_flags().unwrap_or(
-                consts::StatusFlags::empty(),
-            );
-            conn.scramble = conn.opts.get_pass().and_then(|pass| {
-                scramble(
-                    handshake.auth_plug_data_1(),
-                    handshake.auth_plug_data_2(),
-                    pass.as_ref(),
-                )
-            });
-            conn
+        let fut = self.read_packet().and_then(move |(mut conn, packet)| {
+            parse_handshake_packet(&*packet.0)
+                .map(|handshake| {
+                    conn.capabilities = handshake.capabilities() & conn.opts.get_capabilities();
+                    conn.version = handshake.server_version_parsed().unwrap_or((0, 0, 0));
+                    conn.id = handshake.connection_id();
+                    conn.status = handshake.status_flags();
+                    conn.scramble = conn.opts.get_pass().and_then(|pass| {
+                        scramble(
+                            handshake.scramble_1_ref(),
+                            handshake.scramble_2_ref(),
+                            pass.as_ref(),
+                        )
+                    });
+                    conn
+                })
+                .chain_err(|| "Invalid handshake from server")
         });
         Box::new(fut)
     }
 
     fn switch_to_ssl_if_needed(self) -> BoxFuture<Conn> {
-        let fut = if self.opts.get_capabilities().contains(CapabilityFlags::CLIENT_SSL) {
-            let ssl_request = SslRequest::new(&self.opts);
+        let fut = if self.opts.get_capabilities().contains(
+            CapabilityFlags::CLIENT_SSL,
+        )
+        {
+            let ssl_request = SslRequest::new(self.capabilities);
             let fut = self.write_packet(ssl_request.as_ref()).and_then(|conn| {
                 let ssl_opts = conn.get_opts().get_ssl_opts().cloned().expect(
                     "unreachable",
@@ -194,7 +198,13 @@ impl Conn {
     }
 
     fn do_handshake_response(self) -> BoxFuture<Conn> {
-        let handshake_response = HandshakeResponse::new(&self.scramble, self.version, &self.opts);
+        let handshake_response = HandshakeResponse::new(
+            &self.scramble,
+            self.version,
+            self.opts.get_user().as_ref().map(|x| x.as_ref()),
+            self.opts.get_db_name().as_ref().map(|x| x.as_ref()),
+            self.get_capabilities(),
+        );
         Box::new(self.write_packet(handshake_response.as_ref()))
     }
 
@@ -434,6 +444,7 @@ impl ConnectionLike for Conn {
 mod test {
     use Conn;
     use OptsBuilder;
+    #[cfg(feature = "ssl")]
     use SslOpts;
     use WhiteListFsLocalInfileHandler;
     use from_row;
@@ -564,13 +575,20 @@ mod test {
     fn should_perform_queries() {
         let mut lp = Core::new().unwrap();
 
+        let long_string = ::std::iter::repeat('A')
+            .take(18 * 1024 * 1024)
+            .collect::<String>();
+        let long_string_clone = long_string.clone();
         let fut = Conn::new(get_opts(), &lp.handle())
             .and_then(|conn| {
                 Queryable::query(
                     conn,
-                    r"SELECT 'hello', 123
-                    UNION ALL
-                    SELECT 'world', 231",
+                    format!(
+                        r"SELECT 'hello', 123
+                        UNION ALL
+                        SELECT '{}', 231",
+                        long_string_clone
+                    ),
                 )
             })
             .and_then(|result| {
@@ -583,7 +601,7 @@ mod test {
 
         let result = lp.run(fut).unwrap();
         assert_eq!((String::from("hello"), 123), result[0]);
-        assert_eq!((String::from("world"), 231), result[1]);
+        assert_eq!((long_string, 231), result[1]);
     }
 
     #[test]
@@ -772,14 +790,25 @@ mod test {
             .and_then(|result| result.collect_and_drop::<(u8,)>())
             .and_then(|(stmt, collected)| {
                 assert_eq!(collected, vec![(42u8,)]);
-                stmt.execute(("foo",))
+                stmt.execute((
+                    ::std::iter::repeat('A')
+                        .take(18 * 1024 * 1024)
+                        .collect::<String>(),
+                ))
             })
             .and_then(|result| {
                 result.map_and_drop(|row| from_row::<(String,)>(row))
             })
             .and_then(|(stmt, mut mapped)| {
                 assert_eq!(mapped.len(), 1);
-                assert_eq!(mapped.pop(), Some(("foo".into(),)));
+                assert_eq!(
+                    mapped.pop(),
+                    Some((
+                        ::std::iter::repeat('A')
+                            .take(18 * 1024 * 1024)
+                            .collect::<String>(),
+                    ))
+                );
                 stmt.execute((8,))
             })
             .and_then(|result| {

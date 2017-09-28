@@ -28,7 +28,6 @@ pub mod builtin;
 /// # use tokio::reactor::Core;
 /// # use tokio_io::AsyncRead;
 /// # use std::env;
-/// # use std::io;
 /// # fn main() {
 /// struct ExampleHandler(&'static [u8]);
 ///

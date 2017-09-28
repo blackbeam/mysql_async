@@ -16,8 +16,7 @@ use lib_futures::Future;
 use lib_futures::Poll;
 use lib_futures::future::select_ok;
 use lib_futures::future::SelectOk;
-use proto::NewPacket;
-use std::collections::VecDeque;
+use myc::packets::PacketParser;
 use std::io;
 use std::net::ToSocketAddrs;
 use tokio::net::TcpStream;
@@ -72,8 +71,8 @@ impl Future for ConnectingStream {
             Out::WaitForStream((stream, _)) => {
                 Ok(Ready(Stream {
                     closed: false,
-                    next_packet: Some(NewPacket::empty().parse()),
-                    buf: Some(VecDeque::new()),
+                    next_packet: Some(PacketParser::empty().parse()),
+                    buf: Some(Vec::new()),
                     endpoint: Some(stream.into()),
                 }))
             }

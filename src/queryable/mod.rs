@@ -9,28 +9,33 @@
 use BoxFuture;
 use Column;
 use Conn;
+use Params;
 use Row;
-use Value;
 use connection_like::ConnectionLike;
-use consts::{Command, CapabilityFlags};
+use consts::Command;
 use errors::*;
 use lib_futures::future::Future;
-use proto::{Packet, PacketType};
+use myc::packets::{parse_ok_packet, RawPacket};
+use myc::row::new_row;
+use myc::value::{read_text_values, read_bin_values};
+use prelude::FromRow;
 use self::query_result::QueryResult;
 use self::stmt::Stmt;
 use self::transaction::{Transaction, TransactionOptions};
 use std::sync::Arc;
-use value::{FromRow, Params};
 
 pub mod query_result;
 pub mod stmt;
 pub mod transaction;
 
 pub trait Protocol {
-    fn read_result_set_row(packet: &Packet, columns: Arc<Vec<Column>>) -> Result<Row>;
-    fn is_last_result_set_packet<T>(conn_like: &T, packet: &Packet) -> bool
+    fn read_result_set_row(packet: &RawPacket, columns: Arc<Vec<Column>>) -> Result<Row>;
+    fn is_last_result_set_packet<T>(conn_like: &T, packet: &RawPacket) -> bool
     where
-        T: ConnectionLike;
+        T: ConnectionLike,
+    {
+        parse_ok_packet(&*packet.0, conn_like.get_capabilities()).is_ok()
+    }
 }
 
 /// Phantom struct used to specify MySql text protocol.
@@ -40,31 +45,24 @@ pub struct TextProtocol;
 pub struct BinaryProtocol;
 
 impl Protocol for TextProtocol {
-    fn read_result_set_row(packet: &Packet, columns: Arc<Vec<Column>>) -> Result<Row> {
-        Value::from_payload(packet.as_ref(), columns.len()).map(|values| Row::new(values, columns))
-    }
-
-    fn is_last_result_set_packet<T>(conn_like: &T, packet: &Packet) -> bool
-    where
-        T: ConnectionLike,
-    {
-        if conn_like.get_capabilities().contains(CapabilityFlags::CLIENT_DEPRECATE_EOF) {
-            packet.is(PacketType::Ok)
-        } else {
-            packet.is(PacketType::Eof)
-        }
+    fn read_result_set_row(packet: &RawPacket, columns: Arc<Vec<Column>>) -> Result<Row> {
+        read_text_values(&*packet.0, columns.len())
+            .map(|values| new_row(values, columns))
+            .map_err(Into::into)
     }
 }
 impl Protocol for BinaryProtocol {
-    fn read_result_set_row(packet: &Packet, columns: Arc<Vec<Column>>) -> Result<Row> {
-        Value::from_bin_payload(packet.as_ref(), &columns).map(|values| Row::new(values, columns))
+    fn read_result_set_row(packet: &RawPacket, columns: Arc<Vec<Column>>) -> Result<Row> {
+        read_bin_values(&*packet.0, &*columns)
+            .map(|values| new_row(values, columns))
+            .map_err(Into::into)
     }
 
-    fn is_last_result_set_packet<T>(_: &T, packet: &Packet) -> bool
+    fn is_last_result_set_packet<T>(conn_like: &T, packet: &RawPacket) -> bool
     where
         T: ConnectionLike,
     {
-        packet.is(PacketType::Eof)
+        (parse_ok_packet(&*packet.0, conn_like.get_capabilities()).is_ok() && packet.0[0] == 0xFE)
     }
 }
 

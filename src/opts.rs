@@ -210,11 +210,15 @@ impl Opts {
     }
 
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
-        let mut out = CapabilityFlags::CLIENT_PROTOCOL_41 | CapabilityFlags::CLIENT_SECURE_CONNECTION |
-            CapabilityFlags::CLIENT_LONG_PASSWORD | CapabilityFlags::CLIENT_TRANSACTIONS |
+        let mut out = CapabilityFlags::CLIENT_PROTOCOL_41 |
+            CapabilityFlags::CLIENT_SECURE_CONNECTION |
+            CapabilityFlags::CLIENT_LONG_PASSWORD |
+            CapabilityFlags::CLIENT_TRANSACTIONS |
             CapabilityFlags::CLIENT_LOCAL_FILES |
-            CapabilityFlags::CLIENT_MULTI_STATEMENTS | CapabilityFlags::CLIENT_MULTI_RESULTS |
-            CapabilityFlags::CLIENT_PS_MULTI_RESULTS;
+            CapabilityFlags::CLIENT_MULTI_STATEMENTS |
+            CapabilityFlags::CLIENT_MULTI_RESULTS |
+            CapabilityFlags::CLIENT_PS_MULTI_RESULTS |
+            CapabilityFlags::CLIENT_DEPRECATE_EOF;
 
         if self.db_name.is_some() {
             out |= CapabilityFlags::CLIENT_CONNECT_WITH_DB;

@@ -6,9 +6,11 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use bit_vec::BitVec;
 use BoxFuture;
 use byteorder::LittleEndian as LE;
 use byteorder::{ReadBytesExt, WriteBytesExt};
+use Column;
 use connection_like::{ConnectionLike, ConnectionLikeWrapper, StmtCacheResult};
 use connection_like::streamless::Streamless;
 use consts::{ColumnType, Command};
@@ -16,13 +18,15 @@ use errors::*;
 use io;
 use lib_futures::future::{Either, Future, IntoFuture, Loop, err, loop_fn, ok};
 use lib_futures::future::Either::*;
+use myc::value::serialize_bin_many;
 use prelude::FromRow;
-use proto::{Column, Row};
+use Row;
+use Params;
 use queryable::BinaryProtocol;
 use queryable::query_result::QueryResult;
 use std::io::Write;
-use value::{Params, Value};
-use value::Value::*;
+use Value;
+use Value::*;
 
 /// Inner statement representation.
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -85,54 +89,54 @@ where
     fn send_long_data(
         self,
         params: Vec<Value>,
-        large_ids: Vec<u16>,
+        large_bitmap: BitVec<u8>,
     ) -> BoxFuture<(Self, Vec<Value>)> {
-        let fut = loop_fn((self, params, large_ids, 0), |(this,
-          params,
-          mut large_ids,
-          next_chunk)| {
-            let data_cap = this.get_max_allowed_packet() as usize - 8;
-            match large_ids.pop() {
-                Some(id) => {
-                    let buf = match params[id as usize] {
-                        Bytes(ref x) => {
-                            let statement_id = this.inner.statement_id;
-                            let mut chunks = x.chunks(data_cap);
-                            match chunks.nth(next_chunk) {
-                                Some(chunk) => {
-                                    let mut buf = Vec::with_capacity(chunk.len() + 7);
-                                    buf.write_u32::<LE>(statement_id).unwrap();
-                                    buf.write_u16::<LE>(id).unwrap();
-                                    buf.write_all(chunk).unwrap();
-                                    Some(buf)
+        let fut = loop_fn(
+            (self, params, large_bitmap.into_iter().enumerate()),
+            |(this, params, mut large_bitmap)| match large_bitmap.next() {
+                Some((i, true)) => {
+                    let fut = loop_fn((this, params, i, 0), |(this, params, i, chunk)| {
+                        let data_cap = ::consts::MAX_PAYLOAD_LEN - 10;
+                        let buf = match params[i] {
+                            Bytes(ref x) => {
+                                let statement_id = this.inner.statement_id;
+                                let mut chunks = x.chunks(data_cap);
+                                match chunks.nth(chunk) {
+                                    Some(chunk) => {
+                                        let mut buf = Vec::with_capacity(chunk.len() + 6);
+                                        buf.write_u32::<LE>(statement_id).unwrap();
+                                        buf.write_u16::<LE>(i as u16).unwrap();
+                                        buf.write_all(chunk).unwrap();
+                                        Some(buf)
+                                    }
+                                    _ => None,
                                 }
-                                None => None,
                             }
-                        }
-                        _ => unreachable!(),
-                    };
-                    match buf {
-                        Some(buf) => {
-                            let chunk_len = buf.len() - 7;
-                            let fut =
-                                this.write_command_data(Command::COM_STMT_SEND_LONG_DATA, buf)
-                                    .map(move |this| {
-                                        let next = if chunk_len < data_cap {
-                                            (this, params, large_ids, 0)
+                            _ => unreachable!(),
+                        };
+                        match buf {
+                            Some(buf) => {
+                                let chunk_len = buf.len() - 6;
+                                let fut =
+                                    this.write_command_data(Command::COM_STMT_SEND_LONG_DATA, buf)
+                                        .map(move |this| if chunk_len < data_cap {
+                                            Loop::Break((this, params))
                                         } else {
-                                            large_ids.push(id);
-                                            (this, params, large_ids, next_chunk + 1)
-                                        };
-                                        Loop::Continue(next)
-                                    });
-                            A(A(fut))
+                                            Loop::Continue((this, params, i, chunk + 1))
+                                        });
+                                A(fut)
+                            }
+                            None => B(ok(Loop::Break((this, params)))),
                         }
-                        None => A(B(ok(Loop::Continue((this, params, large_ids, 0))))),
-                    }
+                    }).map(|(this, params)| {
+                        Loop::Continue((this, params, large_bitmap))
+                    });
+                    A(fut)
                 }
-                None => B(ok(Loop::Break((this, params)))),
-            }
-        });
+                Some((_, false)) => B(A(ok(Loop::Continue((this, params, large_bitmap))))),
+                None => B(B(ok(Loop::Break((this, params))))),
+            },
+        );
         Box::new(fut)
     }
 
@@ -156,45 +160,24 @@ where
                     .as_ref()
                     .ok_or_else(|| unreachable!())
                     .and_then(|params_def| {
-                        Value::to_bin_payload(
-                            &*params_def,
-                            &*params,
-                            self.get_max_allowed_packet() as usize,
-                        )
+                        serialize_bin_many(&*params_def, &*params).map_err(Error::from)
                     })
                     .into_future()
                     .and_then(|bin_payload| match bin_payload {
-                        (bitmap, row_data, Some(large_ids)) => {
-                            let fut = self.send_long_data(params, large_ids.clone()).and_then(
-                                |(this,
-                                  params)| {
+                        (row_data, null_bitmap, large_bitmap) => {
+                            self.send_long_data(params.into_vec(), large_bitmap.clone())
+                                .and_then(|(this, params)| {
                                     let mut data = Vec::new();
                                     write_data(
                                         &mut data,
                                         this.inner.statement_id,
-                                        bitmap,
                                         row_data,
                                         params,
                                         this.inner.params.as_ref().unwrap(),
-                                        large_ids,
+                                        null_bitmap,
                                     );
                                     this.write_command_data(Command::COM_STMT_EXECUTE, data)
-                                },
-                            );
-                            A(fut)
-                        }
-                        (bitmap, row_data, None) => {
-                            let mut data = Vec::new();
-                            write_data(
-                                &mut data,
-                                self.inner.statement_id,
-                                bitmap,
-                                row_data,
-                                params,
-                                self.inner.params.as_ref().unwrap(),
-                                Vec::new(),
-                            );
-                            B(self.write_command_data(Command::COM_STMT_EXECUTE, data))
+                                })
                         }
                     });
                 A(fut)
@@ -209,7 +192,7 @@ where
                     match params.into_positional(self.inner.named_params.as_ref().unwrap()) {
                         Ok(positional_params) => positional_params,
                         Err(error) => {
-                            return Box::new(err(error));
+                            return Box::new(err(error.into()));
                         }
                     };
                 return self.execute(positional_params);
@@ -339,25 +322,21 @@ impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Stmt<T> {
 fn write_data(
     writer: &mut Vec<u8>,
     stmt_id: u32,
-    bitmap: Vec<u8>,
     row_data: Vec<u8>,
     params: Vec<Value>,
     params_def: &Vec<Column>,
-    large_ids: Vec<u16>,
+    null_bitmap: BitVec<u8>,
 ) {
-    let capacity = 9 + bitmap.len() + 1 + params.len() * 2 + row_data.len();
+    let capacity = 9 + null_bitmap.storage().len() + 1 + params.len() * 2 + row_data.len();
     writer.reserve(capacity);
     writer.write_u32::<LE>(stmt_id).unwrap();
     writer.write_u8(0u8).unwrap();
     writer.write_u32::<LE>(1u32).unwrap();
-    writer.write_all(bitmap.as_ref()).unwrap();
+    writer.write_all(null_bitmap.storage().as_ref()).unwrap();
     writer.write_u8(1u8).unwrap();
     for i in 0..params.len() {
-        if large_ids.contains(&(i as u16)) {
-            continue;
-        }
         let result = match params[i] {
-            NULL => writer.write_all(&[params_def[i].column_type as u8, 0u8]),
+            NULL => writer.write_all(&[params_def[i].column_type() as u8, 0u8]),
             Bytes(..) => writer.write_all(&[ColumnType::MYSQL_TYPE_VAR_STRING as u8, 0u8]),
             Int(..) => writer.write_all(&[ColumnType::MYSQL_TYPE_LONGLONG as u8, 0u8]),
             UInt(..) => writer.write_all(&[ColumnType::MYSQL_TYPE_LONGLONG as u8, 128u8]),

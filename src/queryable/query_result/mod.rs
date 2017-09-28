@@ -16,8 +16,8 @@ use errors::*;
 use io;
 use lib_futures::future::{AndThen, Either, Future, FutureResult, Loop, loop_fn, ok};
 use lib_futures::future::Either::*;
+use myc::packets::RawPacket;
 use prelude::FromRow;
-use proto::Packet;
 use queryable::Protocol;
 use self::QueryResultInner::*;
 pub use self::for_each::ForEach;
@@ -135,13 +135,16 @@ where
         }
     }
 
-    fn get_row_raw(self) -> BoxFuture<(Self, Option<Packet>)> {
+    fn get_row_raw(self) -> BoxFuture<(Self, Option<RawPacket>)> {
         if self.is_empty() {
             return Box::new(ok((self, None)));
         }
         let fut = self.read_packet().and_then(|(this, packet)| {
             if P::is_last_result_set_packet(&this, &packet) {
-                if this.get_status().contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS) {
+                if this.get_status().contains(
+                    StatusFlags::SERVER_MORE_RESULTS_EXISTS,
+                )
+                {
                     let (inner, cached) = this.into_inner();
                     A(A(inner.read_result_set(cached).map(
                         |new_this| (new_this, None),
