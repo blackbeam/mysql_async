@@ -355,9 +355,11 @@ mod test {
             format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL),
             &lp.handle(),
         );
-        let fut = pool.start_transaction(TransactionOptions::default())
-            .and_then(|transaction| {
-                transaction.drop_query("CREATE TEMPORARY TABLE tmp(id int)")
+        let fut = pool.get_conn()
+            .and_then(|conn| conn.drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)"))
+            .and_then({
+                let pool = pool.clone();
+                move |_| pool.start_transaction(TransactionOptions::default())
             })
             .and_then(|transaction| {
                 transaction.batch_exec("INSERT INTO tmp (id) VALUES (?)", vec![(1,), (2,)])
@@ -371,7 +373,9 @@ mod test {
             .and_then(|conn| conn.first("SELECT COUNT(*) FROM tmp"))
             .and_then(|(_, row_opt)| {
                 assert_eq!(row_opt, Some((0u8,)));
-                pool.disconnect()
+                pool.get_conn()
+                    .and_then(|conn| conn.drop_query("DROP TABLE tmp"))
+                    .and_then(move |_| pool.disconnect())
             });
 
         lp.run(fut).unwrap();
