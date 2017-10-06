@@ -29,6 +29,7 @@ const DEFAULT_STMT_CACHE_SIZE: usize = 10;
 pub struct SslOpts {
     pkcs12_path: Cow<'static, Path>,
     password: Option<Cow<'static, str>>,
+    root_cert_path: Option<Cow<'static, Path>>,
     skip_domain_validation: bool,
 }
 
@@ -37,6 +38,7 @@ impl SslOpts {
         SslOpts {
             pkcs12_path: pkcs12_path.into(),
             password: None,
+            root_cert_path: None,
             skip_domain_validation: false,
         }
     }
@@ -53,6 +55,12 @@ impl SslOpts {
         self
     }
 
+    /// Sets path to a der certificate of the root that connector will trust.
+    pub fn set_root_cert_path<T: Into<Cow<'static, Path>>>(&mut self, root_cert_path: Option<T>) -> &mut Self {
+        self.root_cert_path = root_cert_path.map(Into::into);
+        self
+    }
+
     /// The way to not validate the server's domain
     /// name against its certificate (defaults to `false`).
     pub fn set_danger_skip_domain_validation(&mut self, value: bool) -> &mut Self {
@@ -66,6 +74,10 @@ impl SslOpts {
 
     pub fn password(&self) -> Option<&str> {
         self.password.as_ref().map(AsRef::as_ref)
+    }
+
+    pub fn root_cert_path(&self) -> Option<&Path> {
+        self.root_cert_path.as_ref().map(AsRef::as_ref)
     }
 
     pub fn skip_domain_validation(&self) -> bool {

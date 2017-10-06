@@ -9,6 +9,7 @@
 use BoxFuture;
 use errors::*;
 use std::fmt;
+use std::fs::File;
 use lib_futures::Async::NotReady;
 use lib_futures::Async::Ready;
 #[cfg(feature = "ssl")]
@@ -20,7 +21,7 @@ use io::futures::new_connecting_stream;
 use io::futures::new_write_packet;
 use io::futures::WritePacket;
 #[cfg(feature = "ssl")]
-use native_tls::{Pkcs12, TlsConnector};
+use native_tls::{Certificate, Pkcs12, TlsConnector};
 use myc::packets::{PacketParser, ParseResult, RawPacket};
 use opts::SslOpts;
 use std::cmp;
@@ -69,6 +70,18 @@ impl Endpoint {
                 let mut builder = TlsConnector::builder().chain_err(
                     || "Can't create TlsConnectorBuilder)",
                 )?;
+                match ssl_opts.root_cert_path() {
+                    Some(root_cert_path) => {
+                        let mut root_cert_der = vec![];
+                        let mut root_cert_file = File::open(root_cert_path)?;
+                        root_cert_file.read_to_end(&mut root_cert_der)?;
+                        let root_cert = Certificate::from_der(&*root_cert_der)
+                            .chain_err(|| "Can't parse root certificate")?;
+                        builder.add_root_certificate(root_cert)
+                            .chain_err(|| "Can't add root certificate")?;
+                    },
+                    None => (),
+                }
                 builder.identity(identity).chain_err(
                     || "Can't set identity for TlsConnectorBuilder",
                 )?;
