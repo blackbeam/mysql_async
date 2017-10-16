@@ -270,73 +270,73 @@ impl stream::Stream for Stream {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<(RawPacket, u8)>, Error> {
-        // should read everything from self.endpoint
-        let mut would_block = false;
-        if !self.closed {
-            let mut buf = [0u8; 4096];
-            loop {
-                match self.read(&mut buf[..]) {
-                    Ok(0) => {
-                        break;
-                    }
-                    Ok(size) => {
-                        let buf_handle = self.buf.as_mut().unwrap();
-                        buf_handle.extend_from_slice(&buf[..size]);
-                    }
-                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        would_block = true;
-                        break;
-                    }
-                    Err(error) => {
-                        self.closed = true;
-                        return Err(Error::from(error));
-                    }
-                };
-            }
-        } else {
-            return Ok(Ready(None));
-        }
-
-        // need to call again if there is a data in self.buf
-        // or data was written to packet parser
-        let mut should_poll = false;
-
-        let next_packet = self.next_packet.take().expect(
-            "Stream.next_packet should not be None",
-        );
-        let next_packet = match next_packet {
-            ParseResult::Done(packet, seq_id) => {
-                self.next_packet = Some(PacketParser::empty().parse());
-                return Ok(Ready(Some((packet, seq_id))));
-            }
-            ParseResult::Incomplete(mut new_packet, needed) => {
-                let buf_handle = self.buf.as_mut().unwrap();
-                let buf_len = buf_handle.len();
-
-                let to = cmp::min(needed, buf_len);
-                new_packet.extend_from_slice(&buf_handle[..to]);
-                unsafe {
-                    let src = buf_handle.as_ptr().offset(to as isize);
-                    let dst = buf_handle.as_mut_ptr();
-                    let len = buf_handle.len() - to;
-                    ::std::ptr::copy(src, dst, len);
-                    buf_handle.set_len(len);
+        loop {
+            // should read everything from self.endpoint
+            let mut would_block = false;
+            if !self.closed {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match self.read(&mut buf[..]) {
+                        Ok(0) => {
+                            break;
+                        }
+                        Ok(size) => {
+                            let buf_handle = self.buf.as_mut().unwrap();
+                            buf_handle.extend_from_slice(&buf[..size]);
+                        }
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            would_block = true;
+                            break;
+                        }
+                        Err(error) => {
+                            self.closed = true;
+                            return Err(Error::from(error));
+                        }
+                    };
                 }
-
-                if buf_len != 0 {
-                    should_poll = true;
-                }
-
-                new_packet
+            } else {
+                return Ok(Ready(None));
             }
-        };
 
-        self.next_packet = Some(next_packet.parse());
+            // need to call again if there is a data in self.buf
+            // or data was written to packet parser
+            let mut should_poll = false;
 
-        if should_poll || !would_block {
-            self.poll()
-        } else {
-            Ok(NotReady)
+            let next_packet = self.next_packet.take().expect(
+                "Stream.next_packet should not be None",
+                );
+            let next_packet = match next_packet {
+                ParseResult::Done(packet, seq_id) => {
+                    self.next_packet = Some(PacketParser::empty().parse());
+                    return Ok(Ready(Some((packet, seq_id))));
+                }
+                ParseResult::Incomplete(mut new_packet, needed) => {
+                    let buf_handle = self.buf.as_mut().unwrap();
+                    let buf_len = buf_handle.len();
+
+                    let to = cmp::min(needed, buf_len);
+                    new_packet.extend_from_slice(&buf_handle[..to]);
+                    unsafe {
+                        let src = buf_handle.as_ptr().offset(to as isize);
+                        let dst = buf_handle.as_mut_ptr();
+                        let len = buf_handle.len() - to;
+                        ::std::ptr::copy(src, dst, len);
+                        buf_handle.set_len(len);
+                    }
+
+                    if buf_len != 0 {
+                        should_poll = true;
+                    }
+
+                    new_packet
+                }
+            };
+
+            self.next_packet = Some(next_packet.parse());
+
+            if !should_poll && would_block {
+                return Ok(NotReady)
+            }
         }
     }
 }
