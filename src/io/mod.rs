@@ -9,6 +9,7 @@
 use BoxFuture;
 use errors::*;
 use std::fmt;
+#[cfg(feature = "ssl")]
 use std::fs::File;
 use lib_futures::Async::NotReady;
 use lib_futures::Async::Ready;

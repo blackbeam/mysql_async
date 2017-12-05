@@ -712,7 +712,7 @@ mod test {
             })
             .and_then(|result| {
                 result.reduce(0, |mut acc, row| {
-                    acc += from_row(row);
+                    acc += from_row::<i32>(row);
                     acc
                 })
             })
@@ -751,10 +751,10 @@ mod test {
                 )
             })
             .and_then(|result| {
-                result.for_each(|row| *acc.borrow_mut() *= from_row(row))
+                result.for_each(|row| *acc.borrow_mut() *= from_row::<u8>(row))
             })
             .and_then(|result| {
-                result.for_each_and_drop(|row| *acc.borrow_mut() *= from_row(row))
+                result.for_each_and_drop(|row| *acc.borrow_mut() *= from_row::<u8>(row))
             })
             .and_then(Queryable::disconnect);
 
@@ -814,7 +814,7 @@ mod test {
             })
             .and_then(|result| {
                 result.reduce_and_drop(2, |mut acc, row| {
-                    acc += from_row(row);
+                    acc += from_row::<i32>(row);
                     acc
                 })
             })
