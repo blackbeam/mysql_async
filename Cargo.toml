@@ -1,7 +1,7 @@
 [package]
 authors = ["blackbeam <aikorsky@gmail.com>"]
 description = "Tokio based asynchronous MySql client library."
-documentation = "http://blackbeam.org/mysql_async/mysql_async/"
+documentation = "https://docs.rs/mysql_async"
 keywords = ["mysql", "database", "asynchronous", "async"]
 license = "MIT/Apache-2.0"
 name = "mysql_async"
