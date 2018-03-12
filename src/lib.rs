@@ -14,7 +14,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! mysql = "<desired version>"
+//! mysql_async = "<desired version>"
 //! ```
 //!
 //! ### Example
