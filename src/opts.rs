@@ -108,6 +108,12 @@ pub struct Opts {
     /// TCP keep alive timeout in milliseconds (defaults to `None`).
     tcp_keepalive: Option<u32>,
 
+    /// Whether to enable `TCP_NODELAY` (defaults to `true`).
+    ///
+    /// This option disables Nagle's algorithm, which can cause unusually high latency (~40ms) at
+    /// some cost to maximum throughput. See blackbeam/rust-mysql-simple#132.
+    tcp_nodelay: bool,
+
     /// Local infile handler
     local_infile_handler: Option<LocalInfileHandlerObject>,
 
@@ -188,6 +194,11 @@ impl Opts {
         self.tcp_keepalive.clone()
     }
 
+    /// Whether `TCP_NODELAY` will be set for mysql connection.
+    pub fn get_tcp_nodelay(&self) -> bool {
+        self.tcp_nodelay
+    }
+
     /// Local infile handler
     pub fn get_local_infile_handler(&self) -> Option<Arc<LocalInfileHandler>> {
         self.local_infile_handler.as_ref().map(|x| x.clone_inner())
@@ -253,6 +264,7 @@ impl Default for Opts {
             db_name: None,
             init: vec![],
             tcp_keepalive: None,
+            tcp_nodelay: true,
             local_infile_handler: None,
             pool_min: 10,
             pool_max: 100,
@@ -330,6 +342,15 @@ impl OptsBuilder {
     /// TCP keep alive timeout in milliseconds (defaults to `None`).
     pub fn tcp_keepalive<T: Into<u32>>(&mut self, tcp_keepalive: Option<T>) -> &mut Self {
         self.opts.tcp_keepalive = tcp_keepalive.map(Into::into);
+        self
+    }
+
+    /// Set the `TCP_NODELAY` option for the mysql connection (defaults to `true`).
+    ///
+    /// Setting this option to false re-enables Nagle's algorithm, which can cause unusually high
+    /// latency (~40ms) but may increase maximum throughput. See #132.
+    pub fn tcp_nodelay(&mut self, nodelay: bool) -> &mut Self {
+        self.opts.tcp_nodelay = nodelay;
         self
     }
 
@@ -493,6 +514,15 @@ fn from_url(url: &str) -> Result<Opts> {
                 _ => {
                     return Err(
                         ErrorKind::UrlInvalidParamValue("tcp_keepalive_ms".into(), value).into(),
+                    )
+                }
+            }
+        } else if key == "tcp_nodelay" {
+            match bool::from_str(&*value) {
+                Ok(value) => opts.tcp_nodelay = value,
+                _ => {
+                    return Err(
+                        ErrorKind::UrlInvalidParamValue("tcp_nodelay".into(), value).into(),
                     )
                 }
             }

@@ -59,6 +59,15 @@ impl Endpoint {
         Ok(())
     }
 
+    pub fn set_tcp_nodelay(&self, val: bool) -> Result<()> {
+        match *self {
+            Endpoint::Plain(ref stream) => stream.set_nodelay(val)?,
+            #[cfg(feature = "ssl")]
+            Endpoint::Secure(ref stream) => stream.get_ref().get_ref().set_nodelay(val)?,
+        }
+        Ok(())
+    }
+
     #[cfg(feature = "ssl")]
     pub fn make_secure(self, domain: String, ssl_opts: SslOpts) -> BoxFuture<Self> {
         let fut = ::std::fs::File::open(ssl_opts.pkcs12_path())
@@ -198,6 +207,13 @@ impl Stream {
     pub fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
         match self.endpoint {
             Some(ref endpoint) => endpoint.set_keepalive_ms(ms),
+            None => unreachable!(),
+        }
+    }
+
+    pub fn set_tcp_nodelay(&self, val: bool) -> Result<()> {
+        match self.endpoint {
+            Some(ref endpoint) => endpoint.set_tcp_nodelay(val),
             None => unreachable!(),
         }
     }

@@ -145,6 +145,7 @@ impl Conn {
     fn setup_stream(mut self) -> Result<Conn> {
         if let Some(stream) = self.stream.take() {
             stream.set_keepalive_ms(self.opts.get_tcp_keepalive())?;
+            stream.set_tcp_nodelay(self.opts.get_tcp_nodelay())?;
             self.stream = Some(stream);
             Ok(self)
         } else {
