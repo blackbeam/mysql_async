@@ -317,12 +317,14 @@ impl stream::Stream for Stream {
 
                     let to = cmp::min(needed, buf_len);
                     new_packet.extend_from_slice(&buf_handle[..to]);
-                    unsafe {
-                        let src = buf_handle.as_ptr().offset(to as isize);
+                    {
+                        let src = unsafe { buf_handle.as_ptr().offset(to as isize) };
                         let dst = buf_handle.as_mut_ptr();
                         let len = buf_handle.len() - to;
-                        ::std::ptr::copy(src, dst, len);
-                        buf_handle.set_len(len);
+                        unsafe {
+                            ::std::ptr::copy(src, dst, len);
+                            buf_handle.set_len(len);
+                        }
                     }
 
                     if buf_len != 0 {
