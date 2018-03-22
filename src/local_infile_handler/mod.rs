@@ -6,7 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use errors::*;
+use BoxFuture;
 use std::fmt;
 use std::sync::Arc;
 use tokio_io::AsyncRead;
@@ -32,8 +32,8 @@ pub mod builtin;
 /// struct ExampleHandler(&'static [u8]);
 ///
 /// impl LocalInfileHandler for ExampleHandler {
-///     fn handle(&self, _: &[u8]) -> my::errors::Result<Box<AsyncRead>> {
-///         Ok(Box::new(self.0))
+///     fn handle(&self, _: &[u8]) -> Box<Future<Item=Box<AsyncRead>, Error=my::errors::Error>> {
+///         Box::new(futures::future::ok(Box::new(self.0) as Box<AsyncRead>))
 ///     }
 /// }
 ///
@@ -68,10 +68,10 @@ pub mod builtin;
 /// lp.run(future).unwrap();
 /// # }
 /// ```
-pub trait LocalInfileHandler {
+pub trait LocalInfileHandler: Sync + Send {
     /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
     /// query.
-    fn handle(&self, file_name: &[u8]) -> Result<Box<AsyncRead>>;
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead>>;
 }
 
 /// Object used to wrap `T: LocalInfileHandler` inside of Opts.

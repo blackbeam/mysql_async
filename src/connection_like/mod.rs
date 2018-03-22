@@ -388,10 +388,13 @@ pub trait ConnectionLike {
                     let fut = parse_local_infile_packet(&*packet.0)
                         .chain_err(|| Error::from(ErrorKind::UnexpectedPacket))
                         .and_then(|local_infile| match this.get_local_infile_handler() {
-                            Some(handler) => handler.handle(local_infile.file_name_ref()),
+                            Some(handler) => Ok((local_infile.into_owned(), handler)),
                             None => Err(ErrorKind::NoLocalInfileHandler.into()),
                         })
                         .into_future()
+                        .and_then(|(local_infile, handler)| {
+                            handler.handle(local_infile.file_name_ref())
+                        })
                         .and_then(|reader| {
                             let mut buf = Vec::with_capacity(4096);
                             unsafe {
