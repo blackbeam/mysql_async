@@ -7,7 +7,6 @@
 // modified, or distributed except according to those terms.
 
 use BoxFuture;
-use errors::*;
 use std::fmt;
 use std::sync::Arc;
 use tokio_io::AsyncRead;
