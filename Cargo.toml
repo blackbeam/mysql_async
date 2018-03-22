@@ -7,7 +7,7 @@ license = "MIT/Apache-2.0"
 name = "mysql_async"
 readme = "README.md"
 repository = "https://github.com/blackbeam/mysql_async"
-version = "0.13.0"
+version = "0.14.0"
 exclude = ["test/*"]
 
 [dependencies]
