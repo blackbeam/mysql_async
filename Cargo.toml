@@ -17,7 +17,7 @@ error-chain = "0.11"
 fnv = "1"
 futures = "0.1"
 mio = "0.6"
-mysql_common = "0.4"
+mysql_common = "0.5"
 native-tls = { version = "0.1", optional = true }
 regex = "0.2"
 serde = "1"
