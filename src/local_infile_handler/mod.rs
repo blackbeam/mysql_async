@@ -69,7 +69,7 @@ pub mod builtin;
 /// lp.run(future).unwrap();
 /// # }
 /// ```
-pub trait LocalInfileHandler {
+pub trait LocalInfileHandler: Sync + Send {
     /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
     /// query.
     fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead>>;

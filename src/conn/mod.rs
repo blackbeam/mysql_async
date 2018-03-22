@@ -470,6 +470,12 @@ mod test {
     }
 
     #[test]
+    fn opts_should_satisfy_send_and_sync() {
+        struct A<T: Sync + Send>(T);
+        A(get_opts());
+    }
+
+    #[test]
     fn should_connect() {
         let mut lp = Core::new().unwrap();
 
