@@ -14,6 +14,7 @@ use connection_like::streamless::Streamless;
 use consts::{self, CapabilityFlags};
 use errors::*;
 use io::Stream;
+use lib_futures::oneshot;
 use lib_futures::future::{Future, IntoFuture, Loop, loop_fn, ok};
 use lib_futures::future::Either::*;
 use local_infile_handler::LocalInfileHandler;
@@ -25,15 +26,33 @@ use queryable::query_result;
 use self::stmt_cache::StmtCache;
 use std::fmt;
 use std::mem;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use time::SteadyTime;
-use tokio::reactor::Handle;
+use tokio::reactor::{Handle, Remote};
 
 
 pub mod named_params;
 pub mod pool;
 pub mod stmt_cache;
 
+/// Invokes functor with event loop handle obtained from a remote.
+fn with_handle<F, R, I>(remote: &Remote, f: F) -> BoxFuture<I>
+where
+    F: FnOnce(&Handle) -> R + Send + 'static,
+    R: IntoFuture<Item = I, Error = Error> + Send + 'static,
+    R::Future: 'static,
+{
+    let (tx, rx) = oneshot();
+    remote.spawn(move |handle| {
+        let _ = tx.send(f(handle));
+        Ok(())
+    });
+    let fut = rx
+        .map_err(|_| Error::from("Future Canceled"))
+        .and_then(|r| r.into_future());
+    Box::new(fut)
+}
 
 /// Mysql connection
 pub struct Conn {
@@ -52,7 +71,7 @@ pub struct Conn {
     has_result: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>,
     in_transaction: bool,
     opts: Opts,
-    handle: Handle,
+    handle: Remote,
     last_io: SteadyTime,
     wait_timeout: u32,
     stmt_cache: StmtCache,
@@ -117,7 +136,7 @@ impl Conn {
         )
     }
 
-    fn empty(opts: Opts, handle: &Handle) -> Conn {
+    fn empty(opts: Opts, handle: &Remote) -> Conn {
         Conn {
             last_command: consts::Command::COM_PING,
             capabilities: opts.get_capabilities(),
@@ -232,11 +251,11 @@ impl Conn {
     }
 
     pub fn new<T: Into<Opts>>(opts: T, handle: &Handle) -> BoxFuture<Conn> {
-        let mut conn = Conn::empty(opts.into(), handle);
+        let mut conn = Conn::empty(opts.into(), handle.remote());
 
         let fut = Stream::connect(
             (conn.opts.get_ip_or_hostname(), conn.opts.get_tcp_port()),
-            &conn.handle,
+            &handle,
         ).map(move |stream| {
             conn.stream = Some(stream);
             conn
@@ -253,10 +272,42 @@ impl Conn {
         Box::new(fut)
     }
 
+    fn from_remote<T: Into<Opts>>(opts: T, handle: &Remote) -> BoxFuture<Conn> {
+        let opts = opts.into();
+
+        let sock_addrs = (opts.get_ip_or_hostname(), opts.get_tcp_port())
+            .to_socket_addrs()
+            .map(|iter| iter.collect::<Vec<SocketAddr>>());
+
+        let sock_addrs = match sock_addrs {
+            Ok(sock_addrs) => sock_addrs,
+            Err(err) => return Box::new(Err(err.into()).into_future()),
+        };
+
+        let mut conn = Conn::empty(opts.clone(), handle);
+
+        let fut = with_handle(handle, move |handle| {
+            Stream::connect(&sock_addrs[..], handle)
+        })
+            .map(move |stream| {
+                conn.stream = Some(stream);
+                conn
+            })
+            .and_then(Conn::setup_stream)
+            .and_then(Conn::handle_handshake)
+            .and_then(Conn::switch_to_ssl_if_needed)
+            .and_then(Conn::do_handshake_response)
+            .and_then(Conn::drop_packet)
+            .and_then(Conn::read_max_allowed_packet)
+            .and_then(Conn::read_wait_timeout)
+            .and_then(Conn::run_init_commands);
+
+        Box::new(fut)
+    }
+
     /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
     fn read_max_allowed_packet(self) -> BoxFuture<Self> {
-        let fut = self.first("SELECT @@max_allowed_packet").map(|(mut this,
-          row_opt)| {
+        let fut = self.first("SELECT @@max_allowed_packet").map(|(mut this, row_opt)| {
             this.max_allowed_packet = row_opt.unwrap_or((1024 * 1024 * 2,)).0;
             this
         });
@@ -290,7 +341,7 @@ impl Conn {
                 .map(|(conn, _)| conn);
             (ok(pool), A(fut))
         } else {
-            (ok(pool), B(Conn::new(self.opts.clone(), &self.handle)))
+            (ok(pool), B(Conn::from_remote(self.opts.clone(), &self.handle)))
         };
         Box::new(fut.into_future().map(|(pool, mut conn)| {
             conn.stmt_cache.clear();
