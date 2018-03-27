@@ -119,7 +119,7 @@ where
             QueryResult(WithRows(conn_like, _, cached, _)) => {
                 QueryResult(Empty(conn_like, cached, PhantomData))
             }
-            _ => unreachable!(),
+            x => x,
         }
     }
 
@@ -204,7 +204,9 @@ where
     /// One could use it to check if there is more than one result set in this query result.
     pub fn is_empty(&self) -> bool {
         match *self {
-            QueryResult(Empty(..)) => true,
+            QueryResult(Empty(..)) => {
+                !self.get_status().contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS)
+            },
             _ => false,
         }
     }

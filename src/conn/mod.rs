@@ -453,6 +453,7 @@ mod test {
     use lib_futures::Future;
     use test_misc::DATABASE_URL;
     use tokio::reactor::Core;
+    use TransactionOptions;
 
     fn get_opts() -> OptsBuilder {
         let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
@@ -738,6 +739,55 @@ mod test {
                 assert_eq!(7, rows[0]);
             }
         }
+    }
+
+    #[test]
+    fn should_handle_multi_result_sets_where_some_results_have_no_output() {
+        const QUERY: &str =
+            r"SELECT 1;
+            UPDATE time_zone SET Time_zone_id = 1 WHERE Time_zone_id = 1;
+            SELECT 2;
+            SELECT 3;
+            UPDATE time_zone SET Time_zone_id = 1 WHERE Time_zone_id = 1;
+            UPDATE time_zone SET Time_zone_id = 1 WHERE Time_zone_id = 1;
+            SELECT 4;";
+        let mut lp = Core::new().unwrap();
+
+        let fut = Conn::new(get_opts(), &lp.handle())
+            .and_then(|c| {
+                c.start_transaction(TransactionOptions::new())
+                    .and_then(|t| {
+                        t.drop_query(QUERY)
+                    })
+                    .and_then(|t| {
+                        t.query(QUERY)
+                            .and_then(|r| r.collect_and_drop::<u8>())
+                    })
+                    .and_then(|(t, out)| {
+                        assert_eq!(vec![1], out);
+                        t.query(QUERY)
+                            .and_then(|r| r.for_each_and_drop(|x| assert_eq!(from_row::<u8>(x), 1)))
+                    })
+                    .and_then(|t| {
+                        t.query(QUERY)
+                            .and_then(|r| r.map_and_drop(|row| from_row::<u8>(row)))
+                    })
+                    .and_then(|(t, out)| {
+                        assert_eq!(vec![1], out);
+                        t.query(QUERY)
+                            .and_then(|r| r.reduce_and_drop(0u8, |acc, x| acc + from_row::<u8>(x)))
+                    })
+                    .and_then(|(t, out)| {
+                        assert_eq!(1, out);
+                        t.query(QUERY)
+                            .and_then(|r| r.drop_result())
+                    })
+                    .and_then(|t| t.commit())
+            })
+            .and_then(|c| c.first_exec::<_, _, u8>("SELECT 1", ()))
+            .and_then(|(c, output)| c.disconnect().map(move |_| output));
+
+        assert_eq!(Some(1), lp.run(fut).unwrap());
     }
 
     #[test]
