@@ -17,18 +17,43 @@ use lib_futures::Poll;
 use lib_futures::future::select_ok;
 use lib_futures::future::SelectOk;
 use myc::packets::PacketParser;
+use net2::TcpBuilder;
 use std::io;
+use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use tokio::net::TcpStream;
-use tokio::net::TcpStreamNew;
+use tokio::net::ConnectFuture;
 use tokio::reactor::Handle;
 
 
 steps! {
     ConnectingStream {
-        WaitForStream(SelectOk<TcpStreamNew>),
+        WaitForStream(SelectOk<ConnectFuture>),
         Fail(Failed<(), Error>),
     }
+}
+
+// Taken from https://github.com/hyperium/hyper/commit/27b8db3af8852ba8280a2868f703d3230a1db85e
+fn connect(addr: &SocketAddr, handle: &Handle) -> io::Result<ConnectFuture> {
+    let builder = match addr {
+        &SocketAddr::V4(_) => TcpBuilder::new_v4()?,
+        &SocketAddr::V6(_) => TcpBuilder::new_v6()?,
+    };
+
+    if cfg!(windows) {
+        // Windows requires a socket be bound before calling connect
+        let any: SocketAddr = match addr {
+            &SocketAddr::V4(_) => {
+                ([0, 0, 0, 0], 0).into()
+            },
+            &SocketAddr::V6(_) => {
+                ([0, 0, 0, 0, 0, 0, 0, 0], 0).into()
+            }
+        };
+        builder.bind(any)?;
+    }
+
+    Ok(TcpStream::connect_std(builder.to_tcp_stream()?, addr, handle))
 }
 
 /// Future that resolves to a `Stream` connected to a MySql server.
@@ -45,7 +70,9 @@ where
             let mut streams = Vec::new();
 
             for address in addresses {
-                streams.push(TcpStream::connect(&address, handle));
+                if let Ok(stream) = connect(&address, handle) {
+                    streams.push(stream);
+                }
             }
 
             if streams.len() > 0 {

@@ -127,10 +127,11 @@ extern crate mio;
 extern crate mysql_common as myc;
 #[cfg(feature = "ssl")]
 extern crate native_tls;
+extern crate net2;
 extern crate regex;
 extern crate serde;
 extern crate serde_json;
-extern crate tokio_core as tokio;
+extern crate tokio;
 extern crate tokio_io;
 #[cfg(feature = "ssl")]
 extern crate tokio_tls;
