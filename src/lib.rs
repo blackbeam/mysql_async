@@ -23,12 +23,12 @@
 //! extern crate futures;
 //! #[macro_use]
 //! extern crate mysql_async as my;
-//! extern crate tokio_core as tokio;
+//! extern crate tokio;
 //! // ...
 //!
 //! use futures::Future;
 //! use my::prelude::*;
-//! use tokio::reactor::Core;
+//! use tokio::runtime::Runtime;
 //! # use std::env;
 //!
 //! #[derive(Debug, PartialEq, Eq, Clone)]
@@ -39,7 +39,7 @@
 //! }
 //!
 //! fn main() {
-//!     let mut lp = Core::new().unwrap();
+//!     let runtime = Runtime::new().unwrap();
 //!
 //!     let payments = vec![
 //!         Payment { customer_id: 1, amount: 2, account_name: None },
@@ -59,7 +59,7 @@
 //!     #     "mysql://root:password@127.0.0.1:3307/mysql".into()
 //!     # };
 //!
-//!     let pool = my::Pool::new(database_url, &lp.handle());
+//!     let pool = my::Pool::new(database_url, runtime.reactor());
 //!     let future = pool.get_conn().and_then(|conn| {
 //!         // Create temporary table
 //!         conn.drop_query(
@@ -101,7 +101,7 @@
 //!         pool.disconnect().map(|_| payments)
 //!     });
 //!
-//!     let loaded_payments = lp.run(future).unwrap();
+//!     let loaded_payments = future.wait().unwrap();
 //!
 //!     assert_eq!(loaded_payments, payments);
 //! }

@@ -332,27 +332,27 @@ mod test {
     use lib_futures::Future;
     use queryable::Queryable;
     use test_misc::DATABASE_URL;
-    use tokio::reactor::Core;
+    use tokio::runtime::Runtime;
 
     #[test]
     fn should_connect() {
-        let mut lp = Core::new().unwrap();
+        let runtime = Runtime::new().unwrap();
 
-        let pool = Pool::new(&**DATABASE_URL, &lp.handle());
+        let pool = Pool::new(&**DATABASE_URL, runtime.reactor());
         let fut = pool.get_conn()
             .and_then(|conn| conn.ping().map(|_| ()))
             .and_then(|_| pool.disconnect());
 
-        lp.run(fut).unwrap();
+        fut.wait().unwrap();
     }
 
     #[test]
     fn should_start_transaction() {
-        let mut lp = Core::new().unwrap();
+        let runtime = Runtime::new().unwrap();
 
         let pool = Pool::new(
             format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL),
-            &lp.handle(),
+            runtime.reactor(),
         );
         let fut = pool.get_conn()
             .and_then(|conn| conn.drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)"))
@@ -377,16 +377,16 @@ mod test {
                     .and_then(move |_| pool.disconnect())
             });
 
-        lp.run(fut).unwrap();
+        fut.wait().unwrap();
     }
 
     #[test]
     fn should_hold_bounds() {
-        let mut lp = Core::new().unwrap();
+        let runtime = Runtime::new().unwrap();
 
         let pool = Pool::new(
             format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL),
-            &lp.handle(),
+            runtime.reactor(),
         );
         let pool_clone = pool.clone();
         let fut = pool.get_conn()
@@ -415,25 +415,26 @@ mod test {
                 pool.disconnect()
             });
 
-        lp.run(fut).unwrap();
+        fut.wait().unwrap();
     }
 
     #[cfg(feature = "nightly")]
     mod bench {
         use test;
         use conn::pool::Pool;
-        use tokio::reactor::Core;
+        use tokio::runtime::Runtime;
         use lib_futures::Future;
         use test_misc::DATABASE_URL;
+        use queryable::Queryable;
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
-            let mut lp = Core::new().unwrap();
-            let pool = Pool::new(&**DATABASE_URL, &lp.handle());
+            let runtime = Runtime::new().unwrap();
+            let pool = Pool::new(&**DATABASE_URL, runtime.reactor());
 
             bencher.iter(|| {
                 let fut = pool.get_conn().and_then(|conn| conn.ping());
-                lp.run(fut).unwrap();
+                fut.wait().unwrap();
             })
         }
     }
