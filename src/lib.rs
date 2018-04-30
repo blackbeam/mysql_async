@@ -213,7 +213,7 @@ mod local_infile_handler;
 mod opts;
 mod queryable;
 
-pub type BoxFuture<T> = Box<lib_futures::Future<Item = T, Error = errors::Error>>;
+pub type BoxFuture<T> = Box<lib_futures::Future<Item = T, Error = errors::Error> + Send>;
 
 #[doc(inline)]
 pub use self::conn::Conn;

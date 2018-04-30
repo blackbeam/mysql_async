@@ -19,10 +19,9 @@ use queryable::transaction::{Transaction, TransactionOptions};
 use std::fmt;
 use opts::Opts;
 use self::futures::*;
-use std::cell::Ref;
-use std::cell::RefCell;
-use std::cell::RefMut;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
 use tokio::reactor::Handle;
 
 
@@ -43,7 +42,7 @@ pub struct Inner {
 pub struct Pool {
     handle: Handle,
     opts: Opts,
-    inner: Rc<RefCell<Inner>>,
+    inner: Arc<Mutex<Inner>>,
     min: usize,
     max: usize,
 }
@@ -72,7 +71,7 @@ impl Pool {
         let pool = Pool {
             handle: handle.clone(),
             opts: opts,
-            inner: Rc::new(RefCell::new(Inner {
+            inner: Arc::new(Mutex::new(Inner {
                 closed: false,
                 new: Vec::with_capacity(pool_min),
                 idle: Vec::new(),
@@ -169,12 +168,12 @@ impl Pool {
         }
     }
 
-    fn inner_ref(&self) -> Ref<Inner> {
-        self.inner.borrow()
+    fn inner_ref(&self) -> MutexGuard<Inner> {
+        self.inner.lock().unwrap()
     }
 
-    fn inner_mut(&mut self) -> RefMut<Inner> {
-        self.inner.borrow_mut()
+    fn inner_mut(&mut self) -> MutexGuard<Inner> {
+        self.inner.lock().unwrap()
     }
 
     /// Will manage lifetime of futures stored in a pool.

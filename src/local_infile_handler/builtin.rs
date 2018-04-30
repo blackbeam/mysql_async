@@ -185,7 +185,7 @@ impl WhiteListFsLocalInfileHandler {
 }
 
 impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
-    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead>> {
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead + Send>> {
         let path: PathBuf = match from_utf8(file_name) {
             Ok(path_str) => path_str.into(),
             Err(_) => return Box::new(Err("Invalid file name".into()).into_future()),
@@ -193,9 +193,9 @@ impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
         if self.white_list.contains(&path) {
             let fut = PollEvented::new(File::new(path), &self.handle)
                 .map_err(Into::into)
-                .map(|poll_evented| Box::new(poll_evented) as Box<AsyncRead>)
+                .map(|poll_evented| Box::new(poll_evented) as Box<AsyncRead + Send>)
                 .into_future();
-            Box::new(fut) as BoxFuture<Box<AsyncRead>>
+            Box::new(fut) as BoxFuture<Box<AsyncRead + Send>>
         } else {
             let err_msg = format!("Path `{}' is not in white list", path.display());
             return Box::new(Err(err_msg.into()).into_future());

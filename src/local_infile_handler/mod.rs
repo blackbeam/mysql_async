@@ -71,7 +71,7 @@ pub mod builtin;
 pub trait LocalInfileHandler: Sync + Send {
     /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
     /// query.
-    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead>>;
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead + Send>>;
 }
 
 /// Object used to wrap `T: LocalInfileHandler` inside of Opts.

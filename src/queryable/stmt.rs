@@ -234,6 +234,7 @@ where
     pub fn batch<I, P>(self, params_iter: I) -> BoxFuture<Self>
     where
         I: IntoIterator<Item = P> + 'static,
+        I::IntoIter: Send,
         Params: From<P>,
         P: 'static,
     {
