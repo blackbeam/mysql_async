@@ -68,14 +68,13 @@ impl Future for ConnectingStream {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match try_ready!(self.either_poll()) {
-            Out::WaitForStream((stream, _)) => {
-                Ok(Ready(Stream {
-                    closed: false,
-                    next_packet: Some(PacketParser::empty().parse()),
-                    buf: Some(Vec::new()),
-                    endpoint: Some(stream.into()),
-                }))
-            }
+            Out::WaitForStream((stream, _)) => Ok(Ready(Stream {
+                closed: false,
+                parser: Some(PacketParser::empty()),
+                packets: Default::default(),
+                buf: Vec::new(),
+                endpoint: Some(stream.into()),
+            })),
             Out::Fail(_) => unreachable!(),
         }
     }
