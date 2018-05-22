@@ -204,10 +204,24 @@ where
     /// One could use it to check if there is more than one result set in this query result.
     pub fn is_empty(&self) -> bool {
         match *self {
-            QueryResult(Empty(..)) => {
-                !self.get_status().contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS)
-            },
+            QueryResult(Empty(..)) => !self.more_results_exists(),
             _ => false,
+        }
+    }
+
+    /// Returns `true` if the SERVER_MORE_RESULTS_EXISTS flag is contained in status flags
+    /// of the connection.
+    fn more_results_exists(&self) -> bool {
+        self.get_status().contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS)
+    }
+
+    /// `true` if rows may exists for this query result.
+    ///
+    /// If `false` then there is no rows possible (for example UPDATE query).
+    fn has_rows(&self) -> bool {
+        match *self {
+            QueryResult(Empty(..)) => false,
+            _ => true,
         }
     }
 
@@ -337,8 +351,13 @@ where
 
     /// Returns future that will drop this query result end resolve to a wrapped `Queryable`.
     pub fn drop_result(self) -> BoxFuture<T> {
-        let fut = loop_fn(self, |this| if this.is_empty() {
-            A(ok(Loop::Break(this.into_inner())))
+        let fut = loop_fn(self, |this| if !this.has_rows() {
+            if this.more_results_exists() {
+                let (inner, cached) = this.into_inner();
+                A(A(inner.read_result_set(cached).map(|new_this| Loop::Continue(new_this))))
+            } else {
+                A(B(ok(Loop::Break(this.into_inner()))))
+            }
         } else {
             B(this.get_row_raw().map(|(this, _)| Loop::Continue(this)))
         });

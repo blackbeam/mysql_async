@@ -113,7 +113,9 @@ where
 
     /// Returns future that performs query. Result will be dropped.
     fn drop_query<Q: AsRef<str>>(self, query: Q) -> BoxFuture<Self> {
-        let fut = self.query(query).and_then(|result| result.drop_result());
+        let fut = self
+            .query(query)
+            .and_then(|result| result.drop_result());
         Box::new(fut)
     }
 
