@@ -11,6 +11,8 @@ use errors::*;
 use std::fmt;
 #[cfg(feature = "ssl")]
 use std::fs::File;
+#[cfg(feature = "ssl")]
+use std::io::Read;
 use lib_futures::Async::NotReady;
 use lib_futures::Async::Ready;
 #[cfg(feature = "ssl")]
