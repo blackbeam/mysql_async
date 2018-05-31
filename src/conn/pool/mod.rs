@@ -35,6 +35,7 @@ pub struct Inner {
     disconnecting: Vec<BoxFuture<()>>,
     dropping: Vec<BoxFuture<Conn>>,
     rollback: Vec<BoxFuture<Conn>>,
+    ongoing: usize,
     tasks: Vec<Task>,
 }
 
@@ -79,6 +80,7 @@ impl Pool {
                 disconnecting: Vec::new(),
                 dropping: Vec::new(),
                 rollback: Vec::new(),
+                ongoing: 0,
                 tasks: Vec::new(),
             })),
             min: pool_min,
@@ -139,6 +141,7 @@ impl Pool {
                 Some(conn)
             });
             if conn.is_some() {
+                self.inner_mut().ongoing += 1;
                 return conn;
             }
         }
@@ -150,21 +153,24 @@ impl Pool {
         if self.inner_ref().closed {
             return;
         }
+        let min = self.min;
+        let mut inner = self.inner_mut();
+        inner.ongoing -= 1;
 
         if conn.has_result.is_some() {
-            self.inner_mut().dropping.push(conn.drop_result());
+            inner.dropping.push(conn.drop_result());
         } else if conn.in_transaction {
-            self.inner_mut().rollback.push(conn.rollback_transaction())
+            inner.rollback.push(conn.rollback_transaction())
         } else {
-            let idle_len = self.inner_ref().idle.len();
-            if idle_len >= self.min {
-                self.inner_mut().disconnecting.push(conn.disconnect());
+            let idle_len = inner.idle.len();
+            if idle_len >= min {
+                inner.disconnecting.push(conn.disconnect());
             } else {
-                self.inner_mut().idle.push(conn);
+                inner.idle.push(conn);
             }
         }
 
-        while let Some(task) = self.inner_mut().tasks.pop() {
+        while let Some(task) = inner.tasks.pop() {
             task.notify()
         }
     }
@@ -268,6 +274,7 @@ impl Pool {
                 if closed {
                     self.inner_mut().disconnecting.push(conn.disconnect());
                 } else {
+                    self.inner_mut().ongoing += 1;
                     self.return_conn(conn);
                 }
                 handled = true;
@@ -289,6 +296,12 @@ impl Pool {
         }
     }
 
+    fn conn_count(&self) -> usize {
+        let inner = self.inner_ref();
+        inner.new.len() + inner.idle.len() + inner.disconnecting.len() + inner.dropping.len()
+            + inner.rollback.len() + inner.ongoing
+    }
+
     /// Will poll pool for connection.
     fn poll(&mut self) -> Result<Async<Conn>> {
         if self.inner_ref().closed {
@@ -301,8 +314,7 @@ impl Pool {
             Some(conn) => Ok(Ready(conn)),
             None => {
                 let new_len = self.inner_ref().new.len();
-                let idle_len = self.inner_ref().idle.len();
-                if new_len == 0 && idle_len < self.max {
+                if new_len == 0 && self.conn_count() < self.max {
                     let new_conn = Conn::new(self.opts.clone(), &self.handle);
                     self.inner_mut().new.push(new_conn);
                     self.poll()
