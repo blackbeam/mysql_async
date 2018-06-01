@@ -19,10 +19,9 @@ use queryable::transaction::{Transaction, TransactionOptions};
 use std::fmt;
 use opts::Opts;
 use self::futures::*;
-use std::cell::Ref;
-use std::cell::RefCell;
-use std::cell::RefMut;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
 use tokio::reactor::Handle;
 
 
@@ -44,7 +43,7 @@ pub struct Inner {
 pub struct Pool {
     handle: Handle,
     opts: Opts,
-    inner: Rc<RefCell<Inner>>,
+    inner: Arc<Mutex<Inner>>,
     min: usize,
     max: usize,
 }
@@ -73,7 +72,7 @@ impl Pool {
         let pool = Pool {
             handle: handle.clone(),
             opts: opts,
-            inner: Rc::new(RefCell::new(Inner {
+            inner: Arc::new(Mutex::new(Inner {
                 closed: false,
                 new: Vec::with_capacity(pool_min),
                 idle: Vec::new(),
@@ -175,12 +174,12 @@ impl Pool {
         }
     }
 
-    fn inner_ref(&self) -> Ref<Inner> {
-        self.inner.borrow()
+    fn inner_ref(&self) -> MutexGuard<Inner> {
+        self.inner.lock().unwrap()
     }
 
-    fn inner_mut(&mut self) -> RefMut<Inner> {
-        self.inner.borrow_mut()
+    fn inner_mut(&mut self) -> MutexGuard<Inner> {
+        self.inner.lock().unwrap()
     }
 
     /// Will manage lifetime of futures stored in a pool.
@@ -345,27 +344,27 @@ mod test {
     use lib_futures::Future;
     use queryable::Queryable;
     use test_misc::DATABASE_URL;
-    use tokio::reactor::Core;
+    use tokio::runtime::Runtime;
 
     #[test]
     fn should_connect() {
-        let mut lp = Core::new().unwrap();
+        let runtime = Runtime::new().unwrap();
 
-        let pool = Pool::new(&**DATABASE_URL, &lp.handle());
+        let pool = Pool::new(&**DATABASE_URL, runtime.reactor());
         let fut = pool.get_conn()
             .and_then(|conn| conn.ping().map(|_| ()))
             .and_then(|_| pool.disconnect());
 
-        lp.run(fut).unwrap();
+        fut.wait().unwrap();
     }
 
     #[test]
     fn should_start_transaction() {
-        let mut lp = Core::new().unwrap();
+        let runtime = Runtime::new().unwrap();
 
         let pool = Pool::new(
             format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL),
-            &lp.handle(),
+            runtime.reactor(),
         );
         let fut = pool.get_conn()
             .and_then(|conn| conn.drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)"))
@@ -390,16 +389,16 @@ mod test {
                     .and_then(move |_| pool.disconnect())
             });
 
-        lp.run(fut).unwrap();
+        fut.wait().unwrap();
     }
 
     #[test]
     fn should_hold_bounds() {
-        let mut lp = Core::new().unwrap();
+        let runtime = Runtime::new().unwrap();
 
         let pool = Pool::new(
             format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL),
-            &lp.handle(),
+            runtime.reactor(),
         );
         let pool_clone = pool.clone();
         let fut = pool.get_conn()
@@ -428,25 +427,26 @@ mod test {
                 pool.disconnect()
             });
 
-        lp.run(fut).unwrap();
+        fut.wait().unwrap();
     }
 
     #[cfg(feature = "nightly")]
     mod bench {
         use test;
         use conn::pool::Pool;
-        use tokio::reactor::Core;
+        use tokio::runtime::Runtime;
         use lib_futures::Future;
         use test_misc::DATABASE_URL;
+        use queryable::Queryable;
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
-            let mut lp = Core::new().unwrap();
-            let pool = Pool::new(&**DATABASE_URL, &lp.handle());
+            let runtime = Runtime::new().unwrap();
+            let pool = Pool::new(&**DATABASE_URL, runtime.reactor());
 
             bencher.iter(|| {
                 let fut = pool.get_conn().and_then(|conn| conn.ping());
-                lp.run(fut).unwrap();
+                fut.wait().unwrap();
             })
         }
     }

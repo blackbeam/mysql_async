@@ -20,20 +20,20 @@ pub mod builtin;
 /// ```rust
 /// # extern crate futures;
 /// # extern crate mysql_async as my;
-/// # extern crate tokio_core as tokio;
+/// # extern crate tokio;
 /// # extern crate tokio_io;
 ///
 /// # use futures::Future;
 /// # use my::prelude::*;
-/// # use tokio::reactor::Core;
+/// # use tokio::runtime::Runtime;
 /// # use tokio_io::AsyncRead;
 /// # use std::env;
 /// # fn main() {
 /// struct ExampleHandler(&'static [u8]);
 ///
 /// impl LocalInfileHandler for ExampleHandler {
-///     fn handle(&self, _: &[u8]) -> Box<Future<Item=Box<AsyncRead>, Error=my::errors::Error>> {
-///         Box::new(futures::future::ok(Box::new(self.0) as Box<AsyncRead>))
+///     fn handle(&self, _: &[u8]) -> Box<Future<Item=Box<AsyncRead + Send>, Error=my::errors::Error> + Send> {
+///         Box::new(futures::future::ok(Box::new(self.0) as Box<AsyncRead + Send>))
 ///     }
 /// }
 ///
@@ -47,12 +47,12 @@ pub mod builtin;
 /// #     "mysql://root:password@127.0.0.1:3307/mysql".into()
 /// # };
 ///
-/// let mut lp = Core::new().unwrap();
+/// let runtime = Runtime::new().unwrap();
 ///
 /// let mut opts = my::OptsBuilder::from_opts(&*database_url);
 /// opts.local_infile_handler(Some(ExampleHandler(b"foobar")));
 ///
-/// let pool = my::Pool::new(opts, &lp.handle());
+/// let pool = my::Pool::new(opts, runtime.reactor());
 ///
 /// let future = pool.get_conn()
 ///     .and_then(|conn| conn.drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);"))
@@ -65,13 +65,13 @@ pub mod builtin;
 ///     })
 ///     .and_then(|_| pool.disconnect());
 ///
-/// lp.run(future).unwrap();
+/// future.wait().unwrap();
 /// # }
 /// ```
 pub trait LocalInfileHandler: Sync + Send {
     /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
     /// query.
-    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead>>;
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead + Send>>;
 }
 
 /// Object used to wrap `T: LocalInfileHandler` inside of Opts.

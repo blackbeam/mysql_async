@@ -19,10 +19,11 @@ futures = "0.1"
 mio = "0.6"
 mysql_common = "0.5"
 native-tls = { version = "0.1", optional = true }
+net2 = "0.2"
 regex = "0.2"
 serde = "1"
 serde_json = "1"
-tokio-core = "0.1"
+tokio = "0.1"
 tokio-io = "0.1"
 tokio-tls = { version = "0.1", optional = true }
 twox-hash = "1"

@@ -23,12 +23,12 @@
 //! extern crate futures;
 //! #[macro_use]
 //! extern crate mysql_async as my;
-//! extern crate tokio_core as tokio;
+//! extern crate tokio;
 //! // ...
 //!
 //! use futures::Future;
 //! use my::prelude::*;
-//! use tokio::reactor::Core;
+//! use tokio::runtime::Runtime;
 //! # use std::env;
 //!
 //! #[derive(Debug, PartialEq, Eq, Clone)]
@@ -39,7 +39,7 @@
 //! }
 //!
 //! fn main() {
-//!     let mut lp = Core::new().unwrap();
+//!     let runtime = Runtime::new().unwrap();
 //!
 //!     let payments = vec![
 //!         Payment { customer_id: 1, amount: 2, account_name: None },
@@ -59,7 +59,7 @@
 //!     #     "mysql://root:password@127.0.0.1:3307/mysql".into()
 //!     # };
 //!
-//!     let pool = my::Pool::new(database_url, &lp.handle());
+//!     let pool = my::Pool::new(database_url, runtime.reactor());
 //!     let future = pool.get_conn().and_then(|conn| {
 //!         // Create temporary table
 //!         conn.drop_query(
@@ -101,14 +101,14 @@
 //!         pool.disconnect().map(|_| payments)
 //!     });
 //!
-//!     let loaded_payments = lp.run(future).unwrap();
+//!     let loaded_payments = future.wait().unwrap();
 //!
 //!     assert_eq!(loaded_payments, payments);
 //! }
 //! ```
 
 #![recursion_limit = "1024"]
-#![cfg_attr(feature = "nightly", feature(test, const_fn, drop_types_in_const))]
+#![cfg_attr(feature = "nightly", feature(test, const_fn))]
 
 #[cfg(feature = "nightly")]
 extern crate test;
@@ -127,10 +127,11 @@ extern crate mio;
 extern crate mysql_common as myc;
 #[cfg(feature = "ssl")]
 extern crate native_tls;
+extern crate net2;
 extern crate regex;
 extern crate serde;
 extern crate serde_json;
-extern crate tokio_core as tokio;
+extern crate tokio;
 extern crate tokio_io;
 #[cfg(feature = "ssl")]
 extern crate tokio_tls;
@@ -212,7 +213,7 @@ mod local_infile_handler;
 mod opts;
 mod queryable;
 
-pub type BoxFuture<T> = Box<lib_futures::Future<Item = T, Error = errors::Error>>;
+pub type BoxFuture<T> = Box<lib_futures::Future<Item = T, Error = errors::Error> + Send>;
 
 #[doc(inline)]
 pub use self::conn::Conn;

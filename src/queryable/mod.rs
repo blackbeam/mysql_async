@@ -28,7 +28,7 @@ pub mod query_result;
 pub mod stmt;
 pub mod transaction;
 
-pub trait Protocol {
+pub trait Protocol: Send {
     fn read_result_set_row(packet: &RawPacket, columns: Arc<Vec<Column>>) -> Result<Row>;
     fn is_last_result_set_packet<T>(conn_like: &T, packet: &RawPacket) -> bool
     where
@@ -183,7 +183,8 @@ where
     fn batch_exec<Q, I, P>(self, query: Q, params_iter: I) -> BoxFuture<Self>
     where
         Q: AsRef<str>,
-        I: IntoIterator<Item = P> + 'static,
+        I: IntoIterator<Item = P> + Send + 'static,
+        I::IntoIter: Send,
         Params: From<P>,
         P: 'static,
     {

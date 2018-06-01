@@ -235,7 +235,7 @@ where
     /// One can use `QueryResult::is_empty` to make sure that there is no more result sets.
     pub fn collect<R>(self) -> BoxFuture<(Self, Vec<R>)>
     where
-        R: FromRow + 'static,
+        R: FromRow + Send + 'static,
     {
         let fut = self.reduce(Vec::new(), |mut acc, row| {
             acc.push(FromRow::from_row(row));
@@ -248,7 +248,7 @@ where
     /// It will resolve to a pair of wrapped `Queryable` and collected result set.
     pub fn collect_and_drop<R>(self) -> BoxFuture<(T, Vec<R>)>
     where
-        R: FromRow + 'static,
+        R: FromRow + Send + 'static,
     {
         let fut = self.collect().and_then(|(this, output)| {
             (this.drop_result(), ok(output))

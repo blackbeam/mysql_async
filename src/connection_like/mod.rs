@@ -53,7 +53,7 @@ pub enum StmtCacheResult {
     NotCached(u32),
 }
 
-pub trait ConnectionLikeWrapper {
+pub trait ConnectionLikeWrapper: Send {
     type ConnLike: ConnectionLike;
 
     fn take_stream(self) -> (Streamless<Self>, io::Stream)
@@ -178,7 +178,7 @@ where
     }
 }
 
-pub trait ConnectionLike {
+pub trait ConnectionLike: Send {
     fn take_stream(self) -> (Streamless<Self>, io::Stream)
     where
         Self: Sized;
