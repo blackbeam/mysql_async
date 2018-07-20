@@ -18,7 +18,7 @@ use lib_futures::future::{Future, IntoFuture, Loop, loop_fn, ok};
 use lib_futures::future::Either::*;
 use local_infile_handler::LocalInfileHandler;
 use myc::packets::{parse_handshake_packet, HandshakeResponse, SslRequest};
-use myc::scramble::scramble;
+use myc::scramble;
 use opts::Opts;
 use queryable::{BinaryProtocol, Queryable, TextProtocol};
 use queryable::query_result;
@@ -56,7 +56,7 @@ pub struct Conn {
     last_io: SteadyTime,
     wait_timeout: u32,
     stmt_cache: StmtCache,
-    scramble: Option<[u8; 20]>,
+    scramble: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for Conn {
@@ -157,16 +157,17 @@ impl Conn {
         let fut = self.read_packet().and_then(move |(mut conn, packet)| {
             parse_handshake_packet(&*packet.0)
                 .map(|handshake| {
+                    let nonce = {
+                        let mut nonce = Vec::from(handshake.scramble_1_ref());
+                        nonce.extend_from_slice(handshake.scramble_2_ref().unwrap_or(&[][..]));
+                        nonce
+                    };
                     conn.capabilities = handshake.capabilities() & conn.opts.get_capabilities();
                     conn.version = handshake.server_version_parsed().unwrap_or((0, 0, 0));
                     conn.id = handshake.connection_id();
                     conn.status = handshake.status_flags();
                     conn.scramble = conn.opts.get_pass().and_then(|pass| {
-                        scramble(
-                            handshake.scramble_1_ref(),
-                            handshake.scramble_2_ref(),
-                            pass.as_ref(),
-                        )
+                        scramble::scramble_native(&*nonce, pass.as_ref())
                     });
                     conn
                 })
@@ -199,8 +200,13 @@ impl Conn {
     }
 
     fn do_handshake_response(self) -> BoxFuture<Conn> {
+        let scramble = self.scramble.as_ref().map(|scramble| {
+            let mut out = [0; 20];
+            (&mut out[..]).copy_from_slice(&*scramble);
+            out
+        });
         let handshake_response = HandshakeResponse::new(
-            &self.scramble,
+            &scramble,
             self.version,
             self.opts.get_user().as_ref().map(|x| x.as_ref()),
             self.opts.get_db_name().as_ref().map(|x| x.as_ref()),
