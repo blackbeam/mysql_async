@@ -6,10 +6,10 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use BoxFuture;
 use std::fmt;
 use std::sync::Arc;
 use tokio_io::AsyncRead;
+use BoxFuture;
 
 pub mod builtin;
 
@@ -65,7 +65,15 @@ pub mod builtin;
 ///     })
 ///     .and_then(|_| pool.disconnect());
 ///
-/// lp.run(future).unwrap();
+/// match lp.run(future) {
+///     Ok(_) => {},
+///     Err(err) => match err.kind() {
+///         my::errors::ErrorKind::Server(_, 1148, _) => {
+///             // The used command is not allowed with this MySQL version
+///         },
+///         _ => Err(err).unwrap(),
+///     }
+/// }
 /// # }
 /// ```
 pub trait LocalInfileHandler: Sync + Send {
@@ -90,8 +98,8 @@ impl LocalInfileHandlerObject {
 
 impl PartialEq for LocalInfileHandlerObject {
     fn eq(&self, other: &LocalInfileHandlerObject) -> bool {
-        self.0.as_ref() as *const LocalInfileHandler ==
-            other.0.as_ref() as *const LocalInfileHandler
+        self.0.as_ref() as *const LocalInfileHandler
+            == other.0.as_ref() as *const LocalInfileHandler
     }
 }
 

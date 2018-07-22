@@ -13,7 +13,6 @@ use lib_futures::Async::Ready;
 use lib_futures::Future;
 use lib_futures::Poll;
 
-
 /// Future that disconnects this pool from server and resolves to `()`.
 ///
 /// Active connections taken from this pool should be disconnected manually.

@@ -6,11 +6,11 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use myc::params::MissingNamedParameterError;
 use myc::packets::ErrPacket;
-use Row;
+use myc::params::MissingNamedParameterError;
 use std::io;
 use url;
+use Row;
 use Value;
 
 error_chain! {
@@ -20,6 +20,13 @@ error_chain! {
     }
 
     errors {
+        AuthSwitch {
+            description("Auth switch is not implemented")
+        }
+        UnknownAuthPlugin(name: String) {
+            description("Unknown authentication plugin")
+            display("Unknown authentication plugin: {}", name)
+        }
         UnexpectedPacket { // TODO: Add packet data here?
             description("Unexpected packet")
         }

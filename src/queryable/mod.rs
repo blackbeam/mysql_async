@@ -6,23 +6,23 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use BoxFuture;
-use Column;
-use Conn;
-use Params;
-use Row;
+use self::query_result::QueryResult;
+use self::stmt::Stmt;
+use self::transaction::{Transaction, TransactionOptions};
 use connection_like::ConnectionLike;
 use consts::Command;
 use errors::*;
 use lib_futures::future::Future;
 use myc::packets::{parse_ok_packet, RawPacket};
 use myc::row::new_row;
-use myc::value::{read_text_values, read_bin_values};
+use myc::value::{read_bin_values, read_text_values};
 use prelude::FromRow;
-use self::query_result::QueryResult;
-use self::stmt::Stmt;
-use self::transaction::{Transaction, TransactionOptions};
 use std::sync::Arc;
+use BoxFuture;
+use Column;
+use Conn;
+use Params;
+use Row;
 
 pub mod query_result;
 pub mod stmt;
@@ -103,29 +103,28 @@ where
     {
         let fut = self.query(query)
             .and_then(|result| result.collect_and_drop::<Row>())
-            .map(|(this, mut rows)| if rows.len() > 1 {
-                (this, Some(FromRow::from_row(rows.swap_remove(0))))
-            } else {
-                (this, rows.pop().map(FromRow::from_row))
+            .map(|(this, mut rows)| {
+                if rows.len() > 1 {
+                    (this, Some(FromRow::from_row(rows.swap_remove(0))))
+                } else {
+                    (this, rows.pop().map(FromRow::from_row))
+                }
             });
         Box::new(fut)
     }
 
     /// Returns future that performs query. Result will be dropped.
     fn drop_query<Q: AsRef<str>>(self, query: Q) -> BoxFuture<Self> {
-        let fut = self
-            .query(query)
-            .and_then(|result| result.drop_result());
+        let fut = self.query(query).and_then(|result| result.drop_result());
         Box::new(fut)
     }
 
     /// Returns future that prepares statement.
     fn prepare<Q: AsRef<str>>(self, query: Q) -> BoxFuture<Stmt<Self>> {
-        let fut = self.prepare_stmt(query).map(|(this,
-          inner_stmt,
-          stmt_cache_result)| {
-            stmt::new(this, inner_stmt, stmt_cache_result)
-        });
+        let fut = self.prepare_stmt(query)
+            .map(|(this, inner_stmt, stmt_cache_result)| {
+                stmt::new(this, inner_stmt, stmt_cache_result)
+            });
         Box::new(fut)
     }
 
@@ -155,13 +154,14 @@ where
         P: Into<Params>,
         R: FromRow,
     {
-
         let fut = self.prep_exec(query, params)
             .and_then(|result| result.collect_and_drop::<Row>())
-            .map(|(this, mut rows)| if rows.len() > 1 {
-                (this, Some(FromRow::from_row(rows.swap_remove(0))))
-            } else {
-                (this, rows.pop().map(FromRow::from_row))
+            .map(|(this, mut rows)| {
+                if rows.len() > 1 {
+                    (this, Some(FromRow::from_row(rows.swap_remove(0))))
+                } else {
+                    (this, rows.pop().map(FromRow::from_row))
+                }
             });
         Box::new(fut)
     }
@@ -172,9 +172,8 @@ where
         Q: AsRef<str>,
         P: Into<Params>,
     {
-        let fut = self.prep_exec(query, params).and_then(
-            |result| result.drop_result(),
-        );
+        let fut = self.prep_exec(query, params)
+            .and_then(|result| result.drop_result());
         Box::new(fut)
     }
 

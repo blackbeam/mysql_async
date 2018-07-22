@@ -6,15 +6,15 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use BoxFuture;
-use Row;
+use super::QueryResult;
 use connection_like::ConnectionLike;
 use errors::*;
 use lib_futures::Async::Ready;
 use lib_futures::{Future, Poll};
-use std::mem;
-use super::QueryResult;
 use queryable::Protocol;
+use std::mem;
+use BoxFuture;
+use Row;
 
 pub struct Map<T, P, F, U> {
     fut: BoxFuture<(QueryResult<T, P>, Option<Row>)>,
@@ -29,7 +29,11 @@ where
     T: ConnectionLike + Sized + 'static,
 {
     pub fn new(query_result: QueryResult<T, P>, fun: F) -> Map<T, P, F, U> {
-        Map { fut: query_result.get_row(), acc: Vec::new(), fun }
+        Map {
+            fut: query_result.get_row(),
+            acc: Vec::new(),
+            fun,
+        }
     }
 }
 
@@ -51,9 +55,10 @@ where
                     self.acc.push(val);
                 }
                 None => {
-                    return Ok(Ready(
-                        (query_result, mem::replace(&mut self.acc, Vec::new())),
-                    ));
+                    return Ok(Ready((
+                        query_result,
+                        mem::replace(&mut self.acc, Vec::new()),
+                    )));
                 }
             }
             self.fut = query_result.get_row();

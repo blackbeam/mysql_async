@@ -12,13 +12,13 @@ use errors::*;
 use local_infile_handler::{LocalInfileHandler, LocalInfileHandlerObject};
 
 use std::borrow::Cow;
-use std::path::Path;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use url::Url;
 use url::percent_encoding::percent_decode;
+use url::Url;
 
 const DEFAULT_MIN_CONNS: usize = 10;
 const DEFAULT_MAX_CONNS: usize = 100;
@@ -56,7 +56,10 @@ impl SslOpts {
     }
 
     /// Sets path to a der certificate of the root that connector will trust.
-    pub fn set_root_cert_path<T: Into<Cow<'static, Path>>>(&mut self, root_cert_path: Option<T>) -> &mut Self {
+    pub fn set_root_cert_path<T: Into<Cow<'static, Path>>>(
+        &mut self,
+        root_cert_path: Option<T>,
+    ) -> &mut Self {
         self.root_cert_path = root_cert_path.map(Into::into);
         self
     }
@@ -170,18 +173,18 @@ impl Opts {
     }
 
     /// User (defaults to `None`).
-    pub fn get_user(&self) -> Option<&String> {
-        self.user.as_ref()
+    pub fn get_user(&self) -> Option<&str> {
+        self.user.as_ref().map(AsRef::as_ref)
     }
 
     /// Password (defaults to `None`).
-    pub fn get_pass(&self) -> Option<&String> {
-        self.pass.as_ref()
+    pub fn get_pass(&self) -> Option<&str> {
+        self.pass.as_ref().map(AsRef::as_ref)
     }
 
     /// Database name (defaults to `None`).
-    pub fn get_db_name(&self) -> Option<&String> {
-        self.db_name.as_ref()
+    pub fn get_db_name(&self) -> Option<&str> {
+        self.db_name.as_ref().map(AsRef::as_ref)
     }
 
     /// Commands to execute on each new database connection.
@@ -233,15 +236,16 @@ impl Opts {
     }
 
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
-        let mut out = CapabilityFlags::CLIENT_PROTOCOL_41 |
-            CapabilityFlags::CLIENT_SECURE_CONNECTION |
-            CapabilityFlags::CLIENT_LONG_PASSWORD |
-            CapabilityFlags::CLIENT_TRANSACTIONS |
-            CapabilityFlags::CLIENT_LOCAL_FILES |
-            CapabilityFlags::CLIENT_MULTI_STATEMENTS |
-            CapabilityFlags::CLIENT_MULTI_RESULTS |
-            CapabilityFlags::CLIENT_PS_MULTI_RESULTS |
-            CapabilityFlags::CLIENT_DEPRECATE_EOF;
+        let mut out = CapabilityFlags::CLIENT_PROTOCOL_41
+            | CapabilityFlags::CLIENT_SECURE_CONNECTION
+            | CapabilityFlags::CLIENT_LONG_PASSWORD
+            | CapabilityFlags::CLIENT_TRANSACTIONS
+            | CapabilityFlags::CLIENT_LOCAL_FILES
+            | CapabilityFlags::CLIENT_MULTI_STATEMENTS
+            | CapabilityFlags::CLIENT_MULTI_RESULTS
+            | CapabilityFlags::CLIENT_PS_MULTI_RESULTS
+            | CapabilityFlags::CLIENT_DEPRECATE_EOF
+            | CapabilityFlags::CLIENT_PLUGIN_AUTH;
 
         if self.db_name.is_some() {
             out |= CapabilityFlags::CLIENT_CONNECT_WITH_DB;
@@ -450,18 +454,16 @@ fn get_opts_db_name_from_url(url: &Url) -> Option<String> {
 fn from_url_basic(url_str: &str) -> Result<(Opts, Vec<(String, String)>)> {
     let url = Url::parse(url_str)?;
     if url.scheme() != "mysql" {
-        return Err(
-            ErrorKind::UrlUnsupportedScheme(url.scheme().to_string()).into(),
-        );
+        return Err(ErrorKind::UrlUnsupportedScheme(url.scheme().to_string()).into());
     }
     if url.cannot_be_a_base() || !url.has_host() {
         return Err(ErrorKind::UrlInvalid.into());
     }
     let user = get_opts_user_from_url(&url);
     let pass = get_opts_pass_from_url(&url);
-    let ip_or_hostname = url.host_str().map(String::from).unwrap_or(
-        "127.0.0.1".into(),
-    );
+    let ip_or_hostname = url.host_str()
+        .map(String::from)
+        .unwrap_or("127.0.0.1".into());
     let tcp_port = url.port().unwrap_or(3306);
     let db_name = get_opts_db_name_from_url(&url);
 
@@ -484,29 +486,17 @@ fn from_url(url: &str) -> Result<Opts> {
         if key == "pool_min" {
             match usize::from_str(&*value) {
                 Ok(value) => opts.pool_min = value,
-                _ => {
-                    return Err(
-                        ErrorKind::UrlInvalidParamValue("pool_min".into(), value).into(),
-                    )
-                }
+                _ => return Err(ErrorKind::UrlInvalidParamValue("pool_min".into(), value).into()),
             }
         } else if key == "pool_max" {
             match usize::from_str(&*value) {
                 Ok(value) => opts.pool_max = value,
-                _ => {
-                    return Err(
-                        ErrorKind::UrlInvalidParamValue("pool_max".into(), value).into(),
-                    )
-                }
+                _ => return Err(ErrorKind::UrlInvalidParamValue("pool_max".into(), value).into()),
             }
         } else if key == "conn_ttl" {
             match u32::from_str(&*value) {
                 Ok(value) => opts.conn_ttl = Some(value),
-                _ => {
-                    return Err(
-                        ErrorKind::UrlInvalidParamValue("conn_ttl".into(), value).into(),
-                    )
-                }
+                _ => return Err(ErrorKind::UrlInvalidParamValue("conn_ttl".into(), value).into()),
             }
         } else if key == "tcp_keepalive" {
             match u32::from_str(&*value) {
@@ -521,9 +511,7 @@ fn from_url(url: &str) -> Result<Opts> {
             match bool::from_str(&*value) {
                 Ok(value) => opts.tcp_nodelay = value,
                 _ => {
-                    return Err(
-                        ErrorKind::UrlInvalidParamValue("tcp_nodelay".into(), value).into(),
-                    )
+                    return Err(ErrorKind::UrlInvalidParamValue("tcp_nodelay".into(), value).into())
                 }
             }
         } else if key == "stmt_cache_size" {
@@ -542,9 +530,7 @@ fn from_url(url: &str) -> Result<Opts> {
         }
     }
     if opts.pool_min > opts.pool_max {
-        return Err(
-            ErrorKind::InvalidPoolConstraints(opts.pool_min, opts.pool_max).into(),
-        );
+        return Err(ErrorKind::InvalidPoolConstraints(opts.pool_min, opts.pool_max).into());
     }
     Ok(opts)
 }

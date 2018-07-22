@@ -8,10 +8,10 @@
 
 use queryable::stmt::InnerStmt;
 use std::borrow::Borrow;
-use std::collections::{HashMap, VecDeque};
 use std::collections::hash_map::IntoIter;
 #[cfg(test)]
 use std::collections::vec_deque::Iter;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{BuildHasherDefault, Hash};
 use twox_hash::XxHash;
 
@@ -54,9 +54,9 @@ impl StmtCache {
         self.map.insert(key.clone(), value);
         self.order.push_back(key);
         if self.order.len() > self.cap {
-            self.order.pop_front().and_then(
-                |stmt| self.map.remove(&stmt),
-            )
+            self.order
+                .pop_front()
+                .and_then(|stmt| self.map.remove(&stmt))
         } else {
             None
         }

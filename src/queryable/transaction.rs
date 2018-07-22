@@ -6,15 +6,15 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use BoxFuture;
-use connection_like::{ConnectionLike, ConnectionLikeWrapper};
 use connection_like::streamless::Streamless;
+use connection_like::{ConnectionLike, ConnectionLikeWrapper};
 use errors::*;
 use io;
-use lib_futures::future::{Either, Future, IntoFuture, err, ok};
 use lib_futures::future::Either::*;
+use lib_futures::future::{err, ok, Either, Future, IntoFuture};
 use queryable::Queryable;
 use std::fmt;
+use BoxFuture;
 
 /// Options for transaction
 #[derive(Eq, PartialEq, Debug, Hash, Clone, Default)]
@@ -99,7 +99,11 @@ where
 
 impl<T: Queryable + ConnectionLike> Transaction<T> {
     fn new(conn_like: T, options: TransactionOptions) -> BoxFuture<Transaction<T>> {
-        let TransactionOptions { consistent_snapshot, isolation_level, readonly } = options;
+        let TransactionOptions {
+            consistent_snapshot,
+            isolation_level,
+            readonly,
+        } = options;
 
         if conn_like.get_in_transaction() {
             return Box::new(err(ErrorKind::NestedTransaction.into()));
@@ -119,19 +123,23 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
         };
 
         let fut = fut.into_future()
-            .and_then(move |conn_like| if let Some(readonly) = readonly {
-                if readonly {
-                    A(A(conn_like.drop_query("SET TRANSACTION READ ONLY")))
+            .and_then(move |conn_like| {
+                if let Some(readonly) = readonly {
+                    if readonly {
+                        A(A(conn_like.drop_query("SET TRANSACTION READ ONLY")))
+                    } else {
+                        A(B(conn_like.drop_query("SET TRANSACTION READ WRITE")))
+                    }
                 } else {
-                    A(B(conn_like.drop_query("SET TRANSACTION READ WRITE")))
+                    B(ok(conn_like))
                 }
-            } else {
-                B(ok(conn_like))
             })
-            .and_then(move |conn_like| if consistent_snapshot {
-                conn_like.drop_query("START TRANSACTION WITH CONSISTENT SNAPSHOT")
-            } else {
-                conn_like.drop_query("START TRANSACTION")
+            .and_then(move |conn_like| {
+                if consistent_snapshot {
+                    conn_like.drop_query("START TRANSACTION WITH CONSISTENT SNAPSHOT")
+                } else {
+                    conn_like.drop_query("START TRANSACTION")
+                }
             })
             .map(|mut conn_like| {
                 conn_like.set_in_transaction(true);

@@ -6,25 +6,24 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use BoxFuture;
+use self::futures::*;
 use conn::Conn;
 use errors::*;
-use lib_futures::Async;
-use lib_futures::Async::Ready;
-use lib_futures::Async::NotReady;
-use lib_futures::Future;
 use lib_futures::task::{self, Task};
-use queryable::Queryable;
-use queryable::transaction::{Transaction, TransactionOptions};
-use std::fmt;
+use lib_futures::Async;
+use lib_futures::Async::NotReady;
+use lib_futures::Async::Ready;
+use lib_futures::Future;
 use opts::Opts;
-use self::futures::*;
+use queryable::transaction::{Transaction, TransactionOptions};
+use queryable::Queryable;
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::cell::RefMut;
+use std::fmt;
 use std::rc::Rc;
 use tokio::reactor::Handle;
-
+use BoxFuture;
 
 pub mod futures;
 
@@ -97,9 +96,8 @@ impl Pool {
 
     /// Shortcut for `get_conn` followed by `start_transaction`.
     pub fn start_transaction(&self, options: TransactionOptions) -> BoxFuture<Transaction<Conn>> {
-        let fut = self.get_conn().and_then(|conn| {
-            Queryable::start_transaction(conn, options)
-        });
+        let fut = self.get_conn()
+            .and_then(|conn| Queryable::start_transaction(conn, options));
         Box::new(fut)
     }
 
@@ -120,8 +118,10 @@ impl Pool {
     /// Returns true if futures is in queue.
     fn in_queue(&self) -> bool {
         let inner = self.inner_ref();
-        let count = inner.new.len() + inner.disconnecting.len() + inner.dropping.len() +
-            inner.rollback.len();
+        let count = inner.new.len()
+            + inner.disconnecting.len()
+            + inner.dropping.len()
+            + inner.rollback.len();
         count > 0
     }
 
@@ -133,12 +133,14 @@ impl Pool {
         }
         while self.inner_ref().idle.len() > 0 {
             let conn = self.inner_mut().idle.pop();
-            let conn = conn.and_then(|mut conn| if conn.expired() {
-                self.inner_mut().disconnecting.push(conn.disconnect());
-                None
-            } else {
-                conn.pool = Some(self.clone());
-                Some(conn)
+            let conn = conn.and_then(|mut conn| {
+                if conn.expired() {
+                    self.inner_mut().disconnecting.push(conn.disconnect());
+                    None
+                } else {
+                    conn.pool = Some(self.clone());
+                    Some(conn)
+                }
             });
             if conn.is_some() {
                 self.inner_mut().ongoing += 1;
@@ -298,8 +300,12 @@ impl Pool {
 
     fn conn_count(&self) -> usize {
         let inner = self.inner_ref();
-        inner.new.len() + inner.idle.len() + inner.disconnecting.len() + inner.dropping.len()
-            + inner.rollback.len() + inner.ongoing
+        inner.new.len()
+            + inner.idle.len()
+            + inner.disconnecting.len()
+            + inner.dropping.len()
+            + inner.rollback.len()
+            + inner.ongoing
     }
 
     /// Will poll pool for connection.
@@ -340,12 +346,12 @@ impl Drop for Conn {
 
 #[cfg(test)]
 mod test {
-    use TransactionOptions;
     use conn::pool::Pool;
     use lib_futures::Future;
     use queryable::Queryable;
     use test_misc::DATABASE_URL;
     use tokio::reactor::Core;
+    use TransactionOptions;
 
     #[test]
     fn should_connect() {
@@ -409,14 +415,20 @@ mod test {
                 conn1.pool.as_mut().unwrap().handle_futures().unwrap();
                 assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().new.len(), 0);
                 assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().idle.len(), 0);
-                assert_eq!(conn2.pool.as_ref().unwrap().inner_ref().disconnecting.len(), 0);
+                assert_eq!(
+                    conn2.pool.as_ref().unwrap().inner_ref().disconnecting.len(),
+                    0
+                );
                 assert_eq!(conn2.pool.as_ref().unwrap().inner_ref().dropping.len(), 0);
                 new_conn
             })
             .and_then(|conn1| {
                 assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().new.len(), 0);
                 assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().idle.len(), 0);
-                assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().disconnecting.len(), 0);
+                assert_eq!(
+                    conn1.pool.as_ref().unwrap().inner_ref().disconnecting.len(),
+                    0
+                );
                 assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().dropping.len(), 0);
                 Ok(())
             })
@@ -433,11 +445,11 @@ mod test {
 
     #[cfg(feature = "nightly")]
     mod bench {
-        use test;
         use conn::pool::Pool;
-        use tokio::reactor::Core;
         use lib_futures::Future;
+        use test;
         use test_misc::DATABASE_URL;
+        use tokio::reactor::Core;
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {

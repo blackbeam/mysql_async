@@ -6,20 +6,20 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use BoxFuture;
-use lib_futures::{Future, IntoFuture, oneshot};
+use super::LocalInfileHandler;
+use errors::*;
+use lib_futures::{oneshot, Future, IntoFuture};
+use mio::{Evented, Poll, PollOpt, Ready, Registration, Token};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read};
-use mio::{Evented, Poll, PollOpt, Ready, Registration, Token};
 use std::path::PathBuf;
-use std::thread;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
-use errors::*;
-use std::collections::HashSet;
 use std::str::from_utf8;
-use super::LocalInfileHandler;
-use tokio::reactor::{Handle, Remote, PollEvented};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::thread;
+use tokio::reactor::{Handle, PollEvented, Remote};
 use tokio_io::AsyncRead;
+use BoxFuture;
 
 #[derive(Debug)]
 enum Message {
@@ -73,8 +73,7 @@ impl File {
                         to_main.send(Message::BufFilled(result)).unwrap();
                         set_readiness.set_readiness(Ready::readable()).unwrap();
                     }
-                    Ok(Message::Done) |
-                    Err(_) => {
+                    Ok(Message::Done) | Err(_) => {
                         break;
                     }
                     Ok(x) => panic!("Unexpected message for file io thread: {:?}", x),
@@ -94,21 +93,19 @@ impl File {
 impl Read for File {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.from_thread.try_recv() {
-            Ok(Message::BufFilled(data_buf)) => {
-                match data_buf {
-                    Ok(data_buf) => {
-                        self.waiting_for_readiness = false;
-                        if data_buf.len() == 0 && !buf.len() == 0 {
-                            let _ = self.to_thread.send(Message::Done);
-                        }
-                        (&data_buf[..]).read(buf)
-                    }
-                    Err(err) => {
+            Ok(Message::BufFilled(data_buf)) => match data_buf {
+                Ok(data_buf) => {
+                    self.waiting_for_readiness = false;
+                    if data_buf.len() == 0 && !buf.len() == 0 {
                         let _ = self.to_thread.send(Message::Done);
-                        Err(err)
                     }
+                    (&data_buf[..]).read(buf)
                 }
-            }
+                Err(err) => {
+                    let _ = self.to_thread.send(Message::Done);
+                    Err(err)
+                }
+            },
             Err(TryRecvError::Empty) => {
                 if !self.waiting_for_readiness {
                     self.waiting_for_readiness = true;
@@ -124,12 +121,10 @@ impl Read for File {
                 }
                 Err(io::ErrorKind::WouldBlock.into())
             }
-            Err(TryRecvError::Disconnected) => {
-                Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Read thread disconnected",
-                ))
-            }
+            Err(TryRecvError::Disconnected) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Read thread disconnected",
+            )),
             _ => panic!("Unexpected message"),
         }
     }
@@ -199,7 +194,7 @@ impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
                         .map(|poll_evented| Box::new(poll_evented) as Box<AsyncRead>)
                         .into_future();
                     Box::new(fut) as BoxFuture<Box<AsyncRead>>
-                },
+                }
                 None => {
                     let (tx, rx) = oneshot();
                     self.handle.spawn(|handle| {
@@ -207,8 +202,7 @@ impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
                         let _ = tx.send(poll_evented_res.map_err(Error::from));
                         Ok(())
                     });
-                    let fut = rx
-                        .map_err(|_| Error::from("Future Canceled"))
+                    let fut = rx.map_err(|_| Error::from("Future Canceled"))
                         .and_then(|r| r.into_future())
                         .map(|poll_evented| Box::new(poll_evented) as Box<AsyncRead>);
                     Box::new(fut) as BoxFuture<Box<AsyncRead>>

@@ -6,31 +6,31 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use BoxFuture;
-use Opts;
-use conn::named_params::parse_named_params;
-use consts::{CapabilityFlags, Command, StatusFlags};
-use errors::*;
-use io;
-use lib_futures::future::{Future, IntoFuture, Loop, err, ok, loop_fn};
-use lib_futures::future::Either::*;
-use local_infile_handler::LocalInfileHandler;
-use myc::io::ReadMysqlExt;
-use myc::packets::{Column, RawPacket, column_from_payload, parse_local_infile_packet};
-use queryable::Protocol;
-use queryable::query_result::{self, QueryResult};
-use queryable::stmt::InnerStmt;
 use self::read_packet::ReadPacket;
 use self::streamless::Streamless;
 use self::write_packet::WritePacket;
-use std::sync::Arc;
+use conn::named_params::parse_named_params;
 use conn::stmt_cache::StmtCache;
+use consts::{CapabilityFlags, Command, StatusFlags};
+use errors::*;
+use io;
+use lib_futures::future::Either::*;
+use lib_futures::future::{err, loop_fn, ok, Future, IntoFuture, Loop};
+use local_infile_handler::LocalInfileHandler;
+use myc::io::ReadMysqlExt;
+use myc::packets::{column_from_payload, parse_local_infile_packet, Column, RawPacket};
+use queryable::query_result::{self, QueryResult};
+use queryable::stmt::InnerStmt;
+use queryable::Protocol;
+use std::sync::Arc;
 use tokio_io::io::read;
+use BoxFuture;
+use Opts;
 
 pub mod read_packet;
 pub mod streamless {
-    use io::Stream;
     use super::ConnectionLike;
+    use io::Stream;
 
     pub struct Streamless<T>(T);
 
@@ -214,9 +214,8 @@ pub trait ConnectionLike {
     {
         let fut = if self.get_opts().get_stmt_cache_size() > 0 {
             if let Some(old_stmt) = self.stmt_cache_mut().put(query, stmt.clone()) {
-                A(self.close_stmt(old_stmt.statement_id).map(|this| {
-                    (this, StmtCacheResult::Cached)
-                }))
+                A(self.close_stmt(old_stmt.statement_id)
+                    .map(|this| (this, StmtCacheResult::Cached)))
             } else {
                 B(ok((self, StmtCacheResult::Cached)))
             }
@@ -248,16 +247,16 @@ pub trait ConnectionLike {
             return Box::new(ok((self, Vec::new())));
         }
         let fut = loop_fn((Vec::new(), n - 1, self), |(mut acc, num, conn_like)| {
-            conn_like.read_packet().and_then(
-                move |(conn_like, packet)| {
+            conn_like
+                .read_packet()
+                .and_then(move |(conn_like, packet)| {
                     acc.push(packet);
                     if num == 0 {
                         Ok(Loop::Break((conn_like, acc)))
                     } else {
                         Ok(Loop::Continue((acc, num - 1, conn_like)))
                     }
-                },
-            )
+                })
         });
         Box::new(fut)
     }
@@ -277,9 +276,9 @@ pub trait ConnectionLike {
                     let fut = self.write_command_data(Command::COM_STMT_PREPARE, &*query)
                         .and_then(|this| this.read_packet())
                         .and_then(|(this, packet)| {
-                            InnerStmt::new(&*packet.0, named_params).into_future().map(
-                                |inner_stmt| (this, inner_stmt),
-                            )
+                            InnerStmt::new(&*packet.0, named_params)
+                                .into_future()
+                                .map(|inner_stmt| (this, inner_stmt))
                         })
                         .and_then(|(this, mut inner_stmt)| {
                             this.read_packets(inner_stmt.num_params as usize)
@@ -302,17 +301,19 @@ pub trait ConnectionLike {
                                     }
                                     B(ok((this, inner_stmt)))
                                 })
-                                .and_then(|(this, inner_stmt)| if inner_stmt.num_params > 0 {
-                                    if this.get_capabilities().contains(
-                                        CapabilityFlags::CLIENT_DEPRECATE_EOF,
-                                    )
-                                    {
-                                        A(ok((this, inner_stmt)))
+                                .and_then(|(this, inner_stmt)| {
+                                    if inner_stmt.num_params > 0 {
+                                        if this.get_capabilities()
+                                            .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
+                                        {
+                                            A(ok((this, inner_stmt)))
+                                        } else {
+                                            B(this.read_packet()
+                                                .map(|(this, _)| (this, inner_stmt)))
+                                        }
                                     } else {
-                                        B(this.read_packet().map(|(this, _)| (this, inner_stmt)))
+                                        A(ok((this, inner_stmt)))
                                     }
-                                } else {
-                                    A(ok((this, inner_stmt)))
                                 })
                         })
                         .and_then(|(this, mut inner_stmt)| {
@@ -336,24 +337,26 @@ pub trait ConnectionLike {
                                     }
                                     B(ok((this, inner_stmt)))
                                 })
-                                .and_then(|(this, inner_stmt)| if inner_stmt.num_columns > 0 {
-                                    if this.get_capabilities().contains(
-                                        CapabilityFlags::CLIENT_DEPRECATE_EOF,
-                                    )
-                                    {
-                                        A(ok((this, inner_stmt)))
+                                .and_then(|(this, inner_stmt)| {
+                                    if inner_stmt.num_columns > 0 {
+                                        if this.get_capabilities()
+                                            .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
+                                        {
+                                            A(ok((this, inner_stmt)))
+                                        } else {
+                                            B(this.read_packet()
+                                                .map(|(this, _)| (this, inner_stmt)))
+                                        }
                                     } else {
-                                        B(this.read_packet().map(|(this, _)| (this, inner_stmt)))
+                                        A(ok((this, inner_stmt)))
                                     }
-                                } else {
-                                    A(ok((this, inner_stmt)))
                                 })
                         })
                         .and_then(|(this, inner_stmt)| {
-                            this.cache_stmt(query, &inner_stmt).map(|(this,
-                              stmt_cache_result)| {
-                                (this, inner_stmt, stmt_cache_result)
-                            })
+                            this.cache_stmt(query, &inner_stmt)
+                                .map(|(this, stmt_cache_result)| {
+                                    (this, inner_stmt, stmt_cache_result)
+                                })
                         });
                     Box::new(fut)
                 }
@@ -381,8 +384,8 @@ pub trait ConnectionLike {
         P: Protocol + 'static,
         Self: Sized + 'static,
     {
-        let fut = self.read_packet().and_then(
-            |(this, packet)| match packet.0[0] {
+        let fut = self.read_packet()
+            .and_then(|(this, packet)| match packet.0[0] {
                 0x00 => A(A(ok(query_result::new(this, None, cached)))),
                 0xFB => {
                     let fut = parse_local_infile_packet(&*packet.0)
@@ -414,10 +417,12 @@ pub trait ConnectionLike {
                                             ok(count),
                                         )
                                     })
-                                    .map(|(this, buf, reader, count)| if count > 0 {
-                                        Loop::Continue((this, buf, reader))
-                                    } else {
-                                        Loop::Break(this)
+                                    .map(|(this, buf, reader, count)| {
+                                        if count > 0 {
+                                            Loop::Continue((this, buf, reader))
+                                        } else {
+                                            Loop::Break(this)
+                                        }
                                     })
                             }).and_then(|this| this.read_packet())
                                 .map(|(this, _)| query_result::new(this, None, cached))
@@ -436,13 +441,14 @@ pub trait ConnectionLike {
                                 .map(|packet| column_from_payload(packet.0).map_err(Error::from))
                                 .collect::<Result<Vec<Column>>>()
                                 .into_future()
-                                .and_then(|columns| if this.get_capabilities().contains(
-                                    CapabilityFlags::CLIENT_DEPRECATE_EOF,
-                                )
-                                {
-                                    A(ok((this, columns)))
-                                } else {
-                                    B(this.read_packet().map(|(this, _)| (this, columns)))
+                                .and_then(|columns| {
+                                    if this.get_capabilities()
+                                        .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
+                                    {
+                                        A(ok((this, columns)))
+                                    } else {
+                                        B(this.read_packet().map(|(this, _)| (this, columns)))
+                                    }
                                 })
                         })
                         .map(|(mut this, columns)| {
@@ -452,8 +458,7 @@ pub trait ConnectionLike {
                         });
                     B(fut)
                 }
-            },
-        );
+            });
         Box::new(fut)
     }
 

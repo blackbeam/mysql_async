@@ -6,14 +6,14 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use BoxFuture;
-use Row;
+use super::QueryResult;
 use connection_like::ConnectionLike;
 use errors::*;
 use lib_futures::Async::Ready;
 use lib_futures::{Future, Poll};
-use super::QueryResult;
 use queryable::Protocol;
+use BoxFuture;
+use Row;
 
 pub struct Reduce<T, P, F, U> {
     fut: BoxFuture<(QueryResult<T, P>, Option<Row>)>,
@@ -28,7 +28,11 @@ where
     T: ConnectionLike + Sized + 'static,
 {
     pub fn new(query_result: QueryResult<T, P>, init: U, fun: F) -> Reduce<T, P, F, U> {
-        Reduce { fut: query_result.get_row(), acc: Some(init), fun }
+        Reduce {
+            fut: query_result.get_row(),
+            acc: Some(init),
+            fun,
+        }
     }
 }
 

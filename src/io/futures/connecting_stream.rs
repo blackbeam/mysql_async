@@ -8,21 +8,20 @@
 
 use errors::*;
 use io::Stream;
+use lib_futures::failed;
+use lib_futures::future::select_ok;
+use lib_futures::future::SelectOk;
 use lib_futures::Async;
 use lib_futures::Async::Ready;
 use lib_futures::Failed;
-use lib_futures::failed;
 use lib_futures::Future;
 use lib_futures::Poll;
-use lib_futures::future::select_ok;
-use lib_futures::future::SelectOk;
 use myc::packets::PacketParser;
 use std::io;
 use std::net::ToSocketAddrs;
 use tokio::net::TcpStream;
 use tokio::net::TcpStreamNew;
 use tokio::reactor::Handle;
-
 
 steps! {
     ConnectingStream {
@@ -49,16 +48,22 @@ where
             }
 
             if streams.len() > 0 {
-                ConnectingStream { step: Step::WaitForStream(select_ok(streams)) }
+                ConnectingStream {
+                    step: Step::WaitForStream(select_ok(streams)),
+                }
             } else {
                 let err = io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "could not resolve to any address",
                 );
-                ConnectingStream { step: Step::Fail(failed(err.into())) }
+                ConnectingStream {
+                    step: Step::Fail(failed(err.into())),
+                }
             }
         }
-        Err(err) => ConnectingStream { step: Step::Fail(failed(err.into())) },
+        Err(err) => ConnectingStream {
+            step: Step::Fail(failed(err.into())),
+        },
     }
 }
 

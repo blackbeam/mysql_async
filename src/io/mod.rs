@@ -6,49 +6,61 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use BoxFuture;
 use errors::*;
+use io::futures::new_connecting_stream;
+use io::futures::new_write_packet;
+use io::futures::ConnectingStream;
+use io::futures::WritePacket;
+use lib_futures::stream;
+use lib_futures::Async::NotReady;
+use lib_futures::Async::Ready;
+use lib_futures::Poll;
+#[cfg(feature = "ssl")]
+use lib_futures::{Future, IntoFuture};
+use myc::packets::{PacketParser, ParseResult, RawPacket};
+#[cfg(feature = "ssl")]
+use native_tls::{Certificate, Identity, TlsConnector};
+use opts::SslOpts;
 use std::fmt;
 #[cfg(feature = "ssl")]
 use std::fs::File;
+use std::io;
 #[cfg(feature = "ssl")]
 use std::io::Read;
-use lib_futures::Async::NotReady;
-use lib_futures::Async::Ready;
-#[cfg(feature = "ssl")]
-use lib_futures::{Future, IntoFuture};
-use lib_futures::Poll;
-use lib_futures::stream;
-use io::futures::ConnectingStream;
-use io::futures::new_connecting_stream;
-use io::futures::new_write_packet;
-use io::futures::WritePacket;
-#[cfg(feature = "ssl")]
-use native_tls::{Certificate, Pkcs12, TlsConnector};
-use myc::packets::{PacketParser, ParseResult, RawPacket};
-use opts::SslOpts;
-use std::io;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::reactor::Handle;
 use tokio_io::AsyncRead;
 use tokio_io::AsyncWrite;
+use BoxFuture;
+
 #[cfg(feature = "ssl")]
-use tokio_tls::{TlsConnectorExt, TlsStream};
-
-
+mod async_tls;
 pub mod futures;
-
 
 #[derive(Debug)]
 enum Endpoint {
     Plain(TcpStream),
     #[cfg(feature = "ssl")]
-    Secure(TlsStream<TcpStream>),
+    Secure(self::async_tls::TlsStream<TcpStream>),
 }
 
 impl Endpoint {
+    #[cfg(feature = "ssl")]
+    pub fn is_secure(&self) -> bool {
+        if let Endpoint::Secure(_) = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(not(feature = "ssl"))]
+    pub fn is_secure(&self) -> bool {
+        false
+    }
+
     pub fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
         let ms = ms.map(|val| Duration::from_millis(val as u64));
         match *self {
@@ -75,11 +87,9 @@ impl Endpoint {
             .and_then(|mut file| {
                 let mut der = vec![];
                 file.read_to_end(&mut der)?;
-                let identity = Pkcs12::from_der(&*der, ssl_opts.password().unwrap_or(""))
+                let identity = Identity::from_pkcs12(&*der, ssl_opts.password().unwrap_or(""))
                     .chain_err(|| "Can't parse der")?;
-                let mut builder = TlsConnector::builder().chain_err(
-                    || "Can't create TlsConnectorBuilder)",
-                )?;
+                let mut builder = TlsConnector::builder();
                 match ssl_opts.root_cert_path() {
                     Some(root_cert_path) => {
                         let mut root_cert_der = vec![];
@@ -87,26 +97,20 @@ impl Endpoint {
                         root_cert_file.read_to_end(&mut root_cert_der)?;
                         let root_cert = Certificate::from_der(&*root_cert_der)
                             .chain_err(|| "Can't parse root certificate")?;
-                        builder.add_root_certificate(root_cert)
-                            .chain_err(|| "Can't add root certificate")?;
-                    },
+                        builder.add_root_certificate(root_cert);
+                    }
                     None => (),
                 }
-                builder.identity(identity).chain_err(
-                    || "Can't set identity for TlsConnectorBuilder",
-                )?;
-                builder.build().chain_err(
-                    || "Can't build TlsConnectorBuilder",
-                )
+                builder.identity(identity);
+                builder.danger_accept_invalid_hostnames(ssl_opts.skip_domain_validation());
+                builder
+                    .build()
+                    .chain_err(|| "Can't build TlsConnectorBuilder")
             })
             .into_future()
             .and_then(move |tls_connector| match self {
                 Endpoint::Plain(stream) => {
-                    let fut = if ssl_opts.skip_domain_validation() {
-                        TlsConnectorExt::danger_connect_async_without_providing_domain_for_certificate_verification_and_server_name_indication(&tls_connector, stream)
-                    } else {
-                        TlsConnectorExt::connect_async(&tls_connector, &*domain, stream)
-                    };
+                    let fut = self::async_tls::connect_async(&tls_connector, &*domain, stream);
                     fut.then(|result| result.chain_err(|| "Can't connect TlsConnector"))
                 }
                 Endpoint::Secure(_) => unreachable!(),
@@ -123,8 +127,8 @@ impl From<TcpStream> for Endpoint {
 }
 
 #[cfg(feature = "ssl")]
-impl From<TlsStream<TcpStream>> for Endpoint {
-    fn from(stream: TlsStream<TcpStream>) -> Self {
+impl From<self::async_tls::TlsStream<TcpStream>> for Endpoint {
+    fn from(stream: self::async_tls::TlsStream<TcpStream>) -> Self {
         Endpoint::Secure(stream)
     }
 }
@@ -156,7 +160,6 @@ impl io::Write for Endpoint {
         }
     }
 }
-
 
 impl AsyncRead for Endpoint {
     unsafe fn prepare_uninitialized_buffer(&self, _buf: &mut [u8]) -> bool {
@@ -236,6 +239,13 @@ impl Stream {
                 Box::new(fut)
             }
             None => unreachable!(),
+        }
+    }
+
+    pub fn is_secure(&self) -> bool {
+        match self.endpoint.as_ref() {
+            Some(endpoint) => endpoint.is_secure(),
+            _ => false,
         }
     }
 }

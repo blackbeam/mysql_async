@@ -6,14 +6,14 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use connection_like::ConnectionLike;
 use connection_like::streamless::Streamless;
+use connection_like::ConnectionLike;
 use errors::*;
 use io;
+use lib_futures::stream::{Stream, StreamFuture};
 use lib_futures::Async::Ready;
 use lib_futures::{Future, Poll};
-use lib_futures::stream::{Stream, StreamFuture};
-use myc::packets::{RawPacket, parse_ok_packet, parse_err_packet};
+use myc::packets::{parse_err_packet, parse_ok_packet, RawPacket};
 
 pub struct ReadPacket<T> {
     conn_like: Option<Streamless<T>>,
@@ -23,7 +23,10 @@ pub struct ReadPacket<T> {
 impl<T: ConnectionLike> ReadPacket<T> {
     pub fn new(conn_like: T) -> Self {
         let (incomplete_conn, stream) = conn_like.take_stream();
-        ReadPacket { conn_like: Some(incomplete_conn), fut: stream.into_future() }
+        ReadPacket {
+            conn_like: Some(incomplete_conn),
+            fut: stream.into_future(),
+        }
     }
 }
 
@@ -41,10 +44,8 @@ impl<T: ConnectionLike> Future for ReadPacket<T> {
                     conn_like.set_last_insert_id(ok_packet.last_insert_id().unwrap_or(0));
                     conn_like.set_status(ok_packet.status_flags());
                     conn_like.set_warnings(ok_packet.warnings());
-                } else if let Ok(err_packet) = parse_err_packet(
-                    &*packet.0,
-                    conn_like.get_capabilities(),
-                )
+                } else if let Ok(err_packet) =
+                    parse_err_packet(&*packet.0, conn_like.get_capabilities())
                 {
                     return Err(err_packet.into());
                 }

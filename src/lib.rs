@@ -248,7 +248,7 @@ pub use myc::row::convert::{from_row, from_row_opt, FromRowError};
 pub use myc::value::convert::{from_value, from_value_opt, FromValueError};
 
 #[doc(inline)]
-pub use myc::value::json::{Serialized, Deserialized};
+pub use myc::value::json::{Deserialized, Serialized};
 
 #[doc(inline)]
 pub use self::queryable::query_result::QueryResult;
@@ -257,38 +257,42 @@ pub use self::queryable::query_result::QueryResult;
 pub use self::queryable::transaction::{Transaction, TransactionOptions};
 
 #[doc(inline)]
-pub use self::queryable::{TextProtocol, BinaryProtocol};
+pub use self::queryable::{BinaryProtocol, TextProtocol};
 
 #[doc(inline)]
 pub use self::queryable::stmt::Stmt;
 
 /// Futures used in this crate
 mod futures {
-    pub use queryable::query_result::{ForEachAndDrop, MapAndDrop, ReduceAndDrop, ForEach, Map,
-                                      Reduce};
+    pub use queryable::query_result::{
+        ForEach, ForEachAndDrop, Map, MapAndDrop, Reduce, ReduceAndDrop,
+    };
 }
 
 /// Traits used in this crate
 pub mod prelude {
     #[doc(inline)]
-    pub use myc::value::convert::{ConvIr, FromValue, ToValue};
+    pub use local_infile_handler::LocalInfileHandler;
     #[doc(inline)]
     pub use myc::row::convert::FromRow;
     #[doc(inline)]
-    pub use queryable::Queryable;
+    pub use myc::value::convert::{ConvIr, FromValue, ToValue};
     #[doc(inline)]
-    pub use local_infile_handler::LocalInfileHandler;
+    pub use queryable::Queryable;
 }
 
 #[cfg(test)]
 mod test_misc {
-    use std::env;
     use opts;
+    use std::env;
     lazy_static! {
         pub static ref DATABASE_URL: String = {
             if let Ok(url) = env::var("DATABASE_URL") {
                 let opts = opts::Opts::from_url(&url).expect("DATABASE_URL invalid");
-                if opts.get_db_name().expect("a database name is required").is_empty() {
+                if opts.get_db_name()
+                    .expect("a database name is required")
+                    .is_empty()
+                {
                     panic!("database name is empty");
                 }
                 url

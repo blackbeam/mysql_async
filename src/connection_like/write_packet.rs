@@ -6,12 +6,12 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use connection_like::ConnectionLike;
 use connection_like::streamless::Streamless;
-use lib_futures::Async::Ready;
-use lib_futures::{Future, Poll};
+use connection_like::ConnectionLike;
 use errors::*;
 use io;
+use lib_futures::Async::Ready;
+use lib_futures::{Future, Poll};
 
 pub struct WritePacket<T> {
     conn_like: Option<Streamless<T>>,

@@ -17,7 +17,6 @@ use lib_futures::Poll;
 use tokio_io::io::write_all;
 use tokio_io::io::WriteAll;
 
-
 /// Future that writes packet to a `Stream` and resolves to a pair of `Stream` and MySql's sequence
 /// id.
 pub struct WritePacket {
@@ -50,7 +49,10 @@ pub fn new(stream: Stream, data: Vec<u8>, mut seq_id: u8) -> WritePacket {
         }
     };
 
-    WritePacket { future: write_all(stream, data), seq_id: seq_id }
+    WritePacket {
+        future: write_all(stream, data),
+        seq_id: seq_id,
+    }
 }
 
 impl Future for WritePacket {

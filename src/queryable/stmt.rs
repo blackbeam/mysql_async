@@ -7,24 +7,24 @@
 // modified, or distributed except according to those terms.
 
 use bit_vec::BitVec;
-use BoxFuture;
 use byteorder::LittleEndian as LE;
 use byteorder::{ReadBytesExt, WriteBytesExt};
-use Column;
-use connection_like::{ConnectionLike, ConnectionLikeWrapper, StmtCacheResult};
 use connection_like::streamless::Streamless;
+use connection_like::{ConnectionLike, ConnectionLikeWrapper, StmtCacheResult};
 use consts::{ColumnType, Command};
 use errors::*;
 use io;
-use lib_futures::future::{Either, Future, IntoFuture, Loop, err, loop_fn, ok};
 use lib_futures::future::Either::*;
+use lib_futures::future::{err, loop_fn, ok, Either, Future, IntoFuture, Loop};
 use myc::value::serialize_bin_many;
 use prelude::FromRow;
-use Row;
-use Params;
-use queryable::BinaryProtocol;
 use queryable::query_result::QueryResult;
+use queryable::BinaryProtocol;
 use std::io::Write;
+use BoxFuture;
+use Column;
+use Params;
+use Row;
 use Value;
 use Value::*;
 
@@ -83,7 +83,11 @@ where
     T: ConnectionLike + Sized + 'static,
 {
     fn new(conn_like: T, inner: InnerStmt, cached: StmtCacheResult) -> Stmt<T> {
-        Stmt { conn_like: Some(A(conn_like)), inner, cached: Some(cached) }
+        Stmt {
+            conn_like: Some(A(conn_like)),
+            inner,
+            cached: Some(cached),
+        }
     }
 
     fn send_long_data(
@@ -119,10 +123,12 @@ where
                                 let chunk_len = buf.len() - 6;
                                 let fut =
                                     this.write_command_data(Command::COM_STMT_SEND_LONG_DATA, buf)
-                                        .map(move |this| if chunk_len < data_cap {
-                                            Loop::Break((this, params))
-                                        } else {
-                                            Loop::Continue((this, params, i, chunk + 1))
+                                        .map(move |this| {
+                                            if chunk_len < data_cap {
+                                                Loop::Break((this, params))
+                                            } else {
+                                                Loop::Continue((this, params, i, chunk + 1))
+                                            }
                                         });
                                 A(fut)
                             }
@@ -222,10 +228,12 @@ where
     {
         let fut = self.execute(params)
             .and_then(|result| result.collect_and_drop::<Row>())
-            .map(|(this, mut rows)| if rows.len() > 1 {
-                (this, Some(FromRow::from_row(rows.swap_remove(0))))
-            } else {
-                (this, rows.pop().map(FromRow::from_row))
+            .map(|(this, mut rows)| {
+                if rows.len() > 1 {
+                    (this, Some(FromRow::from_row(rows.swap_remove(0))))
+                } else {
+                    (this, rows.pop().map(FromRow::from_row))
+                }
             });
         Box::new(fut)
     }
@@ -238,8 +246,9 @@ where
         P: 'static,
     {
         let params_iter = params_iter.into_iter().map(Params::from);
-        let fut = loop_fn((self, params_iter), |(this, mut params_iter)| {
-            match params_iter.next() {
+        let fut = loop_fn(
+            (self, params_iter),
+            |(this, mut params_iter)| match params_iter.next() {
                 Some(params) => {
                     let fut = this.execute(params)
                         .and_then(|result| result.drop_result())
@@ -247,8 +256,8 @@ where
                     A(fut)
                 }
                 None => B(ok(Loop::Break(this))),
-            }
-        });
+            },
+        );
         Box::new(fut)
     }
 
@@ -283,11 +292,19 @@ impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Stmt<T> {
     where
         Self: Sized,
     {
-        let Stmt { conn_like, inner, cached } = self;
+        let Stmt {
+            conn_like,
+            inner,
+            cached,
+        } = self;
         match conn_like {
             Some(A(conn_like)) => {
                 let (streamless, stream) = conn_like.take_stream();
-                let this = Stmt { conn_like: Some(B(streamless)), inner, cached };
+                let this = Stmt {
+                    conn_like: Some(B(streamless)),
+                    inner,
+                    cached,
+                };
                 (Streamless::new(this), stream)
             }
             _ => unreachable!(),
