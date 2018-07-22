@@ -155,7 +155,6 @@ impl Pool {
         }
         let min = self.min;
         let mut inner = self.inner_mut();
-        inner.ongoing -= 1;
 
         if conn.has_result.is_some() {
             inner.dropping.push(conn.drop_result());
@@ -166,6 +165,7 @@ impl Pool {
             if idle_len >= min {
                 inner.disconnecting.push(conn.disconnect());
             } else {
+                inner.ongoing -= 1;
                 inner.idle.push(conn);
             }
         }
