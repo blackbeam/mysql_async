@@ -11,10 +11,9 @@ use io::futures::new_connecting_stream;
 use io::futures::new_write_packet;
 use io::futures::ConnectingStream;
 use io::futures::WritePacket;
-use lib_futures::stream;
-use lib_futures::Async::NotReady;
-use lib_futures::Async::Ready;
-use lib_futures::Poll;
+use lib_futures::{
+    future::ok, stream, Async::{NotReady, Ready}, Poll,
+};
 #[cfg(feature = "ssl")]
 use lib_futures::{Future, IntoFuture};
 use myc::packets::{PacketParser, ParseResult, RawPacket};
@@ -33,7 +32,7 @@ use tokio::net::TcpStream;
 use tokio::reactor::Handle;
 use tokio_io::AsyncRead;
 use tokio_io::AsyncWrite;
-use BoxFuture;
+use MyFuture;
 
 #[cfg(feature = "ssl")]
 mod async_tls;
@@ -81,8 +80,8 @@ impl Endpoint {
     }
 
     #[cfg(feature = "ssl")]
-    pub fn make_secure(self, domain: String, ssl_opts: SslOpts) -> BoxFuture<Self> {
-        let fut = ::std::fs::File::open(ssl_opts.pkcs12_path())
+    pub fn make_secure(self, domain: String, ssl_opts: SslOpts) -> impl MyFuture<Self> {
+        ::std::fs::File::open(ssl_opts.pkcs12_path())
             .map_err(Error::from)
             .and_then(|mut file| {
                 let mut der = vec![];
@@ -115,8 +114,7 @@ impl Endpoint {
                 }
                 Endpoint::Secure(_) => unreachable!(),
             })
-            .map(|tls_stream| Endpoint::Secure(tls_stream));
-        Box::new(fut)
+            .map(|tls_stream| Endpoint::Secure(tls_stream))
     }
 }
 
@@ -224,20 +222,17 @@ impl Stream {
 
     #[cfg(not(feature = "ssl"))]
     #[allow(unused)]
-    pub fn make_secure(self, domain: String, ssl_opts: SslOpts) -> BoxFuture<Self> {
-        panic!("Ssl connection requires `ssl` feature");
+    pub fn make_secure(self, domain: String, ssl_opts: SslOpts) -> impl MyFuture<Self> {
+        ok(panic!("Ssl connection requires `ssl` feature"))
     }
 
     #[cfg(feature = "ssl")]
-    pub fn make_secure(mut self, domain: String, ssl_opts: SslOpts) -> BoxFuture<Self> {
+    pub fn make_secure(mut self, domain: String, ssl_opts: SslOpts) -> impl MyFuture<Self> {
         match self.endpoint.take() {
-            Some(endpoint) => {
-                let fut = endpoint.make_secure(domain, ssl_opts).map(|endpoint| {
-                    self.endpoint = Some(endpoint);
-                    self
-                });
-                Box::new(fut)
-            }
+            Some(endpoint) => endpoint.make_secure(domain, ssl_opts).map(|endpoint| {
+                self.endpoint = Some(endpoint);
+                self
+            }),
             None => unreachable!(),
         }
     }
