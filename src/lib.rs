@@ -214,6 +214,14 @@ mod queryable;
 
 pub type BoxFuture<T> = Box<lib_futures::Future<Item = T, Error = errors::Error>>;
 
+/// Alias for `Future` with library error as `Future::Error`.
+pub trait MyFuture<T>: lib_futures::Future<Item = T, Error = errors::Error> {}
+impl<T, U> MyFuture<T> for U
+where
+    U: lib_futures::Future<Item = T, Error = errors::Error>,
+{
+}
+
 #[doc(inline)]
 pub use self::conn::Conn;
 
