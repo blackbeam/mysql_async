@@ -28,7 +28,7 @@ where
 {
     pub fn new(query_result: QueryResult<T, P>, fun: F) -> ForEach<T, P, F> {
         ForEach {
-            fut: query_result.get_row(),
+            fut: Box::new(query_result.get_row()),
             fun,
         }
     }
@@ -54,7 +54,7 @@ where
                     return Ok(Ready(query_result));
                 }
             }
-            self.fut = query_result.get_row();
+            self.fut = Box::new(query_result.get_row());
         }
     }
 }

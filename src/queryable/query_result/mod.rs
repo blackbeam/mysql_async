@@ -25,6 +25,7 @@ use std::mem;
 use std::sync::Arc;
 use BoxFuture;
 use Column;
+use MyFuture;
 use Row;
 
 mod for_each;
@@ -127,9 +128,9 @@ where
         }
     }
 
-    fn get_row_raw(self) -> BoxFuture<(Self, Option<RawPacket>)> {
+    fn get_row_raw(self) -> impl MyFuture<(Self, Option<RawPacket>)> {
         if self.is_empty() {
-            return Box::new(ok((self, None)));
+            return A(ok((self, None)));
         }
         let fut = self.read_packet().and_then(|(this, packet)| {
             if P::is_last_result_set_packet(&this, &packet) {
@@ -147,11 +148,11 @@ where
                 B(ok((this, Some(packet))))
             }
         });
-        Box::new(fut)
+        B(fut)
     }
 
-    fn get_row(self) -> BoxFuture<(Self, Option<Row>)> {
-        let fut = self.get_row_raw()
+    fn get_row(self) -> impl MyFuture<(Self, Option<Row>)> {
+        self.get_row_raw()
             .and_then(|(this, packet_opt)| match packet_opt {
                 Some(packet) => match this {
                     QueryResult(WithRows(_, ref columns, ..)) => {
@@ -160,8 +161,7 @@ where
                     _ => unreachable!(),
                 }.map(|row| (this, Some(row))),
                 None => Ok((this, None)),
-            });
-        Box::new(fut)
+            })
     }
 
     fn new(
@@ -222,26 +222,24 @@ where
     /// as many times as result sets in your query result. For example query
     /// `SELECT 'foo'; SELECT 'foo', 'bar';` will produce `QueryResult` with two result sets in it.
     /// One can use `QueryResult::is_empty` to make sure that there is no more result sets.
-    pub fn collect<R>(self) -> BoxFuture<(Self, Vec<R>)>
+    pub fn collect<R>(self) -> impl MyFuture<(Self, Vec<R>)>
     where
         R: FromRow + 'static,
     {
-        let fut = self.reduce(Vec::new(), |mut acc, row| {
+        self.reduce(Vec::new(), |mut acc, row| {
             acc.push(FromRow::from_row(row));
             acc
-        });
-        Box::new(fut)
+        })
     }
 
     /// Returns future that collects result set of a query result and drops everything else.
     /// It will resolve to a pair of wrapped `Queryable` and collected result set.
-    pub fn collect_and_drop<R>(self) -> BoxFuture<(T, Vec<R>)>
+    pub fn collect_and_drop<R>(self) -> impl MyFuture<(T, Vec<R>)>
     where
         R: FromRow + 'static,
     {
-        let fut = self.collect()
-            .and_then(|(this, output)| (this.drop_result(), ok(output)));
-        Box::new(fut)
+        self.collect()
+            .and_then(|(this, output)| (this.drop_result(), ok(output)))
     }
 
     /// Returns future that will execute `fun` on every row of current result set.
@@ -264,7 +262,8 @@ where
     where
         F: FnMut(Row),
     {
-        self.for_each(fun).and_then(QueryResult::drop_result)
+        self.for_each(fun)
+            .and_then(|x| Box::new(QueryResult::drop_result(x)))
     }
 
     /// Returns future that will map every row of current result set to `U` using `fun`.
@@ -294,7 +293,7 @@ where
             T: ConnectionLike + Sized + 'static,
             P: Protocol + 'static,
         {
-            (QueryResult::drop_result(this), ok(output))
+            (Box::new(QueryResult::drop_result(this)), ok(output))
         }
 
         self.map(fun).and_then(join_drop)
@@ -331,14 +330,14 @@ where
             T: ConnectionLike + Sized + 'static,
             P: Protocol + 'static,
         {
-            (QueryResult::drop_result(this), ok(output))
+            (Box::new(QueryResult::drop_result(this)), ok(output))
         }
 
         self.reduce(init, fun).and_then(join_drop)
     }
 
     /// Returns future that will drop this query result end resolve to a wrapped `Queryable`.
-    pub fn drop_result(self) -> BoxFuture<T> {
+    pub fn drop_result(self) -> impl MyFuture<T> {
         let fut = loop_fn(self, |this| {
             if !this.has_rows() {
                 if this.more_results_exists() {
@@ -353,14 +352,14 @@ where
                 B(this.get_row_raw().map(|(this, _)| Loop::Continue(this)))
             }
         });
-        let fut = fut.and_then(|(conn_like, cached)| {
+
+        fut.and_then(|(conn_like, cached)| {
             if let Some(StmtCacheResult::NotCached(statement_id)) = cached {
                 A(conn_like.close_stmt(statement_id))
             } else {
                 B(ok(conn_like))
             }
-        });
-        Box::new(fut)
+        })
     }
 }
 

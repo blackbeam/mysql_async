@@ -29,7 +29,7 @@ where
 {
     pub fn new(query_result: QueryResult<T, P>, init: U, fun: F) -> Reduce<T, P, F, U> {
         Reduce {
-            fut: query_result.get_row(),
+            fut: Box::new(query_result.get_row()),
             acc: Some(init),
             fun,
         }
@@ -58,7 +58,7 @@ where
                     return Ok(Ready((query_result, self.acc.take().unwrap())));
                 }
             }
-            self.fut = query_result.get_row();
+            self.fut = Box::new(query_result.get_row());
         }
     }
 }
