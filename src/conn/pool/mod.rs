@@ -24,6 +24,7 @@ use std::fmt;
 use std::rc::Rc;
 use tokio::reactor::Handle;
 use BoxFuture;
+use MyFuture;
 
 pub mod futures;
 
@@ -95,10 +96,12 @@ impl Pool {
     }
 
     /// Shortcut for `get_conn` followed by `start_transaction`.
-    pub fn start_transaction(&self, options: TransactionOptions) -> BoxFuture<Transaction<Conn>> {
-        let fut = self.get_conn()
-            .and_then(|conn| Queryable::start_transaction(conn, options));
-        Box::new(fut)
+    pub fn start_transaction(
+        &self,
+        options: TransactionOptions,
+    ) -> impl MyFuture<Transaction<Conn>> {
+        self.get_conn()
+            .and_then(|conn| Queryable::start_transaction(conn, options))
     }
 
     /// Returns future that disconnects this pool from server and resolves to `()`.
