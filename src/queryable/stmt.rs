@@ -21,8 +21,8 @@ use prelude::FromRow;
 use queryable::query_result::QueryResult;
 use queryable::BinaryProtocol;
 use std::io::Write;
-use BoxFuture;
 use Column;
+use MyFuture;
 use Params;
 use Row;
 use Value;
@@ -90,143 +90,159 @@ where
         }
     }
 
+    fn send_long_data_for_index(
+        self,
+        params: Vec<Value>,
+        index: usize,
+    ) -> impl MyFuture<(Self, Vec<Value>)> {
+        loop_fn((self, params, index, 0), |(this, params, index, chunk)| {
+            let data_cap = ::consts::MAX_PAYLOAD_LEN - 10;
+            let buf = match params[index] {
+                Bytes(ref x) => {
+                    let statement_id = this.inner.statement_id;
+                    let mut chunks = x.chunks(data_cap);
+                    match chunks.nth(chunk) {
+                        Some(chunk) => {
+                            let mut buf = Vec::with_capacity(chunk.len() + 6);
+                            buf.write_u32::<LE>(statement_id).unwrap();
+                            buf.write_u16::<LE>(index as u16).unwrap();
+                            buf.write_all(chunk).unwrap();
+                            Some(buf)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => unreachable!(),
+            };
+            match buf {
+                Some(buf) => {
+                    let chunk_len = buf.len() - 6;
+                    let fut = this.write_command_data(Command::COM_STMT_SEND_LONG_DATA, buf)
+                        .map(move |this| {
+                            if chunk_len < data_cap {
+                                Loop::Break((this, params))
+                            } else {
+                                Loop::Continue((this, params, index, chunk + 1))
+                            }
+                        });
+                    A(fut)
+                }
+                None => B(ok(Loop::Break((this, params)))),
+            }
+        })
+    }
+
     fn send_long_data(
         self,
         params: Vec<Value>,
         large_bitmap: BitVec<u8>,
-    ) -> BoxFuture<(Self, Vec<Value>)> {
-        let fut = loop_fn(
-            (self, params, large_bitmap.into_iter().enumerate()),
-            |(this, params, mut large_bitmap)| match large_bitmap.next() {
-                Some((i, true)) => {
-                    let fut = loop_fn((this, params, i, 0), |(this, params, i, chunk)| {
-                        let data_cap = ::consts::MAX_PAYLOAD_LEN - 10;
-                        let buf = match params[i] {
-                            Bytes(ref x) => {
-                                let statement_id = this.inner.statement_id;
-                                let mut chunks = x.chunks(data_cap);
-                                match chunks.nth(chunk) {
-                                    Some(chunk) => {
-                                        let mut buf = Vec::with_capacity(chunk.len() + 6);
-                                        buf.write_u32::<LE>(statement_id).unwrap();
-                                        buf.write_u16::<LE>(i as u16).unwrap();
-                                        buf.write_all(chunk).unwrap();
-                                        Some(buf)
-                                    }
-                                    _ => None,
-                                }
-                            }
-                            _ => unreachable!(),
-                        };
-                        match buf {
-                            Some(buf) => {
-                                let chunk_len = buf.len() - 6;
-                                let fut =
-                                    this.write_command_data(Command::COM_STMT_SEND_LONG_DATA, buf)
-                                        .map(move |this| {
-                                            if chunk_len < data_cap {
-                                                Loop::Break((this, params))
-                                            } else {
-                                                Loop::Continue((this, params, i, chunk + 1))
-                                            }
-                                        });
-                                A(fut)
-                            }
-                            None => B(ok(Loop::Break((this, params)))),
-                        }
-                    }).map(|(this, params)| {
-                        Loop::Continue((this, params, large_bitmap))
-                    });
-                    A(fut)
-                }
-                Some((_, false)) => B(A(ok(Loop::Continue((this, params, large_bitmap))))),
-                None => B(B(ok(Loop::Break((this, params))))),
+    ) -> impl MyFuture<(Self, Vec<Value>)> {
+        let bits = large_bitmap.into_iter().enumerate();
+
+        loop_fn(
+            (self, params, bits),
+            |(this, params, mut bits)| match bits.next() {
+                Some((index, true)) => A(this.send_long_data_for_index(params, index)
+                    .map(|(this, params)| Loop::Continue((this, params, bits)))),
+                Some((_, false)) => B(ok(Loop::Continue((this, params, bits)))),
+                None => B(ok(Loop::Break((this, params)))),
             },
-        );
-        Box::new(fut)
+        )
+    }
+
+    fn execute_positional<U>(self, params: U) -> impl MyFuture<QueryResult<Self, BinaryProtocol>>
+    where
+        U: ::std::ops::Deref<Target = [Value]>,
+        U: IntoIterator<Item = Value>,
+    {
+        if self.inner.num_params as usize != params.len() {
+            let error =
+                ErrorKind::MismatchedStmtParams(self.inner.num_params, params.len() as u16).into();
+            return A(err(error));
+        }
+
+        let fut = self.inner
+            .params
+            .as_ref()
+            .ok_or_else(|| unreachable!())
+            .and_then(|params_def| serialize_bin_many(&*params_def, &*params).map_err(Error::from))
+            .into_future()
+            .and_then(|bin_payload| match bin_payload {
+                (row_data, null_bitmap, large_bitmap) => {
+                    self.send_long_data(params.into_iter().collect(), large_bitmap.clone())
+                        .and_then(|(this, params)| {
+                            let mut data = Vec::new();
+                            write_data(
+                                &mut data,
+                                this.inner.statement_id,
+                                row_data,
+                                params,
+                                this.inner.params.as_ref().unwrap(),
+                                null_bitmap,
+                            );
+                            this.write_command_data(Command::COM_STMT_EXECUTE, data)
+                        })
+                }
+            })
+            .and_then(|this| this.read_result_set(None));
+        B(fut)
+    }
+
+    fn execute_named(self, params: Params) -> impl MyFuture<QueryResult<Self, BinaryProtocol>> {
+        if self.inner.named_params.is_none() {
+            let error = ErrorKind::NamedParamsForPositionalQuery.into();
+            return A(err(error));
+        }
+
+        let positional_params =
+            match params.into_positional(self.inner.named_params.as_ref().unwrap()) {
+                Ok(positional_params) => positional_params,
+                Err(error) => {
+                    return A(err(error.into()));
+                }
+            };
+
+        match positional_params {
+            Params::Positional(params) => B(self.execute_positional(params)),
+            _ => unreachable!(),
+        }
+    }
+
+    fn execute_empty(self) -> impl MyFuture<QueryResult<Self, BinaryProtocol>> {
+        if self.inner.num_params > 0 {
+            let error = ErrorKind::MismatchedStmtParams(self.inner.num_params, 0).into();
+            return A(err(error));
+        }
+
+        let mut data = Vec::with_capacity(4 + 1 + 4);
+        data.write_u32::<LE>(self.inner.statement_id).unwrap();
+        data.write_u8(0u8).unwrap();
+        data.write_u32::<LE>(1u32).unwrap();
+
+        B(self.write_command_data(Command::COM_STMT_EXECUTE, data)
+            .and_then(|this| this.read_result_set(None)))
     }
 
     /// See `Queriable::execute`
-    pub fn execute<P>(self, params: P) -> BoxFuture<QueryResult<Self, BinaryProtocol>>
+    pub fn execute<P>(self, params: P) -> impl MyFuture<QueryResult<Self, BinaryProtocol>>
     where
         P: Into<Params>,
     {
         let params = params.into();
-        let fut = match params {
-            Params::Positional(params) => {
-                if self.inner.num_params as usize != params.len() {
-                    let error =
-                        ErrorKind::MismatchedStmtParams(self.inner.num_params, params.len() as u16)
-                            .into();
-                    return Box::new(err(error));
-                }
-
-                let fut = self.inner
-                    .params
-                    .as_ref()
-                    .ok_or_else(|| unreachable!())
-                    .and_then(|params_def| {
-                        serialize_bin_many(&*params_def, &*params).map_err(Error::from)
-                    })
-                    .into_future()
-                    .and_then(|bin_payload| match bin_payload {
-                        (row_data, null_bitmap, large_bitmap) => {
-                            self.send_long_data(params.into_vec(), large_bitmap.clone())
-                                .and_then(|(this, params)| {
-                                    let mut data = Vec::new();
-                                    write_data(
-                                        &mut data,
-                                        this.inner.statement_id,
-                                        row_data,
-                                        params,
-                                        this.inner.params.as_ref().unwrap(),
-                                        null_bitmap,
-                                    );
-                                    this.write_command_data(Command::COM_STMT_EXECUTE, data)
-                                })
-                        }
-                    });
-                A(fut)
-            }
-            Params::Named(_) => {
-                if self.inner.named_params.is_none() {
-                    let error = ErrorKind::NamedParamsForPositionalQuery.into();
-                    return Box::new(err(error));
-                }
-
-                let positional_params =
-                    match params.into_positional(self.inner.named_params.as_ref().unwrap()) {
-                        Ok(positional_params) => positional_params,
-                        Err(error) => {
-                            return Box::new(err(error.into()));
-                        }
-                    };
-                return self.execute(positional_params);
-            }
-            Params::Empty => {
-                if self.inner.num_params > 0 {
-                    let error = ErrorKind::MismatchedStmtParams(self.inner.num_params, 0).into();
-                    return Box::new(err(error));
-                }
-
-                let mut data = Vec::with_capacity(4 + 1 + 4);
-                data.write_u32::<LE>(self.inner.statement_id).unwrap();
-                data.write_u8(0u8).unwrap();
-                data.write_u32::<LE>(1u32).unwrap();
-
-                B(self.write_command_data(Command::COM_STMT_EXECUTE, data))
-            }
-        };
-        Box::new(fut.and_then(|this| this.read_result_set(None)))
+        match params {
+            Params::Positional(params) => return A(self.execute_positional(params)),
+            Params::Named(_) => return B(A(self.execute_named(params))),
+            Params::Empty => return B(B(self.execute_empty())),
+        }
     }
 
     /// See `Queriable::first`
-    pub fn first<P, R>(self, params: P) -> BoxFuture<(Self, Option<R>)>
+    pub fn first<P, R>(self, params: P) -> impl MyFuture<(Self, Option<R>)>
     where
         P: Into<Params>,
         R: FromRow,
     {
-        let fut = self.execute(params)
+        self.execute(params)
             .and_then(|result| result.collect_and_drop::<Row>())
             .map(|(this, mut rows)| {
                 if rows.len() > 1 {
@@ -234,37 +250,33 @@ where
                 } else {
                     (this, rows.pop().map(FromRow::from_row))
                 }
-            });
-        Box::new(fut)
+            })
     }
 
     /// See `Queriable::batch`
-    pub fn batch<I, P>(self, params_iter: I) -> BoxFuture<Self>
+    pub fn batch<I, P>(self, params_iter: I) -> impl MyFuture<Self>
     where
         I: IntoIterator<Item = P> + 'static,
         Params: From<P>,
         P: 'static,
     {
         let params_iter = params_iter.into_iter().map(Params::from);
-        let fut = loop_fn(
+
+        loop_fn(
             (self, params_iter),
             |(this, mut params_iter)| match params_iter.next() {
-                Some(params) => {
-                    let fut = this.execute(params)
-                        .and_then(|result| result.drop_result())
-                        .map(|this| Loop::Continue((this, params_iter)));
-                    A(fut)
-                }
+                Some(params) => A(this.execute(params)
+                    .and_then(|result| result.drop_result())
+                    .map(|this| Loop::Continue((this, params_iter)))),
                 None => B(ok(Loop::Break(this))),
             },
-        );
-        Box::new(fut)
+        )
     }
 
     /// This will close statement (it it's not in the cache) and resolve to a wrapped queryable.
-    pub fn close(mut self) -> BoxFuture<T> {
+    pub fn close(mut self) -> impl MyFuture<T> {
         let cached = self.cached.take();
-        let fut = match self.conn_like {
+        match self.conn_like {
             Some(A(conn_like)) => {
                 if let Some(StmtCacheResult::NotCached(stmt_id)) = cached {
                     A(conn_like.close_stmt(stmt_id))
@@ -273,8 +285,7 @@ where
                 }
             }
             _ => unreachable!(),
-        };
-        Box::new(fut)
+        }
     }
 
     pub(crate) fn unwrap(mut self) -> (T, Option<StmtCacheResult>) {
