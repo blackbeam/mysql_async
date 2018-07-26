@@ -14,7 +14,7 @@ use lib_futures::future::Either::*;
 use lib_futures::future::{err, ok, Either, Future, IntoFuture};
 use queryable::Queryable;
 use std::fmt;
-use BoxFuture;
+use MyFuture;
 
 /// Options for transaction
 #[derive(Eq, PartialEq, Debug, Hash, Clone, Default)]
@@ -90,7 +90,7 @@ impl fmt::Display for IsolationLevel {
 /// `NestedTransaction` error if you call `transaction.start_transaction(_)`.
 pub struct Transaction<T>(Option<Either<T, Streamless<T>>>);
 
-pub fn new<T>(conn_like: T, options: TransactionOptions) -> BoxFuture<Transaction<T>>
+pub fn new<T>(conn_like: T, options: TransactionOptions) -> impl MyFuture<Transaction<T>>
 where
     T: Queryable + ConnectionLike,
 {
@@ -98,7 +98,7 @@ where
 }
 
 impl<T: Queryable + ConnectionLike> Transaction<T> {
-    fn new(conn_like: T, options: TransactionOptions) -> BoxFuture<Transaction<T>> {
+    fn new(conn_like: T, options: TransactionOptions) -> impl MyFuture<Transaction<T>> {
         let TransactionOptions {
             consistent_snapshot,
             isolation_level,
@@ -106,11 +106,11 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
         } = options;
 
         if conn_like.get_in_transaction() {
-            return Box::new(err(ErrorKind::NestedTransaction.into()));
+            return A(err(ErrorKind::NestedTransaction.into()));
         }
 
         if readonly.is_some() && conn_like.get_server_version() < (5, 6, 5) {
-            return Box::new(err(ErrorKind::ReadOnlyTransNotSupported.into()));
+            return A(err(ErrorKind::ReadOnlyTransNotSupported.into()));
         }
 
         let fut = if let Some(isolation_level) = isolation_level {
@@ -126,9 +126,9 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
             .and_then(move |conn_like| {
                 if let Some(readonly) = readonly {
                     if readonly {
-                        A(A(conn_like.drop_query("SET TRANSACTION READ ONLY")))
+                        A(conn_like.drop_query("SET TRANSACTION READ ONLY"))
                     } else {
-                        A(B(conn_like.drop_query("SET TRANSACTION READ WRITE")))
+                        A(conn_like.drop_query("SET TRANSACTION READ WRITE"))
                     }
                 } else {
                     B(ok(conn_like))
@@ -146,7 +146,7 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
                 Transaction(Some(A(conn_like)))
             });
 
-        Box::new(fut)
+        B(fut)
     }
 
     fn unwrap(self) -> T {
@@ -157,21 +157,19 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
     }
 
     /// Returns future that will perform `COMMIT` query and resolve to a wrapped `Queryable`.
-    pub fn commit(self) -> BoxFuture<T> {
-        let fut = self.drop_query("COMMIT").map(|mut this| {
+    pub fn commit(self) -> impl MyFuture<T> {
+        self.drop_query("COMMIT").map(|mut this| {
             this.set_in_transaction(false);
             this.unwrap()
-        });
-        Box::new(fut)
+        })
     }
 
     /// Returns future that will perform `ROLLBACK` query and resolve to a wrapped `Queryable`.
-    pub fn rollback(self) -> BoxFuture<T> {
-        let fut = self.drop_query("ROLLBACK").map(|mut this| {
+    pub fn rollback(self) -> impl MyFuture<T> {
+        self.drop_query("ROLLBACK").map(|mut this| {
             this.set_in_transaction(false);
             this.unwrap()
-        });
-        Box::new(fut)
+        })
     }
 }
 

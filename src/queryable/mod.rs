@@ -194,7 +194,7 @@ where
 
     /// Returns future that starts transaction.
     fn start_transaction(self, options: TransactionOptions) -> BoxFuture<Transaction<Self>> {
-        transaction::new(self, options)
+        Box::new(transaction::new(self, options))
     }
 }
 
