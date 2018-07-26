@@ -159,9 +159,9 @@ impl Pool {
         let mut inner = self.inner_mut();
 
         if conn.has_result.is_some() {
-            inner.dropping.push(conn.drop_result());
+            inner.dropping.push(Box::new(conn.drop_result()));
         } else if conn.in_transaction {
-            inner.rollback.push(conn.rollback_transaction())
+            inner.rollback.push(Box::new(conn.rollback_transaction()))
         } else {
             let idle_len = inner.idle.len();
             if idle_len >= min {
@@ -322,7 +322,7 @@ impl Pool {
                 let new_len = self.inner_ref().new.len();
                 if new_len == 0 && self.conn_count() < self.max {
                     let new_conn = Conn::new(self.opts.clone(), &self.handle);
-                    self.inner_mut().new.push(new_conn);
+                    self.inner_mut().new.push(Box::new(new_conn));
                     self.poll()
                 } else {
                     self.inner_mut().tasks.push(task::current());

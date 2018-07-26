@@ -26,8 +26,8 @@ use std::mem;
 use std::sync::Arc;
 use time::SteadyTime;
 use tokio::reactor::Handle;
-use BoxFuture;
 use Column;
+use MyFuture;
 
 pub mod named_params;
 pub mod pool;
@@ -161,8 +161,8 @@ impl Conn {
         }
     }
 
-    fn handle_handshake(self) -> BoxFuture<Conn> {
-        let fut = self.read_packet().and_then(move |(mut conn, packet)| {
+    fn handle_handshake(self) -> impl MyFuture<Conn> {
+        self.read_packet().and_then(move |(mut conn, packet)| {
             parse_handshake_packet(&*packet.0)
                 .chain_err(|| "Invalid handshake from server")
                 .and_then(|handshake| {
@@ -187,12 +187,11 @@ impl Conn {
                     };
                     Ok(conn)
                 })
-        });
-        Box::new(fut)
+        })
     }
 
-    fn switch_to_ssl_if_needed(self) -> BoxFuture<Conn> {
-        let fut = if self.opts
+    fn switch_to_ssl_if_needed(self) -> impl MyFuture<Conn> {
+        if self.opts
             .get_capabilities()
             .contains(CapabilityFlags::CLIENT_SSL)
         {
@@ -211,11 +210,10 @@ impl Conn {
             A(fut)
         } else {
             B(ok(self))
-        };
-        Box::new(fut)
+        }
     }
 
-    fn do_handshake_response(self) -> BoxFuture<Conn> {
+    fn do_handshake_response(self) -> impl MyFuture<Conn> {
         let scramble = self.opts
             .get_pass()
             .and_then(|pass| match self.auth_plugin {
@@ -239,10 +237,10 @@ impl Conn {
             self.get_capabilities(),
         );
 
-        Box::new(self.write_packet(handshake_response.as_ref()))
+        self.write_packet(handshake_response.as_ref())
     }
 
-    fn perform_auth(self) -> impl Future<Item = Conn, Error = Error> {
+    fn perform_auth(self) -> impl MyFuture<Conn> {
         match self.auth_plugin {
             AuthPlugin::MysqlNativePassword => A(self.perform_mysql_native_password_auth()),
             AuthPlugin::CachingSha2Password => B(self.perform_caching_sha2_password_auth()),
@@ -250,7 +248,7 @@ impl Conn {
         }
     }
 
-    fn perform_caching_sha2_password_auth(self) -> impl Future<Item = Conn, Error = Error> {
+    fn perform_caching_sha2_password_auth(self) -> impl MyFuture<Conn> {
         let mut pass = self.opts.get_pass().map(Vec::from).unwrap_or(vec![]);
         pass.push(0);
 
@@ -280,19 +278,19 @@ impl Conn {
             })
     }
 
-    fn perform_mysql_native_password_auth(self) -> impl Future<Item = Conn, Error = Error> {
+    fn perform_mysql_native_password_auth(self) -> impl MyFuture<Conn> {
         // there is nothing to do after handshake response
         ok(self)
     }
 
-    fn drop_packet(self) -> BoxFuture<Conn> {
-        Box::new(self.read_packet().map(|(conn, _)| conn))
+    fn drop_packet(self) -> impl MyFuture<Conn> {
+        self.read_packet().map(|(conn, _)| conn)
     }
 
-    fn run_init_commands(self) -> BoxFuture<Conn> {
+    fn run_init_commands(self) -> impl MyFuture<Conn> {
         let init = self.opts.get_init().iter().map(Clone::clone).collect();
 
-        let fut = loop_fn(
+        loop_fn(
             (init, self),
             |(mut init, conn): (Vec<String>, Conn)| match init.pop() {
                 None => A(ok(Loop::Break(conn))),
@@ -302,15 +300,13 @@ impl Conn {
                     B(fut)
                 }
             },
-        );
-
-        Box::new(fut)
+        )
     }
 
-    pub fn new<T: Into<Opts>>(opts: T, handle: &Handle) -> BoxFuture<Conn> {
+    pub fn new<T: Into<Opts>>(opts: T, handle: &Handle) -> impl MyFuture<Conn> {
         let mut conn = Conn::empty(opts.into(), handle);
 
-        let fut = Stream::connect(
+        Stream::connect(
             (conn.opts.get_ip_or_hostname(), conn.opts.get_tcp_port()),
             &conn.handle,
         ).map(move |stream| {
@@ -325,29 +321,25 @@ impl Conn {
             .and_then(Conn::drop_packet)
             .and_then(Conn::read_max_allowed_packet)
             .and_then(Conn::read_wait_timeout)
-            .and_then(Conn::run_init_commands);
-
-        Box::new(fut)
+            .and_then(Conn::run_init_commands)
     }
 
     /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
-    fn read_max_allowed_packet(self) -> BoxFuture<Self> {
-        let fut = self.first("SELECT @@max_allowed_packet")
+    fn read_max_allowed_packet(self) -> impl MyFuture<Self> {
+        self.first("SELECT @@max_allowed_packet")
             .map(|(mut this, row_opt)| {
                 this.max_allowed_packet = row_opt.unwrap_or((1024 * 1024 * 2,)).0;
                 this
-            });
-        Box::new(fut)
+            })
     }
 
     /// Returns future that resolves to `Conn` with `wait_timeout` stored in it.
-    fn read_wait_timeout(self) -> BoxFuture<Self> {
-        let fut = self.first("SELECT @@wait_timeout")
+    fn read_wait_timeout(self) -> impl MyFuture<Self> {
+        self.first("SELECT @@wait_timeout")
             .map(|(mut this, row_opt)| {
                 this.wait_timeout = row_opt.unwrap_or((28800,)).0;
                 this
-            });
-        Box::new(fut)
+            })
     }
 
     /// Returns true if time since last io exceeds wait_timeout (or conn_ttl if specified in opts).
@@ -358,7 +350,7 @@ impl Conn {
     }
 
     /// Returns future that resolves to a `Conn` with `COM_RESET_CONNECTION` executed on it.
-    pub fn reset(self) -> BoxFuture<Conn> {
+    pub fn reset(self) -> impl MyFuture<Conn> {
         let pool = self.pool.clone();
         let fut = if self.version > (5, 7, 2) {
             let fut = self.write_command_data(consts::Command::COM_RESET_CONNECTION, &[])
@@ -368,21 +360,21 @@ impl Conn {
         } else {
             (ok(pool), B(Conn::new(self.opts.clone(), &self.handle)))
         };
-        Box::new(fut.into_future().map(|(pool, mut conn)| {
+        fut.into_future().map(|(pool, mut conn)| {
             conn.stmt_cache.clear();
             conn.pool = pool;
             conn
-        }))
+        })
     }
 
-    fn rollback_transaction(mut self) -> BoxFuture<Self> {
+    fn rollback_transaction(mut self) -> impl MyFuture<Self> {
         assert!(self.in_transaction);
         self.in_transaction = false;
         self.drop_query("ROLLBACK")
     }
 
-    fn drop_result(mut self) -> BoxFuture<Conn> {
-        let fut = match self.has_result.take() {
+    fn drop_result(mut self) -> impl MyFuture<Conn> {
+        match self.has_result.take() {
             Some((columns, None)) => A(B(query_result::assemble::<_, TextProtocol>(
                 self,
                 Some(columns),
@@ -394,8 +386,7 @@ impl Conn {
                 cached,
             ).drop_result())),
             None => B(ok(self)),
-        };
-        Box::new(fut)
+        }
     }
 }
 
