@@ -25,6 +25,7 @@ use queryable::Protocol;
 use std::sync::Arc;
 use tokio_io::io::read;
 use BoxFuture;
+use MyFuture;
 use Opts;
 
 pub mod read_packet;
@@ -232,8 +233,7 @@ pub trait ConnectionLike {
     /// Returns future that reads packet from a server end resolves to `(Self, Packet)`.
     fn read_packet(self) -> ReadPacket<Self>
     where
-        Self: Sized,
-        Self: 'static,
+        Self: Sized + 'static,
     {
         ReadPacket::new(self)
     }
@@ -381,83 +381,14 @@ pub trait ConnectionLike {
     /// Returns future that reads result set from a server and resolves to `QueryResult`.
     fn read_result_set<P>(self, cached: Option<StmtCacheResult>) -> BoxFuture<QueryResult<Self, P>>
     where
-        P: Protocol + 'static,
         Self: Sized + 'static,
+        P: Protocol + 'static,
     {
         let fut = self.read_packet()
             .and_then(|(this, packet)| match packet.0[0] {
                 0x00 => A(A(ok(query_result::new(this, None, cached)))),
-                0xFB => {
-                    let fut = parse_local_infile_packet(&*packet.0)
-                        .chain_err(|| Error::from(ErrorKind::UnexpectedPacket))
-                        .and_then(|local_infile| match this.get_local_infile_handler() {
-                            Some(handler) => Ok((local_infile.into_owned(), handler)),
-                            None => Err(ErrorKind::NoLocalInfileHandler.into()),
-                        })
-                        .into_future()
-                        .and_then(|(local_infile, handler)| {
-                            handler.handle(local_infile.file_name_ref())
-                        })
-                        .and_then(|reader| {
-                            let mut buf = Vec::with_capacity(4096);
-                            unsafe {
-                                buf.set_len(4096);
-                            }
-                            loop_fn((this, buf, reader), |(this, buf, reader)| {
-                                read(reader, buf)
-                                    .map_err(Into::into)
-                                    .and_then(|(reader, mut buf, count)| {
-                                        unsafe {
-                                            buf.set_len(count);
-                                        }
-                                        (
-                                            this.write_packet(&buf[..count]),
-                                            ok(buf),
-                                            ok(reader),
-                                            ok(count),
-                                        )
-                                    })
-                                    .map(|(this, buf, reader, count)| {
-                                        if count > 0 {
-                                            Loop::Continue((this, buf, reader))
-                                        } else {
-                                            Loop::Break(this)
-                                        }
-                                    })
-                            }).and_then(|this| this.read_packet())
-                                .map(|(this, _)| query_result::new(this, None, cached))
-                        });
-                    A(B(fut))
-                }
-                _ => {
-                    let fut = (&*packet.0)
-                        .read_lenenc_int()
-                        .map_err(Into::into)
-                        .into_future()
-                        .and_then(|column_count| this.read_packets(column_count as usize))
-                        .and_then(|(this, packets)| {
-                            packets
-                                .into_iter()
-                                .map(|packet| column_from_payload(packet.0).map_err(Error::from))
-                                .collect::<Result<Vec<Column>>>()
-                                .into_future()
-                                .and_then(|columns| {
-                                    if this.get_capabilities()
-                                        .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
-                                    {
-                                        A(ok((this, columns)))
-                                    } else {
-                                        B(this.read_packet().map(|(this, _)| (this, columns)))
-                                    }
-                                })
-                        })
-                        .map(|(mut this, columns)| {
-                            let columns = Arc::new(columns);
-                            this.set_pending_result(Some((Clone::clone(&columns), None)));
-                            query_result::new(this, Some(columns), cached)
-                        });
-                    B(fut)
-                }
+                0xFB => A(B(handle_local_infile(this, packet, cached))),
+                _ => B(handle_result_set(this, packet, cached)),
             });
         Box::new(fut)
     }
@@ -483,4 +414,89 @@ pub trait ConnectionLike {
         self.set_seq_id(0);
         self.write_packet(data)
     }
+}
+
+/// Will handle local infile packet.
+fn handle_local_infile<T, P>(
+    this: T,
+    packet: RawPacket,
+    cached: Option<StmtCacheResult>,
+) -> impl MyFuture<QueryResult<T, P>>
+where
+    P: Protocol + 'static,
+    T: ConnectionLike,
+    T: Sized + 'static,
+{
+    parse_local_infile_packet(&*packet.0)
+        .chain_err(|| Error::from(ErrorKind::UnexpectedPacket))
+        .and_then(|local_infile| match this.get_local_infile_handler() {
+            Some(handler) => Ok((local_infile.into_owned(), handler)),
+            None => Err(ErrorKind::NoLocalInfileHandler.into()),
+        })
+        .into_future()
+        .and_then(|(local_infile, handler)| handler.handle(local_infile.file_name_ref()))
+        .and_then(|reader| {
+            let mut buf = Vec::with_capacity(4096);
+            unsafe {
+                buf.set_len(4096);
+            }
+            loop_fn((this, buf, reader), |(this, buf, reader)| {
+                read(reader, buf)
+                    .map_err(Into::into)
+                    .and_then(|(reader, mut buf, count)| {
+                        unsafe {
+                            buf.set_len(count);
+                        }
+                        this.write_packet(&buf[..count])
+                            .map(move |this| (this, buf, reader, count))
+                    })
+                    .map(|(this, buf, reader, count)| {
+                        if count > 0 {
+                            Loop::Continue((this, buf, reader))
+                        } else {
+                            Loop::Break(this)
+                        }
+                    })
+            }).and_then(|this| this.read_packet())
+                .map(|(this, _)| query_result::new(this, None, cached))
+        })
+}
+
+/// Will handle result set packet.
+fn handle_result_set<T, P>(
+    this: T,
+    packet: RawPacket,
+    cached: Option<StmtCacheResult>,
+) -> impl MyFuture<QueryResult<T, P>>
+where
+    P: Protocol + 'static,
+    T: ConnectionLike,
+    T: Sized + 'static,
+{
+    (&*packet.0)
+        .read_lenenc_int()
+        .map_err(Into::into)
+        .into_future()
+        .and_then(|column_count| this.read_packets(column_count as usize))
+        .and_then(|(this, packets)| {
+            packets
+                .into_iter()
+                .map(|packet| column_from_payload(packet.0).map_err(Error::from))
+                .collect::<Result<Vec<Column>>>()
+                .into_future()
+                .and_then(|columns| {
+                    if this.get_capabilities()
+                        .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
+                    {
+                        A(ok((this, columns)))
+                    } else {
+                        B(this.read_packet().map(|(this, _)| (this, columns)))
+                    }
+                })
+        })
+        .map(|(mut this, columns)| {
+            let columns = Arc::new(columns);
+            this.set_pending_result(Some((Clone::clone(&columns), None)));
+            query_result::new(this, Some(columns), cached)
+        })
 }
