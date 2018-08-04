@@ -520,8 +520,11 @@ mod test {
         builder.stmt_cache_size(None);
         #[cfg(feature = "ssl")]
         {
-            let mut ssl_opts = SslOpts::new("./test/client.p12".as_ref());
-            ssl_opts.set_root_cert_path(Some("./test/ca-cert.der".as_ref()));
+            let mut ssl_opts =
+                SslOpts::new(AsRef::<::std::path::Path>::as_ref("./test/client.p12"));
+            ssl_opts.set_root_cert_path(Some(AsRef::<::std::path::Path>::as_ref(
+                "./test/ca-cert.der",
+            )));
             ssl_opts.set_password(Some("pass"));
             ssl_opts.set_danger_skip_domain_validation(true);
             builder.ssl_opts(ssl_opts);

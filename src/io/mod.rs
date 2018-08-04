@@ -11,8 +11,10 @@ use io::futures::new_connecting_stream;
 use io::futures::new_write_packet;
 use io::futures::ConnectingStream;
 use io::futures::WritePacket;
+#[cfg(not(feature = "ssl"))]
+use lib_futures::future::ok;
 use lib_futures::{
-    future::ok, stream, Async::{NotReady, Ready}, Poll,
+    stream, Async::{NotReady, Ready}, Poll,
 };
 #[cfg(feature = "ssl")]
 use lib_futures::{Future, IntoFuture};
@@ -39,7 +41,7 @@ mod async_tls;
 pub mod futures;
 
 #[derive(Debug)]
-enum Endpoint {
+pub enum Endpoint {
     Plain(TcpStream),
     #[cfg(feature = "ssl")]
     Secure(self::async_tls::TlsStream<TcpStream>),
