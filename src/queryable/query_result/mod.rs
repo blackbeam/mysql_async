@@ -134,7 +134,8 @@ where
         }
         let fut = self.read_packet().and_then(|(this, packet)| {
             if P::is_last_result_set_packet(&this, &packet) {
-                if this.get_status()
+                if this
+                    .get_status()
                     .contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS)
                 {
                     let (inner, cached) = this.into_inner();

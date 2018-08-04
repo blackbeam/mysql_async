@@ -14,7 +14,9 @@ use io::futures::WritePacket;
 #[cfg(not(feature = "ssl"))]
 use lib_futures::future::ok;
 use lib_futures::{
-    stream, Async::{NotReady, Ready}, Poll,
+    stream,
+    Async::{NotReady, Ready},
+    Poll,
 };
 #[cfg(feature = "ssl")]
 use lib_futures::{Future, IntoFuture};

@@ -202,7 +202,8 @@ impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
                         let _ = tx.send(poll_evented_res.map_err(Error::from));
                         Ok(())
                     });
-                    let fut = rx.map_err(|_| Error::from("Future Canceled"))
+                    let fut = rx
+                        .map_err(|_| Error::from("Future Canceled"))
                         .and_then(|r| r.into_future())
                         .map(|poll_evented| Box::new(poll_evented) as Box<AsyncRead>);
                     Box::new(fut) as BoxFuture<Box<AsyncRead>>

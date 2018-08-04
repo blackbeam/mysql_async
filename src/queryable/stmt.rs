@@ -117,7 +117,8 @@ where
             match buf {
                 Some(buf) => {
                     let chunk_len = buf.len() - 6;
-                    let fut = this.write_command_data(Command::COM_STMT_SEND_LONG_DATA, buf)
+                    let fut = this
+                        .write_command_data(Command::COM_STMT_SEND_LONG_DATA, buf)
                         .map(move |this| {
                             if chunk_len < data_cap {
                                 Loop::Break((this, params))
@@ -142,7 +143,8 @@ where
         loop_fn(
             (self, params, bits),
             |(this, params, mut bits)| match bits.next() {
-                Some((index, true)) => A(this.send_long_data_for_index(params, index)
+                Some((index, true)) => A(this
+                    .send_long_data_for_index(params, index)
                     .map(|(this, params)| Loop::Continue((this, params, bits)))),
                 Some((_, false)) => B(ok(Loop::Continue((this, params, bits)))),
                 None => B(ok(Loop::Break((this, params)))),
@@ -161,28 +163,28 @@ where
             return A(err(error));
         }
 
-        let fut = self.inner
+        let fut = self
+            .inner
             .params
             .as_ref()
             .ok_or_else(|| unreachable!())
             .and_then(|params_def| serialize_bin_many(&*params_def, &*params).map_err(Error::from))
             .into_future()
             .and_then(|bin_payload| match bin_payload {
-                (row_data, null_bitmap, large_bitmap) => {
-                    self.send_long_data(params.into_iter().collect(), large_bitmap.clone())
-                        .and_then(|(this, params)| {
-                            let mut data = Vec::new();
-                            write_data(
-                                &mut data,
-                                this.inner.statement_id,
-                                row_data,
-                                params,
-                                this.inner.params.as_ref().unwrap(),
-                                null_bitmap,
-                            );
-                            this.write_command_data(Command::COM_STMT_EXECUTE, data)
-                        })
-                }
+                (row_data, null_bitmap, large_bitmap) => self
+                    .send_long_data(params.into_iter().collect(), large_bitmap.clone())
+                    .and_then(|(this, params)| {
+                        let mut data = Vec::new();
+                        write_data(
+                            &mut data,
+                            this.inner.statement_id,
+                            row_data,
+                            params,
+                            this.inner.params.as_ref().unwrap(),
+                            null_bitmap,
+                        );
+                        this.write_command_data(Command::COM_STMT_EXECUTE, data)
+                    }),
             })
             .and_then(|this| this.read_result_set(None));
         B(fut)
@@ -219,7 +221,8 @@ where
         data.write_u8(0u8).unwrap();
         data.write_u32::<LE>(1u32).unwrap();
 
-        B(self.write_command_data(Command::COM_STMT_EXECUTE, data)
+        B(self
+            .write_command_data(Command::COM_STMT_EXECUTE, data)
             .and_then(|this| this.read_result_set(None)))
     }
 
@@ -265,7 +268,8 @@ where
         loop_fn(
             (self, params_iter),
             |(this, mut params_iter)| match params_iter.next() {
-                Some(params) => A(this.execute(params)
+                Some(params) => A(this
+                    .execute(params)
                     .and_then(|result| result.drop_result())
                     .map(|this| Loop::Continue((this, params_iter)))),
                 None => B(ok(Loop::Break(this))),

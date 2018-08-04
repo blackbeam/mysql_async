@@ -461,7 +461,8 @@ fn from_url_basic(url_str: &str) -> Result<(Opts, Vec<(String, String)>)> {
     }
     let user = get_opts_user_from_url(&url);
     let pass = get_opts_pass_from_url(&url);
-    let ip_or_hostname = url.host_str()
+    let ip_or_hostname = url
+        .host_str()
         .map(String::from)
         .unwrap_or("127.0.0.1".into());
     let tcp_port = url.port().unwrap_or(3306);

@@ -216,7 +216,8 @@ pub trait ConnectionLike {
     {
         let fut = if self.get_opts().get_stmt_cache_size() > 0 {
             if let Some(old_stmt) = self.stmt_cache_mut().put(query, stmt.clone()) {
-                A(self.close_stmt(old_stmt.statement_id)
+                A(self
+                    .close_stmt(old_stmt.statement_id)
                     .map(|this| (this, StmtCacheResult::Cached)))
             } else {
                 B(ok((self, StmtCacheResult::Cached)))
@@ -274,7 +275,8 @@ pub trait ConnectionLike {
                     inner_stmt.named_params = named_params.clone();
                     Box::new(ok((self, inner_stmt, StmtCacheResult::Cached)))
                 } else {
-                    let fut = self.write_command_data(Command::COM_STMT_PREPARE, &*query)
+                    let fut = self
+                        .write_command_data(Command::COM_STMT_PREPARE, &*query)
                         .and_then(|this| this.read_packet())
                         .and_then(|(this, packet)| {
                             InnerStmt::new(&*packet.0, named_params)
@@ -304,12 +306,14 @@ pub trait ConnectionLike {
                                 })
                                 .and_then(|(this, inner_stmt)| {
                                     if inner_stmt.num_params > 0 {
-                                        if this.get_capabilities()
+                                        if this
+                                            .get_capabilities()
                                             .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
                                         {
                                             A(ok((this, inner_stmt)))
                                         } else {
-                                            B(this.read_packet()
+                                            B(this
+                                                .read_packet()
                                                 .map(|(this, _)| (this, inner_stmt)))
                                         }
                                     } else {
@@ -340,12 +344,14 @@ pub trait ConnectionLike {
                                 })
                                 .and_then(|(this, inner_stmt)| {
                                     if inner_stmt.num_columns > 0 {
-                                        if this.get_capabilities()
+                                        if this
+                                            .get_capabilities()
                                             .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
                                         {
                                             A(ok((this, inner_stmt)))
                                         } else {
-                                            B(this.read_packet()
+                                            B(this
+                                                .read_packet()
                                                 .map(|(this, _)| (this, inner_stmt)))
                                         }
                                     } else {
@@ -381,7 +387,8 @@ pub trait ConnectionLike {
         Self: Sized + 'static,
         P: Protocol + 'static,
     {
-        let fut = self.read_packet()
+        let fut = self
+            .read_packet()
             .and_then(|(this, packet)| match packet.0[0] {
                 0x00 => A(A(ok(query_result::new(this, None, cached)))),
                 0xFB => A(B(handle_local_infile(this, packet, cached))),
@@ -482,7 +489,8 @@ where
                 .collect::<Result<Vec<Column>>>()
                 .into_future()
                 .and_then(|columns| {
-                    if this.get_capabilities()
+                    if this
+                        .get_capabilities()
                         .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
                     {
                         A(ok((this, columns)))

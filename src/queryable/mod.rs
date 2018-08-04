@@ -73,7 +73,8 @@ where
 {
     /// Returns future that resolves to `Conn` if `COM_PING` executed successfully.
     fn ping(self) -> BoxFuture<Self> {
-        let fut = self.write_command_data(Command::COM_PING, &[])
+        let fut = self
+            .write_command_data(Command::COM_PING, &[])
             .and_then(|this| this.read_packet())
             .map(|(this, _)| this);
         Box::new(fut)
@@ -88,7 +89,8 @@ where
 
     /// Returns future that performs `query`.
     fn query<Q: AsRef<str>>(self, query: Q) -> BoxFuture<QueryResult<Self, TextProtocol>> {
-        let fut = self.write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
+        let fut = self
+            .write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
             .and_then(|conn_like| conn_like.read_result_set(None));
         Box::new(fut)
     }
@@ -101,7 +103,8 @@ where
         Q: AsRef<str>,
         R: FromRow,
     {
-        let fut = self.query(query)
+        let fut = self
+            .query(query)
             .and_then(|result| result.collect_and_drop::<Row>())
             .map(|(this, mut rows)| {
                 if rows.len() > 1 {
@@ -121,7 +124,8 @@ where
 
     /// Returns future that prepares statement.
     fn prepare<Q: AsRef<str>>(self, query: Q) -> BoxFuture<Stmt<Self>> {
-        let fut = self.prepare_stmt(query)
+        let fut = self
+            .prepare_stmt(query)
             .map(|(this, inner_stmt, stmt_cache_result)| {
                 stmt::new(this, inner_stmt, stmt_cache_result)
             });
@@ -135,7 +139,8 @@ where
         P: Into<Params>,
     {
         let params: Params = params.into();
-        let fut = self.prepare(query)
+        let fut = self
+            .prepare(query)
             .and_then(|stmt| stmt.execute(params))
             .map(|result| {
                 let (stmt, columns, _) = query_result::disassemble(result);
@@ -154,7 +159,8 @@ where
         P: Into<Params>,
         R: FromRow,
     {
-        let fut = self.prep_exec(query, params)
+        let fut = self
+            .prep_exec(query, params)
             .and_then(|result| result.collect_and_drop::<Row>())
             .map(|(this, mut rows)| {
                 if rows.len() > 1 {
@@ -172,7 +178,8 @@ where
         Q: AsRef<str>,
         P: Into<Params>,
     {
-        let fut = self.prep_exec(query, params)
+        let fut = self
+            .prep_exec(query, params)
             .and_then(|result| result.drop_result());
         Box::new(fut)
     }
@@ -186,7 +193,8 @@ where
         Params: From<P>,
         P: 'static,
     {
-        let fut = self.prepare(query)
+        let fut = self
+            .prepare(query)
             .and_then(|stmt| stmt.batch(params_iter))
             .and_then(|stmt| stmt.close());
         Box::new(fut)

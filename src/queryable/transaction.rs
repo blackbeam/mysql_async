@@ -122,7 +122,8 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
             B(ok(conn_like))
         };
 
-        let fut = fut.into_future()
+        let fut = fut
+            .into_future()
             .and_then(move |conn_like| {
                 if let Some(readonly) = readonly {
                     if readonly {

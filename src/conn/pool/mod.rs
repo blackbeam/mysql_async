@@ -361,7 +361,8 @@ mod test {
         let mut lp = Core::new().unwrap();
 
         let pool = Pool::new(&**DATABASE_URL, &lp.handle());
-        let fut = pool.get_conn()
+        let fut = pool
+            .get_conn()
             .and_then(|conn| conn.ping().map(|_| ()))
             .and_then(|_| pool.disconnect());
 
@@ -376,7 +377,8 @@ mod test {
             format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL),
             &lp.handle(),
         );
-        let fut = pool.get_conn()
+        let fut = pool
+            .get_conn()
             .and_then(|conn| conn.drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)"))
             .and_then({
                 let pool = pool.clone();
@@ -411,7 +413,8 @@ mod test {
             &lp.handle(),
         );
         let pool_clone = pool.clone();
-        let fut = pool.get_conn()
+        let fut = pool
+            .get_conn()
             .join(pool.get_conn())
             .and_then(|(mut conn1, conn2)| {
                 let new_conn = pool_clone.get_conn();

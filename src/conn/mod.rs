@@ -16,7 +16,9 @@ use io::Stream;
 use lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
 use local_infile_handler::LocalInfileHandler;
 use myc::{
-    crypto, packets::{parse_handshake_packet, AuthPlugin, HandshakeResponse, SslRequest}, scramble,
+    crypto,
+    packets::{parse_handshake_packet, AuthPlugin, HandshakeResponse, SslRequest},
+    scramble,
 };
 use opts::Opts;
 use queryable::query_result;
@@ -191,13 +193,15 @@ impl Conn {
     }
 
     fn switch_to_ssl_if_needed(self) -> impl MyFuture<Conn> {
-        if self.opts
+        if self
+            .opts
             .get_capabilities()
             .contains(CapabilityFlags::CLIENT_SSL)
         {
             let ssl_request = SslRequest::new(self.capabilities);
             let fut = self.write_packet(ssl_request.as_ref()).and_then(|conn| {
-                let ssl_opts = conn.get_opts()
+                let ssl_opts = conn
+                    .get_opts()
                     .get_ssl_opts()
                     .cloned()
                     .expect("unreachable");
@@ -214,7 +218,8 @@ impl Conn {
     }
 
     fn do_handshake_response(self) -> impl MyFuture<Conn> {
-        let scramble = self.opts
+        let scramble = self
+            .opts
             .get_pass()
             .and_then(|pass| match self.auth_plugin {
                 AuthPlugin::MysqlNativePassword => {
@@ -260,7 +265,8 @@ impl Conn {
                     0x04 => if conn.is_secure() {
                         B(A(conn.write_packet(&*pass)))
                     } else {
-                        let fut = conn.write_packet(&[0x02][..])
+                        let fut = conn
+                            .write_packet(&[0x02][..])
                             .and_then(|conn| conn.read_packet())
                             .and_then(move |(conn, packet)| {
                                 let key = &packet.as_ref()[1..];
@@ -295,7 +301,8 @@ impl Conn {
             |(mut init, conn): (Vec<String>, Conn)| match init.pop() {
                 None => A(ok(Loop::Break(conn))),
                 Some(query) => {
-                    let fut = conn.drop_query(query)
+                    let fut = conn
+                        .drop_query(query)
                         .map(|conn| Loop::Continue((init, conn)));
                     B(fut)
                 }
@@ -353,7 +360,8 @@ impl Conn {
     pub fn reset(self) -> impl MyFuture<Conn> {
         let pool = self.pool.clone();
         let fut = if self.version > (5, 7, 2) {
-            let fut = self.write_command_data(consts::Command::COM_RESET_CONNECTION, &[])
+            let fut = self
+                .write_command_data(consts::Command::COM_RESET_CONNECTION, &[])
                 .and_then(|conn| conn.read_packet())
                 .map(|(conn, _)| conn);
             (ok(pool), A(fut))
@@ -626,7 +634,8 @@ mod test {
             .and_then(|(conn, row_opt)| {
                 let (_, count): (String, usize) = row_opt.unwrap();
                 assert_eq!(count, 3);
-                let order = conn.stmt_cache_ref()
+                let order = conn
+                    .stmt_cache_ref()
                     .iter()
                     .map(Clone::clone)
                     .collect::<Vec<String>>();
