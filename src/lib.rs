@@ -132,8 +132,6 @@ extern crate serde;
 extern crate serde_json;
 extern crate tokio_core as tokio;
 extern crate tokio_io;
-#[cfg(feature = "ssl")]
-extern crate tokio_tls;
 extern crate twox_hash;
 extern crate url;
 
