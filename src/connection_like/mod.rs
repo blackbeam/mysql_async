@@ -9,6 +9,7 @@
 use self::read_packet::ReadPacket;
 use self::streamless::Streamless;
 use self::write_packet::WritePacket;
+use byteorder::{ByteOrder, LittleEndian};
 use conn::named_params::parse_named_params;
 use conn::stmt_cache::StmtCache;
 use consts::{CapabilityFlags, Command, StatusFlags};
@@ -369,12 +370,8 @@ pub trait ConnectionLike {
     where
         Self: Sized + 'static,
     {
-        let stmt_id = [
-            (statement_id & 0xFF) as u8,
-            (statement_id >> 8 & 0xFF) as u8,
-            (statement_id >> 16 & 0xFF) as u8,
-            (statement_id >> 24 & 0xFF) as u8,
-        ];
+        let mut stmt_id = [0; 4];
+        LittleEndian::write_u32(&mut stmt_id[..], statement_id);
         self.write_command_data(Command::COM_STMT_CLOSE, &stmt_id[..])
     }
 
