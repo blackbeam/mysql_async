@@ -7,8 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use super::LocalInfileHandler;
-use errors::*;
-use lib_futures::{oneshot, Future, IntoFuture};
+use lib_futures::IntoFuture;
 use mio::{Evented, Poll, PollOpt, Ready, Registration, Token};
 use std::collections::HashSet;
 use std::fs;
@@ -17,7 +16,7 @@ use std::path::PathBuf;
 use std::str::from_utf8;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::thread;
-use tokio::reactor::{Handle, PollEvented, Remote};
+use tokio::reactor::PollEvented2;
 use tokio_io::AsyncRead;
 use BoxFuture;
 
@@ -160,11 +159,10 @@ impl Evented for File {
 #[derive(Clone, Debug)]
 pub struct WhiteListFsLocalInfileHandler {
     white_list: HashSet<PathBuf>,
-    handle: Remote,
 }
 
 impl WhiteListFsLocalInfileHandler {
-    pub fn new<A, B>(white_list: B, handle: &Handle) -> WhiteListFsLocalInfileHandler
+    pub fn new<A, B>(white_list: B) -> WhiteListFsLocalInfileHandler
     where
         A: Into<PathBuf>,
         B: IntoIterator<Item = A>,
@@ -175,40 +173,21 @@ impl WhiteListFsLocalInfileHandler {
         }
         WhiteListFsLocalInfileHandler {
             white_list: white_list_set,
-            handle: handle.remote().clone(),
         }
     }
 }
 
 impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
-    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead>> {
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead + Send + 'static>> {
         let path: PathBuf = match from_utf8(file_name) {
             Ok(path_str) => path_str.into(),
             Err(_) => return Box::new(Err("Invalid file name".into()).into_future()),
         };
         if self.white_list.contains(&path) {
-            match self.handle.handle() {
-                Some(handle) => {
-                    let fut = PollEvented::new(File::new(path), &handle)
-                        .map_err(Into::into)
-                        .map(|poll_evented| Box::new(poll_evented) as Box<AsyncRead>)
-                        .into_future();
-                    Box::new(fut) as BoxFuture<Box<AsyncRead>>
-                }
-                None => {
-                    let (tx, rx) = oneshot();
-                    self.handle.spawn(|handle| {
-                        let poll_evented_res = PollEvented::new(File::new(path), &handle);
-                        let _ = tx.send(poll_evented_res.map_err(Error::from));
-                        Ok(())
-                    });
-                    let fut = rx
-                        .map_err(|_| Error::from("Future Canceled"))
-                        .and_then(|r| r.into_future())
-                        .map(|poll_evented| Box::new(poll_evented) as Box<AsyncRead>);
-                    Box::new(fut) as BoxFuture<Box<AsyncRead>>
-                }
-            }
+            let fut = Ok(
+                Box::new(PollEvented2::new(File::new(path))) as Box<AsyncRead + Send + 'static>
+            ).into_future();
+            Box::new(fut) as BoxFuture<Box<_>>
         } else {
             let err_msg = format!("Path `{}' is not in white list", path.display());
             return Box::new(Err(err_msg.into()).into_future());

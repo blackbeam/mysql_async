@@ -156,6 +156,7 @@ where
     where
         U: ::std::ops::Deref<Target = [Value]>,
         U: IntoIterator<Item = Value>,
+        U: Send + 'static,
     {
         if self.inner.num_params as usize != params.len() {
             let error =
@@ -242,7 +243,7 @@ where
     /// See `Queriable::first`
     pub fn first<P, R>(self, params: P) -> impl MyFuture<(Self, Option<R>)>
     where
-        P: Into<Params>,
+        P: Into<Params> + 'static,
         R: FromRow,
     {
         self.execute(params)
@@ -259,7 +260,8 @@ where
     /// See `Queriable::batch`
     pub fn batch<I, P>(self, params_iter: I) -> impl MyFuture<Self>
     where
-        I: IntoIterator<Item = P> + 'static,
+        I: IntoIterator<Item = P>,
+        I::IntoIter: Send + 'static,
         Params: From<P>,
         P: 'static,
     {

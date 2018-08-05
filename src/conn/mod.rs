@@ -27,7 +27,6 @@ use std::fmt;
 use std::mem;
 use std::sync::Arc;
 use time::SteadyTime;
-use tokio::reactor::Handle;
 use Column;
 use MyFuture;
 
@@ -52,7 +51,6 @@ pub struct Conn {
     has_result: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>,
     in_transaction: bool,
     opts: Opts,
-    handle: Handle,
     last_io: SteadyTime,
     wait_timeout: u32,
     stmt_cache: StmtCache,
@@ -97,7 +95,6 @@ impl Conn {
 
     /// Hacky way to move connection through &mut. `self` becomes unusable.
     fn take(&mut self) -> Conn {
-        let handle = self.handle.clone();
         mem::replace(
             self,
             Conn {
@@ -116,7 +113,6 @@ impl Conn {
                 has_result: Default::default(),
                 in_transaction: false,
                 opts: Default::default(),
-                handle: handle,
                 last_io: SteadyTime::now(),
                 wait_timeout: 0,
                 stmt_cache: StmtCache::new(0),
@@ -126,7 +122,7 @@ impl Conn {
         )
     }
 
-    fn empty(opts: Opts, handle: &Handle) -> Conn {
+    fn empty(opts: Opts) -> Conn {
         Conn {
             last_command: consts::Command::COM_PING,
             capabilities: opts.get_capabilities(),
@@ -142,7 +138,6 @@ impl Conn {
             has_result: None,
             pool: None,
             in_transaction: false,
-            handle: handle.clone(),
             last_io: SteadyTime::now(),
             wait_timeout: 0,
             stmt_cache: StmtCache::new(opts.get_stmt_cache_size()),
@@ -310,16 +305,14 @@ impl Conn {
         )
     }
 
-    pub fn new<T: Into<Opts>>(opts: T, handle: &Handle) -> impl MyFuture<Conn> {
-        let mut conn = Conn::empty(opts.into(), handle);
+    pub fn new<T: Into<Opts>>(opts: T) -> impl MyFuture<Conn> {
+        let mut conn = Conn::empty(opts.into());
 
-        Stream::connect(
-            (conn.opts.get_ip_or_hostname(), conn.opts.get_tcp_port()),
-            &conn.handle,
-        ).map(move |stream| {
-            conn.stream = Some(stream);
-            conn
-        })
+        Stream::connect((conn.opts.get_ip_or_hostname(), conn.opts.get_tcp_port()))
+            .map(move |stream| {
+                conn.stream = Some(stream);
+                conn
+            })
             .and_then(Conn::setup_stream)
             .and_then(Conn::handle_handshake)
             .and_then(Conn::switch_to_ssl_if_needed)
@@ -366,7 +359,7 @@ impl Conn {
                 .map(|(conn, _)| conn);
             (ok(pool), A(fut))
         } else {
-            (ok(pool), B(Conn::new(self.opts.clone(), &self.handle)))
+            (ok(pool), B(Conn::new(self.opts.clone())))
         };
         fut.into_future().map(|(pool, mut conn)| {
             conn.stmt_cache.clear();
@@ -514,13 +507,27 @@ mod test {
     use lib_futures::Future;
     use prelude::*;
     use test_misc::DATABASE_URL;
-    use tokio::reactor::Core;
+    use tokio;
     use Conn;
     use OptsBuilder;
     #[cfg(feature = "ssl")]
     use SslOpts;
     use TransactionOptions;
     use WhiteListFsLocalInfileHandler;
+
+    /// Same as `tokio::run`, but will panic if future panics and will return the result
+    /// of future execution.
+    fn run<F, T, U>(future: F) -> Result<T, U>
+    where
+        F: Future<Item = T, Error = U> + Send + 'static,
+        T: Send + 'static,
+        U: Send + 'static,
+    {
+        let mut runtime = tokio::runtime::Runtime::new().unwrap();
+        let result = runtime.block_on(future);
+        runtime.shutdown_on_idle().wait().unwrap();
+        result
+    }
 
     fn get_opts() -> OptsBuilder {
         let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
@@ -548,49 +555,42 @@ mod test {
 
     #[test]
     fn should_connect() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| Queryable::ping(conn))
             .and_then(|conn| Queryable::disconnect(conn));
 
-        lp.run(fut).unwrap();
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_execute_init_queries_on_new_connection() {
-        let mut lp = Core::new().unwrap();
-
         let mut opts_builder = OptsBuilder::from_opts(get_opts());
         opts_builder.init(vec!["SET @a = 42", "SET @b = 'foo'"]);
-        let fut = Conn::new(opts_builder, &lp.handle())
+        let fut = Conn::new(opts_builder)
             .and_then(|conn| Queryable::query(conn, "SELECT @a, @b"))
             .and_then(|result| result.collect_and_drop::<(u8, String)>())
-            .and_then(|(conn, rows)| Queryable::disconnect(conn).map(|_| rows));
+            .and_then(|(conn, rows)| Queryable::disconnect(conn).map(|_| rows))
+            .map(|result| assert_eq!(result, vec![(42, "foo".into())]));
 
-        let result = lp.run(fut).unwrap();
-        assert_eq!(result, vec![(42, "foo".into())]);
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_reset_the_connection() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| conn.drop_exec("SELECT ?", (1,)))
             .and_then(|conn| conn.reset())
             .and_then(|conn| conn.drop_exec("SELECT ?", (1,)))
             .and_then(|conn| conn.disconnect());
 
-        lp.run(fut).unwrap();
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_not_cache_statements_if_stmt_cache_size_is_zero() {
-        let mut lp = Core::new().unwrap();
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.stmt_cache_size(0);
-        let fut = Conn::new(opts, &lp.handle())
+        let fut = Conn::new(opts)
             .and_then(|conn| conn.drop_exec("DO ?", (1,)))
             .and_then(|conn| {
                 conn.prepare("DO 2").and_then(|stmt| {
@@ -611,17 +611,16 @@ mod test {
                 conn.disconnect()
             });
 
-        lp.run(fut).unwrap();
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_hold_stmt_cache_size_bound() {
         use connection_like::ConnectionLike;
 
-        let mut lp = Core::new().unwrap();
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.stmt_cache_size(3);
-        let fut = Conn::new(opts, &lp.handle())
+        let fut = Conn::new(opts)
             .and_then(|conn| conn.drop_exec("DO 1", ()))
             .and_then(|conn| conn.drop_exec("DO 2", ()))
             .and_then(|conn| conn.drop_exec("DO 3", ()))
@@ -643,19 +642,17 @@ mod test {
                 conn.disconnect()
             });
 
-        lp.run(fut).unwrap();
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_perform_queries() {
-        let mut lp = Core::new().unwrap();
-
         let long_string = ::std::iter::repeat('A')
             .take(18 * 1024 * 1024)
             .collect::<String>();
         let long_string_clone = long_string.clone();
-        let fut = Conn::new(get_opts(), &lp.handle())
-            .and_then(|conn| {
+        let fut = Conn::new(get_opts())
+            .and_then(move |conn| {
                 Queryable::query(
                     conn,
                     format!(
@@ -672,34 +669,32 @@ mod test {
                     acc
                 })
             })
-            .and_then(|(conn, out)| Queryable::disconnect(conn).map(|_| out));
+            .and_then(|(conn, out)| Queryable::disconnect(conn).map(|_| out))
+            .map(|result| {
+                assert_eq!((String::from("hello"), 123), result[0]);
+                assert_eq!((long_string, 231), result[1]);
+            });
 
-        let result = lp.run(fut).unwrap();
-        assert_eq!((String::from("hello"), 123), result[0]);
-        assert_eq!((long_string, 231), result[1]);
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_drop_query() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| {
                 conn.drop_query("CREATE TEMPORARY TABLE tmp (id int DEFAULT 10, name text)")
             })
             .and_then(|conn| Queryable::drop_query(conn, "INSERT INTO tmp VALUES (1, 'foo')"))
             .and_then(|conn| Queryable::first::<_, (u8,)>(conn, "SELECT COUNT(*) FROM tmp"))
-            .and_then(|(conn, row)| conn.disconnect().map(move |_| row));
+            .and_then(|(conn, row)| conn.disconnect().map(move |_| row))
+            .map(|result| assert_eq!(result, Some((1,))));
 
-        let result = lp.run(fut).unwrap();
-        assert_eq!(result, Some((1,)));
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_handle_mutliresult_set() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| {
                 Queryable::query(
                     conn,
@@ -714,26 +709,26 @@ mod test {
             .and_then(|(result, rows_1)| (result.collect_and_drop(), Ok(rows_1)))
             .and_then(|((conn, rows_2), rows_1)| {
                 Queryable::disconnect(conn).map(|_| vec![rows_1, rows_2])
+            })
+            .map(|rows_vec| {
+                assert_eq!(rows_vec.len(), 2);
+                for (i, rows) in rows_vec.into_iter().enumerate() {
+                    if i == 0 {
+                        assert_eq!((String::from("hello"), 123), rows[0]);
+                        assert_eq!((String::from("world"), 231), rows[1]);
+                    }
+                    if i == 1 {
+                        assert_eq!((String::from("foo"), 255), rows[0]);
+                    }
+                }
             });
 
-        let rows_vec = lp.run(fut).unwrap();
-        assert_eq!(rows_vec.len(), 2);
-        for (i, rows) in rows_vec.into_iter().enumerate() {
-            if i == 0 {
-                assert_eq!((String::from("hello"), 123), rows[0]);
-                assert_eq!((String::from("world"), 231), rows[1]);
-            }
-            if i == 1 {
-                assert_eq!((String::from("foo"), 255), rows[0]);
-            }
-        }
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_map_resultset() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| {
                 Queryable::query(
                     conn,
@@ -749,26 +744,26 @@ mod test {
             .and_then(|(result, rows_1)| (result.map_and_drop(from_row), Ok(rows_1)))
             .and_then(|((conn, rows_2), rows_1)| {
                 Queryable::disconnect(conn).map(|_| vec![rows_1, rows_2])
+            })
+            .map(|rows_vec| {
+                assert_eq!(rows_vec.len(), 2);
+                for (i, rows) in rows_vec.into_iter().enumerate() {
+                    if i == 0 {
+                        assert_eq!((String::from("hello"), 123), rows[0]);
+                        assert_eq!((String::from("world"), 231), rows[1]);
+                    }
+                    if i == 1 {
+                        assert_eq!((String::from("foo"), 255), rows[0]);
+                    }
+                }
             });
 
-        let rows_vec = lp.run(fut).unwrap();
-        assert_eq!(rows_vec.len(), 2);
-        for (i, rows) in rows_vec.into_iter().enumerate() {
-            if i == 0 {
-                assert_eq!((String::from("hello"), 123), rows[0]);
-                assert_eq!((String::from("world"), 231), rows[1]);
-            }
-            if i == 1 {
-                assert_eq!((String::from("foo"), 255), rows[0]);
-            }
-        }
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_reduce_resultset() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| {
                 Queryable::query(
                     conn,
@@ -787,18 +782,20 @@ mod test {
             .and_then(|(result, reduced)| (result.collect_and_drop(), Ok(reduced)))
             .and_then(|((conn, rows_2), reduced)| {
                 Queryable::disconnect(conn).map(move |_| vec![vec![reduced], rows_2])
+            })
+            .map(|rows_vec| {
+                assert_eq!(rows_vec.len(), 2);
+                for (i, rows) in rows_vec.into_iter().enumerate() {
+                    if i == 0 {
+                        assert_eq!(11, rows[0]);
+                    }
+                    if i == 1 {
+                        assert_eq!(7, rows[0]);
+                    }
+                }
             });
 
-        let rows_vec = lp.run(fut).unwrap();
-        assert_eq!(rows_vec.len(), 2);
-        for (i, rows) in rows_vec.into_iter().enumerate() {
-            if i == 0 {
-                assert_eq!(11, rows[0]);
-            }
-            if i == 1 {
-                assert_eq!(7, rows[0]);
-            }
-        }
+        run(fut).unwrap();
     }
 
     #[test]
@@ -810,9 +807,8 @@ mod test {
             UPDATE time_zone SET Time_zone_id = 1 WHERE Time_zone_id = 1;
             UPDATE time_zone SET Time_zone_id = 1 WHERE Time_zone_id = 1;
             SELECT 4;";
-        let mut lp = Core::new().unwrap();
 
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|c| {
                 c.start_transaction(TransactionOptions::new())
                     .and_then(|t| t.drop_query(QUERY))
@@ -838,19 +834,22 @@ mod test {
                     .and_then(|t| t.commit())
             })
             .and_then(|c| c.first_exec::<_, _, u8>("SELECT 1", ()))
-            .and_then(|(c, output)| c.disconnect().map(move |_| output));
+            .and_then(|(c, output)| c.disconnect().map(move |_| output))
+            .map(|result| assert_eq!(result, Some(1)));
 
-        assert_eq!(Some(1), lp.run(fut).unwrap());
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_iterate_over_resultset() {
-        use std::cell::RefCell;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
 
-        let acc: RefCell<u8> = RefCell::new(1);
-        let mut lp = Core::new().unwrap();
+        let acc = Arc::new(AtomicUsize::new(0));
 
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| {
                 Queryable::query(
                     conn,
@@ -860,40 +859,54 @@ mod test {
                     SELECT 5;",
                 )
             })
-            .and_then(|result| result.for_each(|row| *acc.borrow_mut() *= from_row::<u8>(row)))
-            .and_then(|result| {
-                result.for_each_and_drop(|row| *acc.borrow_mut() *= from_row::<u8>(row))
+            .and_then({
+                let acc = acc.clone();
+                move |result| {
+                    result.for_each({
+                        let acc = acc.clone();
+                        move |row| {
+                            acc.fetch_add(from_row::<usize>(row), Ordering::SeqCst);
+                        }
+                    })
+                }
             })
-            .and_then(Queryable::disconnect);
+            .and_then({
+                let acc = acc.clone();
+                move |result| {
+                    result.for_each_and_drop({
+                        let acc = acc.clone();
+                        move |row| {
+                            acc.fetch_add(from_row::<usize>(row), Ordering::SeqCst);
+                        }
+                    })
+                }
+            })
+            .and_then(Queryable::disconnect)
+            .map(move |_| assert_eq!(acc.load(Ordering::SeqCst), 10));
 
-        lp.run(fut).unwrap();
-        assert_eq!(*acc.borrow(), 30);
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_prepare_statement() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT ?"))
             .and_then(|stmt| stmt.close())
             .and_then(|conn| conn.disconnect());
 
-        lp.run(fut).unwrap();
+        run(fut).unwrap();
 
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT :foo"))
             .and_then(|stmt| stmt.close())
             .and_then(|conn| conn.disconnect());
 
-        lp.run(fut).unwrap();
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_execute_statement() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT ?"))
             .and_then(|stmt| stmt.execute((42,)))
             .and_then(|result| result.collect_and_drop::<(u8,)>())
@@ -924,12 +937,12 @@ mod test {
                 stmt.close()
                     .and_then(|conn| conn.disconnect())
                     .map(move |_| reduced)
-            });
+            })
+            .map(|output| assert_eq!(output, 10));
 
-        let output = lp.run(fut).unwrap();
-        assert_eq!(output, 10);
+        run(fut).unwrap();
 
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT :foo, :bar, :foo, 3"))
             .and_then(|stmt| stmt.execute(params! { "foo" => 2, "bar" => 3 }))
             .and_then(|result| result.collect_and_drop::<(u8, u8, u8, u8)>())
@@ -958,17 +971,15 @@ mod test {
                 stmt.close()
                     .and_then(|conn| conn.disconnect())
                     .map(move |_| reduced)
-            });
+            })
+            .map(|output| assert_eq!(output, 10));
 
-        let output = lp.run(fut).unwrap();
-        assert_eq!(output, 10);
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_prep_exec_statement() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| {
                 Queryable::prep_exec(conn, r"SELECT :a, :b, :a", params! { "a" => 2, "b" => 3 })
             })
@@ -978,17 +989,15 @@ mod test {
                     a * b * c
                 })
             })
-            .and_then(|(conn, output)| Queryable::disconnect(conn).map(move |_| output[0]));
+            .and_then(|(conn, output)| Queryable::disconnect(conn).map(move |_| output[0]))
+            .map(|output| assert_eq!(output, 12u8));
 
-        let output = lp.run(fut).unwrap();
-        assert_eq!(output, 12u8);
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_first_exec_statement() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| {
                 Queryable::first_exec(
                     conn,
@@ -996,17 +1005,17 @@ mod test {
                     params! { "a" => 2, "b" => 3 },
                 )
             })
-            .and_then(|(conn, row_opt)| Queryable::disconnect(conn).map(move |_| row_opt.unwrap()));
+            .and_then(|(conn, row_opt): (_, Option<(u8,)>)| {
+                Queryable::disconnect(conn).map(move |_| row_opt.unwrap())
+            })
+            .map(|output| assert_eq!(output, (2u8,)));
 
-        let output: (u8,) = lp.run(fut).unwrap();
-        assert_eq!(output, (2u8,));
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_run_transactions() {
-        let mut lp = Core::new().unwrap();
-
-        let fut = Conn::new(get_opts(), &lp.handle())
+        let fut = Conn::new(get_opts())
             .and_then(|conn| {
                 Queryable::drop_query(conn, "CREATE TEMPORARY TABLE tmp (id INT, name TEXT)")
             })
@@ -1042,21 +1051,19 @@ mod test {
             })
             .and_then(Queryable::disconnect);
 
-        lp.run(fut).unwrap();
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_handle_local_infile() {
         use std::io::Write;
 
-        let mut lp = Core::new().unwrap();
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(
             &["local_infile.txt"][..],
-            &lp.handle(),
         )));
 
-        let fut = Conn::new(opts, &lp.handle())
+        let fut = Conn::new(opts)
             .and_then(|conn| Queryable::drop_query(conn, "CREATE TEMPORARY TABLE tmp (a TEXT);"))
             .and_then(|conn| {
                 let mut file = ::std::fs::File::create("local_infile.txt").unwrap();
@@ -1080,17 +1087,19 @@ mod test {
             .then(|x| {
                 let _ = ::std::fs::remove_file("local_infile.txt");
                 x
+            })
+            .then(|result| match result {
+                Err(err) => match err.kind() {
+                    ::errors::ErrorKind::Server(_, 1148, _) => {
+                        // The used command is not allowed with this MySQL version
+                        Ok(())
+                    }
+                    _ => Err(err),
+                },
+                _ => Ok(()),
             });
 
-        match lp.run(fut) {
-            Ok(_) => {}
-            Err(err) => match err.kind() {
-                ::errors::ErrorKind::Server(_, 1148, _) => {
-                    // The used command is not allowed with this MySQL version
-                }
-                _ => Err(err).unwrap(),
-            },
-        }
+        run(fut).unwrap();
     }
 
     #[cfg(feature = "nightly")]
@@ -1100,18 +1109,20 @@ mod test {
         use lib_futures::Future;
         use queryable::Queryable;
         use test;
-        use tokio::reactor::Core;
+        use tokio;
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
-            let mut lp = Core::new().unwrap();
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
 
             bencher.iter(|| {
-                let fut = Conn::new(get_opts(), &lp.handle())
-                    .and_then(|conn| Queryable::ping(conn))
-                    .and_then(|conn| Queryable::disconnect(conn));
-                lp.run(fut).unwrap();
-            })
+                let fut = Conn::new(get_opts())
+                    .and_then(|conn| conn.ping())
+                    .and_then(|conn| conn.disconnect());
+                runtime.block_on(fut).unwrap();
+            });
+
+            runtime.shutdown_on_idle().wait().unwrap();
         }
     }
 }

@@ -20,20 +20,32 @@ pub mod builtin;
 /// ```rust
 /// # extern crate futures;
 /// # extern crate mysql_async as my;
-/// # extern crate tokio_core as tokio;
+/// # extern crate tokio;
 /// # extern crate tokio_io;
 ///
 /// # use futures::Future;
 /// # use my::prelude::*;
-/// # use tokio::reactor::Core;
 /// # use tokio_io::AsyncRead;
 /// # use std::env;
 /// # fn main() {
+///
+/// # pub fn run<F, T, U>(future: F) -> Result<T, U>
+/// # where
+/// #     F: Future<Item = T, Error = U> + Send + 'static,
+/// #     T: Send + 'static,
+/// #     U: Send + 'static,
+/// # {
+/// #     let mut runtime = tokio::runtime::Runtime::new().unwrap();
+/// #     let result = runtime.block_on(future);
+/// #     runtime.shutdown_on_idle().wait().unwrap();
+/// #     result
+/// # }
+///
 /// struct ExampleHandler(&'static [u8]);
 ///
 /// impl LocalInfileHandler for ExampleHandler {
-///     fn handle(&self, _: &[u8]) -> Box<Future<Item=Box<AsyncRead>, Error=my::errors::Error>> {
-///         Box::new(futures::future::ok(Box::new(self.0) as Box<AsyncRead>))
+///     fn handle(&self, _: &[u8]) -> Box<Future<Item=Box<AsyncRead + Send>, Error=my::errors::Error> + Send> {
+///         Box::new(futures::future::ok(Box::new(self.0) as Box<_>))
 ///     }
 /// }
 ///
@@ -47,12 +59,10 @@ pub mod builtin;
 /// #     "mysql://root:password@127.0.0.1:3307/mysql".into()
 /// # };
 ///
-/// let mut lp = Core::new().unwrap();
-///
 /// let mut opts = my::OptsBuilder::from_opts(&*database_url);
 /// opts.local_infile_handler(Some(ExampleHandler(b"foobar")));
 ///
-/// let pool = my::Pool::new(opts, &lp.handle());
+/// let pool = my::Pool::new(opts);
 ///
 /// let future = pool.get_conn()
 ///     .and_then(|conn| conn.drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);"))
@@ -63,23 +73,21 @@ pub mod builtin;
 ///         assert_eq!(result.len(), 1);
 ///         assert_eq!(result[0], "foobar");
 ///     })
-///     .and_then(|_| pool.disconnect());
-///
-/// match lp.run(future) {
-///     Ok(_) => {},
-///     Err(err) => match err.kind() {
+///     .and_then(|_| pool.disconnect())
+///     .map_err(|err| match err.kind() {
 ///         my::errors::ErrorKind::Server(_, 1148, _) => {
 ///             // The used command is not allowed with this MySQL version
 ///         },
-///         _ => Err(err).unwrap(),
-///     }
-/// }
+///         _ => panic!("{}", err),
+///     });
+///
+///     run(future);
 /// # }
 /// ```
 pub trait LocalInfileHandler: Sync + Send {
     /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
     /// query.
-    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead>>;
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead + Send + 'static>>;
 }
 
 /// Object used to wrap `T: LocalInfileHandler` inside of Opts.

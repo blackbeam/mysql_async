@@ -54,7 +54,8 @@ pub fn new<T, P>(
 ) -> QueryResult<T, P>
 where
     T: ConnectionLike + Sized + 'static,
-    P: Protocol + 'static,
+    P: Protocol,
+    P: Send + 'static,
 {
     QueryResult::new(conn_like, columns, cached)
 }
@@ -105,8 +106,10 @@ pub struct QueryResult<T, P>(QueryResultInner<T, P>);
 
 impl<T, P> QueryResult<T, P>
 where
-    T: ConnectionLike + Sized + 'static,
-    P: Protocol + 'static,
+    P: Protocol,
+    P: Send + 'static,
+    T: ConnectionLike,
+    T: Sized + Send + 'static,
 {
     fn into_empty(mut self) -> Self {
         self.set_pending_result(None);
@@ -225,7 +228,8 @@ where
     /// One can use `QueryResult::is_empty` to make sure that there is no more result sets.
     pub fn collect<R>(self) -> impl MyFuture<(Self, Vec<R>)>
     where
-        R: FromRow + 'static,
+        R: FromRow,
+        R: Send + 'static,
     {
         self.reduce(Vec::new(), |mut acc, row| {
             acc.push(FromRow::from_row(row));
@@ -237,7 +241,8 @@ where
     /// It will resolve to a pair of wrapped `Queryable` and collected result set.
     pub fn collect_and_drop<R>(self) -> impl MyFuture<(T, Vec<R>)>
     where
-        R: FromRow + 'static,
+        R: FromRow,
+        R: Send + 'static,
     {
         self.collect()
             .and_then(|(this, output)| (this.drop_result(), ok(output)))

@@ -19,13 +19,12 @@ use lib_futures::Poll;
 use myc::packets::PacketParser;
 use std::io;
 use std::net::ToSocketAddrs;
+use tokio::net::ConnectFuture;
 use tokio::net::TcpStream;
-use tokio::net::TcpStreamNew;
-use tokio::reactor::Handle;
 
 steps! {
     ConnectingStream {
-        WaitForStream(SelectOk<TcpStreamNew>),
+        WaitForStream(SelectOk<ConnectFuture>),
         Fail(Failed<(), Error>),
     }
 }
@@ -35,7 +34,7 @@ pub struct ConnectingStream {
     step: Step,
 }
 
-pub fn new<S>(addr: S, handle: &Handle) -> ConnectingStream
+pub fn new<S>(addr: S) -> ConnectingStream
 where
     S: ToSocketAddrs,
 {
@@ -44,7 +43,7 @@ where
             let mut streams = Vec::new();
 
             for address in addresses {
-                streams.push(TcpStream::connect(&address, handle));
+                streams.push(TcpStream::connect(&address));
             }
 
             if streams.len() > 0 {

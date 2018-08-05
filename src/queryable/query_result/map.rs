@@ -25,7 +25,8 @@ pub struct Map<T, P, F, U> {
 impl<T, P, F, U> Map<T, P, F, U>
 where
     F: FnMut(Row) -> U,
-    P: Protocol + 'static,
+    P: Protocol,
+    P: Send + 'static,
     T: ConnectionLike + Sized + 'static,
 {
     pub fn new(query_result: QueryResult<T, P>, fun: F) -> Map<T, P, F, U> {
@@ -40,7 +41,8 @@ where
 impl<T, P, F, U> Future for Map<T, P, F, U>
 where
     F: FnMut(Row) -> U,
-    P: Protocol + 'static,
+    P: Protocol,
+    P: Send + 'static,
     T: ConnectionLike + Sized + 'static,
 {
     type Item = (QueryResult<T, P>, Vec<U>);

@@ -33,7 +33,6 @@ use std::io::Read;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::reactor::Handle;
 use tokio_io::AsyncRead;
 use tokio_io::AsyncWrite;
 use MyFuture;
@@ -199,11 +198,11 @@ impl fmt::Debug for Stream {
 }
 
 impl Stream {
-    pub fn connect<S>(addr: S, handle: &Handle) -> ConnectingStream
+    pub fn connect<S>(addr: S) -> ConnectingStream
     where
         S: ToSocketAddrs,
     {
-        new_connecting_stream(addr, handle)
+        new_connecting_stream(addr)
     }
 
     pub fn write_packet(self, data: Vec<u8>, seq_id: u8) -> WritePacket {

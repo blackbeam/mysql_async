@@ -23,12 +23,11 @@
 //! extern crate futures;
 //! #[macro_use]
 //! extern crate mysql_async as my;
-//! extern crate tokio_core as tokio;
+//! extern crate tokio;
 //! // ...
 //!
 //! use futures::Future;
 //! use my::prelude::*;
-//! use tokio::reactor::Core;
 //! # use std::env;
 //!
 //! #[derive(Debug, PartialEq, Eq, Clone)]
@@ -38,9 +37,21 @@
 //!     account_name: Option<String>,
 //! }
 //!
-//! fn main() {
-//!     let mut lp = Core::new().unwrap();
+//! /// Same as `tokio::run`, but will panic if future panics and will return the result
+//! /// of future execution.
+//! pub fn run<F, T, U>(future: F) -> Result<T, U>
+//! where
+//!     F: Future<Item = T, Error = U> + Send + 'static,
+//!     T: Send + 'static,
+//!     U: Send + 'static,
+//! {
+//!     let mut runtime = tokio::runtime::Runtime::new().unwrap();
+//!     let result = runtime.block_on(future);
+//!     runtime.shutdown_on_idle().wait().unwrap();
+//!     result
+//! }
 //!
+//! fn main() {
 //!     let payments = vec![
 //!         Payment { customer_id: 1, amount: 2, account_name: None },
 //!         Payment { customer_id: 3, amount: 4, account_name: Some("foo".into()) },
@@ -48,6 +59,7 @@
 //!         Payment { customer_id: 7, amount: 8, account_name: None },
 //!         Payment { customer_id: 9, amount: 10, account_name: Some("bar".into()) },
 //!     ];
+//!     let payments_clone = payments.clone();
 //!
 //!     # let database_url: String = if let Ok(url) = env::var("DATABASE_URL") {
 //!     #     let opts = my::Opts::from_url(&url).expect("DATABASE_URL invalid");
@@ -59,7 +71,7 @@
 //!     #     "mysql://root:password@127.0.0.1:3307/mysql".into()
 //!     # };
 //!
-//!     let pool = my::Pool::new(database_url, &lp.handle());
+//!     let pool = my::Pool::new(database_url);
 //!     let future = pool.get_conn().and_then(|conn| {
 //!         // Create temporary table
 //!         conn.drop_query(
@@ -69,9 +81,9 @@
 //!                 account_name text
 //!             )"
 //!         )
-//!     }).and_then(|conn| {
+//!     }).and_then(move |conn| {
 //!         // Save payments
-//!         let params = payments.clone().into_iter().map(|payment| {
+//!         let params = payments_clone.into_iter().map(|payment| {
 //!             params! {
 //!                 "customer_id" => payment.customer_id,
 //!                 "amount" => payment.amount,
@@ -101,14 +113,13 @@
 //!         pool.disconnect().map(|_| payments)
 //!     });
 //!
-//!     let loaded_payments = lp.run(future).unwrap();
-//!
+//!     let loaded_payments = run(future).unwrap();
 //!     assert_eq!(loaded_payments, payments);
 //! }
 //! ```
 
 #![recursion_limit = "1024"]
-#![cfg_attr(feature = "nightly", feature(test, const_fn, drop_types_in_const))]
+#![cfg_attr(feature = "nightly", feature(test, const_fn))]
 
 #[cfg(feature = "nightly")]
 extern crate test;
@@ -130,7 +141,7 @@ extern crate native_tls;
 extern crate regex;
 extern crate serde;
 extern crate serde_json;
-extern crate tokio_core as tokio;
+extern crate tokio;
 extern crate tokio_io;
 extern crate twox_hash;
 extern crate url;
@@ -210,11 +221,16 @@ mod local_infile_handler;
 mod opts;
 mod queryable;
 
-pub type BoxFuture<T> = Box<lib_futures::Future<Item = T, Error = errors::Error>>;
+pub type BoxFuture<T> = Box<lib_futures::Future<Item = T, Error = errors::Error> + Send + 'static>;
 
 /// Alias for `Future` with library error as `Future::Error`.
-pub trait MyFuture<T>: lib_futures::Future<Item = T, Error = errors::Error> {}
-impl<T, U> MyFuture<T> for U where U: lib_futures::Future<Item = T, Error = errors::Error> {}
+pub trait MyFuture<T>:
+    lib_futures::Future<Item = T, Error = errors::Error> + Send + 'static
+{
+}
+impl<T, U> MyFuture<T> for U where
+    U: lib_futures::Future<Item = T, Error = errors::Error> + Send + 'static
+{}
 
 #[doc(inline)]
 pub use self::conn::Conn;

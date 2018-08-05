@@ -23,7 +23,7 @@ pub struct ForEach<T, P, F> {
 impl<T, P, F> ForEach<T, P, F>
 where
     F: FnMut(Row),
-    P: Protocol + 'static,
+    P: Send + Protocol + 'static,
     T: ConnectionLike + Sized + 'static,
 {
     pub fn new(query_result: QueryResult<T, P>, fun: F) -> ForEach<T, P, F> {
@@ -37,7 +37,8 @@ where
 impl<T, P, F> Future for ForEach<T, P, F>
 where
     F: FnMut(Row),
-    P: Protocol + 'static,
+    P: Protocol,
+    P: Send + 'static,
     T: ConnectionLike + Sized + 'static,
 {
     type Item = (QueryResult<T, P>);

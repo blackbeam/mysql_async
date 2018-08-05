@@ -17,12 +17,8 @@ use lib_futures::Future;
 use opts::Opts;
 use queryable::transaction::{Transaction, TransactionOptions};
 use queryable::Queryable;
-use std::cell::Ref;
-use std::cell::RefCell;
-use std::cell::RefMut;
 use std::fmt;
-use std::rc::Rc;
-use tokio::reactor::Handle;
+use std::sync::{Arc, Mutex, MutexGuard};
 use BoxFuture;
 use MyFuture;
 
@@ -42,9 +38,8 @@ pub struct Inner {
 #[derive(Clone)]
 /// Asynchronous pool of MySql connections.
 pub struct Pool {
-    handle: Handle,
     opts: Opts,
-    inner: Rc<RefCell<Inner>>,
+    inner: Arc<Mutex<Inner>>,
     min: usize,
     max: usize,
 }
@@ -66,14 +61,13 @@ impl fmt::Debug for Pool {
 
 impl Pool {
     /// Creates new pool of connections.
-    pub fn new<O: Into<Opts>>(opts: O, handle: &Handle) -> Pool {
+    pub fn new<O: Into<Opts>>(opts: O) -> Pool {
         let opts = opts.into();
         let pool_min = opts.get_pool_min();
         let pool_max = opts.get_pool_max();
         let pool = Pool {
-            handle: handle.clone(),
             opts: opts,
-            inner: Rc::new(RefCell::new(Inner {
+            inner: Arc::new(Mutex::new(Inner {
                 closed: false,
                 new: Vec::with_capacity(pool_min),
                 idle: Vec::new(),
@@ -110,9 +104,9 @@ impl Pool {
     /// Also all pending and new `GetConn`'s will resolve to error.
     pub fn disconnect(mut self) -> DisconnectPool {
         if !self.inner_ref().closed {
-            self.inner_mut().closed = true;
+            self.inner_ref().closed = true;
             while let Some(conn) = self.take_conn() {
-                self.inner_mut().disconnecting.push(conn.disconnect());
+                self.inner_ref().disconnecting.push(conn.disconnect());
             }
         }
         new_disconnect_pool(self)
@@ -135,10 +129,10 @@ impl Pool {
             return None;
         }
         while self.inner_ref().idle.len() > 0 {
-            let conn = self.inner_mut().idle.pop();
+            let conn = self.inner_ref().idle.pop();
             let conn = conn.and_then(|mut conn| {
                 if conn.expired() {
-                    self.inner_mut().disconnecting.push(conn.disconnect());
+                    self.inner_ref().disconnecting.push(conn.disconnect());
                     None
                 } else {
                     conn.pool = Some(self.clone());
@@ -146,7 +140,7 @@ impl Pool {
                 }
             });
             if conn.is_some() {
-                self.inner_mut().ongoing += 1;
+                self.inner_ref().ongoing += 1;
                 return conn;
             }
         }
@@ -159,7 +153,7 @@ impl Pool {
             return;
         }
         let min = self.min;
-        let mut inner = self.inner_mut();
+        let mut inner = self.inner_ref();
 
         if conn.has_result.is_some() {
             inner.dropping.push(Box::new(conn.drop_result()));
@@ -180,12 +174,8 @@ impl Pool {
         }
     }
 
-    fn inner_ref(&self) -> Ref<Inner> {
-        self.inner.borrow()
-    }
-
-    fn inner_mut(&mut self) -> RefMut<Inner> {
-        self.inner.borrow_mut()
+    fn inner_ref(&self) -> MutexGuard<Inner> {
+        self.inner.lock().unwrap()
     }
 
     /// Will manage lifetime of futures stored in a pool.
@@ -200,7 +190,7 @@ impl Pool {
                 let len = self.inner_ref().$vec.len();
                 let mut done_fut_idxs = Vec::new();
                 for i in 0..len {
-                    let result = self.inner_mut().$vec.get_mut(i).unwrap().poll();
+                    let result = self.inner_ref().$vec.get_mut(i).unwrap().poll();
                     match result {
                         Ok(Ready(_)) | Err(_) => done_fut_idxs.push(i),
                         _ => (),
@@ -217,7 +207,7 @@ impl Pool {
                         Err(err) => {
                             // early return in case of error
                             while let Some(i) = done_fut_idxs.pop() {
-                                let _ = self.inner_mut().$vec.swap_remove(i);
+                                let _ = self.inner_ref().$vec.swap_remove(i);
                             }
                             return Err(err)
                         }
@@ -226,7 +216,7 @@ impl Pool {
                 }
 
                 while let Some(i) = done_fut_idxs.pop() {
-                    let _ = self.inner_mut().$vec.swap_remove(i);
+                    let _ = self.inner_ref().$vec.swap_remove(i);
                 }
             });
         }
@@ -247,7 +237,7 @@ impl Pool {
             Ok(Ready(conn)) => {
                 let closed = self.inner_ref().closed;
                 if closed {
-                    self.inner_mut().disconnecting.push(conn.disconnect());
+                    self.inner_ref().disconnecting.push(conn.disconnect());
                 } else {
                     self.return_conn(conn);
                 }
@@ -262,7 +252,7 @@ impl Pool {
             Ok(Ready(conn)) => {
                 let closed = self.inner_ref().closed;
                 if closed {
-                    self.inner_mut().disconnecting.push(conn.disconnect());
+                    self.inner_ref().disconnecting.push(conn.disconnect());
                 } else {
                     self.return_conn(conn);
                 }
@@ -277,9 +267,9 @@ impl Pool {
             Ok(Ready(conn)) => {
                 let closed = self.inner_ref().closed;
                 if closed {
-                    self.inner_mut().disconnecting.push(conn.disconnect());
+                    self.inner_ref().disconnecting.push(conn.disconnect());
                 } else {
-                    self.inner_mut().ongoing += 1;
+                    self.inner_ref().ongoing += 1;
                     self.return_conn(conn);
                 }
                 handled = true;
@@ -324,11 +314,11 @@ impl Pool {
             None => {
                 let new_len = self.inner_ref().new.len();
                 if new_len == 0 && self.conn_count() < self.max {
-                    let new_conn = Conn::new(self.opts.clone(), &self.handle);
-                    self.inner_mut().new.push(Box::new(new_conn));
+                    let new_conn = Conn::new(self.opts.clone());
+                    self.inner_ref().new.push(Box::new(new_conn));
                     self.poll()
                 } else {
-                    self.inner_mut().tasks.push(task::current());
+                    self.inner_ref().tasks.push(task::current());
                     Ok(NotReady)
                 }
             }
@@ -353,30 +343,37 @@ mod test {
     use lib_futures::Future;
     use queryable::Queryable;
     use test_misc::DATABASE_URL;
-    use tokio::reactor::Core;
+    use tokio;
     use TransactionOptions;
+
+    /// Same as `tokio::run`, but will panic if future panics and will return the result
+    /// of future execution.
+    fn run<F, T, U>(future: F) -> Result<T, U>
+    where
+        F: Future<Item = T, Error = U> + Send + 'static,
+        T: Send + 'static,
+        U: Send + 'static,
+    {
+        let mut runtime = tokio::runtime::Runtime::new().unwrap();
+        let result = runtime.block_on(future);
+        runtime.shutdown_on_idle().wait().unwrap();
+        result
+    }
 
     #[test]
     fn should_connect() {
-        let mut lp = Core::new().unwrap();
-
-        let pool = Pool::new(&**DATABASE_URL, &lp.handle());
+        let pool = Pool::new(&**DATABASE_URL);
         let fut = pool
             .get_conn()
             .and_then(|conn| conn.ping().map(|_| ()))
             .and_then(|_| pool.disconnect());
 
-        lp.run(fut).unwrap();
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_start_transaction() {
-        let mut lp = Core::new().unwrap();
-
-        let pool = Pool::new(
-            format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL),
-            &lp.handle(),
-        );
+        let pool = Pool::new(format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL));
         let fut = pool
             .get_conn()
             .and_then(|conn| conn.drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)"))
@@ -401,22 +398,17 @@ mod test {
                     .and_then(move |_| pool.disconnect())
             });
 
-        lp.run(fut).unwrap();
+        run(fut).unwrap();
     }
 
     #[test]
     fn should_hold_bounds() {
-        let mut lp = Core::new().unwrap();
-
-        let pool = Pool::new(
-            format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL),
-            &lp.handle(),
-        );
+        let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL));
         let pool_clone = pool.clone();
         let fut = pool
             .get_conn()
             .join(pool.get_conn())
-            .and_then(|(mut conn1, conn2)| {
+            .and_then(move |(mut conn1, conn2)| {
                 let new_conn = pool_clone.get_conn();
                 conn1.pool.as_mut().unwrap().handle_futures().unwrap();
                 assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().new.len(), 0);
@@ -446,26 +438,30 @@ mod test {
                 pool.disconnect()
             });
 
-        lp.run(fut).unwrap();
+        run(fut).unwrap();
     }
 
     #[cfg(feature = "nightly")]
     mod bench {
         use conn::pool::Pool;
         use lib_futures::Future;
+        use queryable::Queryable;
         use test;
         use test_misc::DATABASE_URL;
-        use tokio::reactor::Core;
+        use tokio;
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
-            let mut lp = Core::new().unwrap();
-            let pool = Pool::new(&**DATABASE_URL, &lp.handle());
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let pool = Pool::new(&**DATABASE_URL);
 
             bencher.iter(|| {
                 let fut = pool.get_conn().and_then(|conn| conn.ping());
-                lp.run(fut).unwrap();
-            })
+                runtime.block_on(fut).unwrap();
+            });
+
+            runtime.block_on(pool.disconnect()).unwrap();
+            runtime.shutdown_on_idle().wait().unwrap();
         }
     }
 }

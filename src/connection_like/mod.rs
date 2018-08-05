@@ -70,6 +70,7 @@ pub trait ConnectionLikeWrapper {
 impl<T, U> ConnectionLike for T
 where
     T: ConnectionLikeWrapper<ConnLike = U>,
+    T: Send,
     U: ConnectionLike + 'static,
 {
     fn take_stream(self) -> (Streamless<Self>, io::Stream)
@@ -180,7 +181,7 @@ where
     }
 }
 
-pub trait ConnectionLike {
+pub trait ConnectionLike: Send {
     fn take_stream(self) -> (Streamless<Self>, io::Stream)
     where
         Self: Sized;
@@ -192,7 +193,7 @@ pub trait ConnectionLike {
     fn get_in_transaction(&self) -> bool;
     fn get_last_command(&self) -> Command;
     fn get_last_insert_id(&self) -> Option<u64>;
-    fn get_local_infile_handler(&self) -> Option<Arc<LocalInfileHandler>>; // TODO: Switch to Rc?
+    fn get_local_infile_handler(&self) -> Option<Arc<LocalInfileHandler>>;
     fn get_max_allowed_packet(&self) -> u64;
     fn get_opts(&self) -> &Opts;
     fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)>;
@@ -385,7 +386,8 @@ pub trait ConnectionLike {
     fn read_result_set<P>(self, cached: Option<StmtCacheResult>) -> BoxFuture<QueryResult<Self, P>>
     where
         Self: Sized + 'static,
-        P: Protocol + 'static,
+        P: Protocol,
+        P: Send + 'static,
     {
         let fut = self
             .read_packet()
@@ -429,7 +431,7 @@ fn handle_local_infile<T, P>(
 where
     P: Protocol + 'static,
     T: ConnectionLike,
-    T: Sized + 'static,
+    T: Send + Sized + 'static,
 {
     parse_local_infile_packet(&*packet.0)
         .chain_err(|| Error::from(ErrorKind::UnexpectedPacket))
@@ -473,9 +475,10 @@ fn handle_result_set<T, P>(
     cached: Option<StmtCacheResult>,
 ) -> impl MyFuture<QueryResult<T, P>>
 where
-    P: Protocol + 'static,
+    P: Protocol,
+    P: Send + 'static,
     T: ConnectionLike,
-    T: Sized + 'static,
+    T: Send + Sized + 'static,
 {
     (&*packet.0)
         .read_lenenc_int()
