@@ -13,14 +13,10 @@ use io::futures::ConnectingStream;
 use io::futures::WritePacket;
 #[cfg(not(feature = "ssl"))]
 use lib_futures::future::ok;
-use lib_futures::{
-    stream,
-    Async::{NotReady, Ready},
-    Poll,
-};
+use lib_futures::{stream, Async, Poll};
 #[cfg(feature = "ssl")]
 use lib_futures::{Future, IntoFuture};
-use myc::packets::{PacketParser, ParseResult, RawPacket};
+use myc::packets::RawPacket;
 #[cfg(feature = "ssl")]
 use native_tls::{Certificate, Identity, TlsConnector};
 use opts::SslOpts;
@@ -33,6 +29,7 @@ use std::io::Read;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio_codec::Framed;
 use tokio_io::AsyncRead;
 use tokio_io::AsyncWrite;
 use MyFuture;
@@ -40,6 +37,7 @@ use MyFuture;
 #[cfg(feature = "ssl")]
 mod async_tls;
 pub mod futures;
+mod packet_codec;
 
 #[derive(Debug)]
 pub enum Endpoint {
@@ -184,16 +182,13 @@ impl AsyncWrite for Endpoint {
 
 /// Stream connected to MySql server.
 pub struct Stream {
-    endpoint: Option<Endpoint>,
     closed: bool,
-    parser: Option<PacketParser>,
-    packets: ::std::collections::VecDeque<(RawPacket, u8)>,
-    buf: Vec<u8>,
+    codec: Framed<Endpoint, packet_codec::PacketCodec>,
 }
 
 impl fmt::Debug for Stream {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Stream (endpoint={:?})", self.endpoint)
+        write!(f, "Stream (endpoint={:?})", self.codec.get_ref())
     }
 }
 
@@ -210,17 +205,11 @@ impl Stream {
     }
 
     pub fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
-        match self.endpoint {
-            Some(ref endpoint) => endpoint.set_keepalive_ms(ms),
-            None => unreachable!(),
-        }
+        self.codec.get_ref().set_keepalive_ms(ms)
     }
 
     pub fn set_tcp_nodelay(&self, val: bool) -> Result<()> {
-        match self.endpoint {
-            Some(ref endpoint) => endpoint.set_tcp_nodelay(val),
-            None => unreachable!(),
-        }
+        self.codec.get_ref().set_tcp_nodelay(val)
     }
 
     #[cfg(not(feature = "ssl"))]
@@ -241,53 +230,7 @@ impl Stream {
     }
 
     pub fn is_secure(&self) -> bool {
-        match self.endpoint.as_ref() {
-            Some(endpoint) => endpoint.is_secure(),
-            _ => false,
-        }
-    }
-}
-
-impl io::Read for Stream {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.endpoint {
-            Some(ref mut endpoint) => endpoint.read(buf),
-            None => unreachable!(),
-        }
-    }
-}
-
-impl io::Write for Stream {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self.endpoint {
-            Some(ref mut endpoint) => endpoint.write(buf),
-            None => unreachable!(),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self.endpoint {
-            Some(ref mut endpoint) => endpoint.flush(),
-            None => unreachable!(),
-        }
-    }
-}
-
-impl AsyncRead for Stream {
-    unsafe fn prepare_uninitialized_buffer(&self, _buf: &mut [u8]) -> bool {
-        match self.endpoint {
-            Some(ref endpoint) => endpoint.prepare_uninitialized_buffer(_buf),
-            None => unreachable!(),
-        }
-    }
-}
-
-impl AsyncWrite for Stream {
-    fn shutdown(&mut self) -> Poll<(), io::Error> {
-        match self.endpoint {
-            Some(ref mut endpoint) => endpoint.shutdown(),
-            None => unreachable!(),
-        }
+        self.codec.get_ref().is_secure()
     }
 }
 
@@ -296,67 +239,10 @@ impl stream::Stream for Stream {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<(RawPacket, u8)>, Error> {
-        // emit pending packets
-        if let Some(packet) = self.packets.pop_front() {
-            return Ok(Ready(Some(packet)));
+        if !self.closed {
+            self.codec.poll().map_err(Error::from)
+        } else {
+            Ok(Async::Ready(None))
         }
-
-        // should read everything from self.endpoint
-        let mut buf = [0u8; 4096];
-        while !self.closed {
-            match self.poll_read(&mut buf[..]) {
-                Err(error) => {
-                    self.closed = true;
-                    bail!(error)
-                }
-                Ok(Ready(0)) => {
-                    self.closed = true;
-                }
-                Ok(Ready(size)) => {
-                    self.buf.extend_from_slice(&buf[..size]);
-                }
-                Ok(NotReady) => break,
-            };
-        }
-
-        // parse buffer into packets
-        let (packets, parser, buf) = parse_packet(self.parser.take().unwrap(), &self.buf);
-        self.packets = packets.into();
-        self.parser = Some(parser);
-        self.buf = buf;
-
-        if let Some(packet) = self.packets.pop_front() {
-            return Ok(Ready(Some(packet)));
-        }
-
-        if self.closed {
-            bail!(ErrorKind::ConnectionClosed);
-        }
-        return Ok(NotReady);
-    }
-}
-
-fn parse_packet(
-    mut parser: PacketParser,
-    mut buf: &[u8],
-) -> (Vec<(RawPacket, u8)>, PacketParser, Vec<u8>) {
-    let mut packets = Vec::new();
-
-    loop {
-        parser = match parser.parse() {
-            ParseResult::Done(packet, seq_id) => {
-                packets.push((packet, seq_id));
-                PacketParser::empty()
-            }
-            ParseResult::Incomplete(mut parser, needed) => {
-                if buf.len() < needed {
-                    return (packets, parser, Vec::from(buf));
-                }
-
-                parser.extend_from_slice(&buf[..needed]);
-                buf = &buf[needed..];
-                parser
-            }
-        };
     }
 }

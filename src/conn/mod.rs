@@ -1112,16 +1112,93 @@ mod test {
         use tokio;
 
         #[bench]
-        fn connect(bencher: &mut test::Bencher) {
+        fn simple_exec(bencher: &mut test::Bencher) {
             let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
 
             bencher.iter(|| {
-                let fut = Conn::new(get_opts())
-                    .and_then(|conn| conn.ping())
-                    .and_then(|conn| conn.disconnect());
-                runtime.block_on(fut).unwrap();
+                let conn = conn_opt.take().unwrap();
+                conn_opt = Some(runtime.block_on(conn.drop_query("DO 1")).unwrap());
             });
 
+            runtime
+                .block_on(conn_opt.take().unwrap().disconnect())
+                .unwrap();
+            runtime.shutdown_on_idle().wait().unwrap();
+        }
+
+        #[bench]
+        fn select_large_string(bencher: &mut test::Bencher) {
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
+
+            bencher.iter(|| {
+                let conn = conn_opt.take().unwrap();
+                conn_opt = Some(
+                    runtime
+                        .block_on(conn.drop_query("SELECT REPEAT('A', 10000)"))
+                        .unwrap(),
+                );
+            });
+
+            runtime
+                .block_on(conn_opt.take().unwrap().disconnect())
+                .unwrap();
+            runtime.shutdown_on_idle().wait().unwrap();
+        }
+
+        #[bench]
+        fn prepared_exec(bencher: &mut test::Bencher) {
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut stmt_opt = Some(
+                runtime
+                    .block_on(Conn::new(get_opts()).and_then(|conn| conn.prepare("DO 1")))
+                    .unwrap(),
+            );
+
+            bencher.iter(|| {
+                let stmt = stmt_opt.take().unwrap();
+                stmt_opt = Some(
+                    runtime
+                        .block_on(stmt.execute(()).and_then(|result| result.drop_result()))
+                        .unwrap(),
+                );
+            });
+
+            runtime
+                .block_on(
+                    stmt_opt
+                        .take()
+                        .unwrap()
+                        .close()
+                        .and_then(|conn| conn.disconnect()),
+                )
+                .unwrap();
+            runtime.shutdown_on_idle().wait().unwrap();
+        }
+
+        #[bench]
+        fn prepare_and_exec(bencher: &mut test::Bencher) {
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
+
+            bencher.iter(|| {
+                let conn = conn_opt.take().unwrap();
+                conn_opt = Some(
+                    runtime
+                        .block_on(
+                            conn.prepare("SELECT ?")
+                                .and_then(|stmt| stmt.execute((0,)))
+                                .and_then(|result| result.drop_result())
+                                .and_then(|stmt| stmt.close()),
+                        )
+                        .unwrap(),
+                );
+            });
+
+            runtime
+                .block_on(conn_opt.take().unwrap().disconnect())
+                .unwrap();
             runtime.shutdown_on_idle().wait().unwrap();
         }
     }

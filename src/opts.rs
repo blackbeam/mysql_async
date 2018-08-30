@@ -92,7 +92,7 @@ impl SslOpts {
 ///
 /// Build one with [`OptsBuilder`](struct.OptsBuilder.html).
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub struct Opts {
+pub struct InnerOpts {
     /// Address of mysql server (defaults to `127.0.0.1`). Host names should also work.
     ip_or_hostname: String,
 
@@ -142,16 +142,24 @@ pub struct Opts {
     ssl_opts: Option<SslOpts>,
 }
 
+/// Mysql connection options.
+///
+/// Build one with [`OptsBuilder`](struct.OptsBuilder.html).
+#[derive(Clone, Eq, PartialEq, Debug, Default)]
+pub struct Opts {
+    inner: Arc<InnerOpts>,
+}
+
 impl Opts {
     #[doc(hidden)]
     pub fn addr_is_loopback(&self) -> bool {
-        let v4addr: Option<Ipv4Addr> = FromStr::from_str(self.ip_or_hostname.as_ref()).ok();
-        let v6addr: Option<Ipv6Addr> = FromStr::from_str(self.ip_or_hostname.as_ref()).ok();
+        let v4addr: Option<Ipv4Addr> = FromStr::from_str(self.inner.ip_or_hostname.as_ref()).ok();
+        let v6addr: Option<Ipv6Addr> = FromStr::from_str(self.inner.ip_or_hostname.as_ref()).ok();
         if let Some(addr) = v4addr {
             addr.is_loopback()
         } else if let Some(addr) = v6addr {
             addr.is_loopback()
-        } else if self.ip_or_hostname == "localhost" {
+        } else if self.inner.ip_or_hostname == "localhost" {
             true
         } else {
             false
@@ -159,80 +167,85 @@ impl Opts {
     }
 
     pub fn from_url(url: &str) -> Result<Opts> {
-        from_url(url)
+        Ok(Opts {
+            inner: Arc::new(from_url(url)?),
+        })
     }
 
     /// Address of mysql server (defaults to `127.0.0.1`). Hostnames should also work.
     pub fn get_ip_or_hostname(&self) -> &str {
-        &*self.ip_or_hostname
+        &*self.inner.ip_or_hostname
     }
 
     /// TCP port of mysql server (defaults to `3306`).
     pub fn get_tcp_port(&self) -> u16 {
-        self.tcp_port
+        self.inner.tcp_port
     }
 
     /// User (defaults to `None`).
     pub fn get_user(&self) -> Option<&str> {
-        self.user.as_ref().map(AsRef::as_ref)
+        self.inner.user.as_ref().map(AsRef::as_ref)
     }
 
     /// Password (defaults to `None`).
     pub fn get_pass(&self) -> Option<&str> {
-        self.pass.as_ref().map(AsRef::as_ref)
+        self.inner.pass.as_ref().map(AsRef::as_ref)
     }
 
     /// Database name (defaults to `None`).
     pub fn get_db_name(&self) -> Option<&str> {
-        self.db_name.as_ref().map(AsRef::as_ref)
+        self.inner.db_name.as_ref().map(AsRef::as_ref)
     }
 
     /// Commands to execute on each new database connection.
     pub fn get_init(&self) -> &[String] {
-        self.init.as_ref()
+        self.inner.init.as_ref()
     }
 
     /// TCP keep alive timeout in milliseconds (defaults to `None).
     pub fn get_tcp_keepalive(&self) -> Option<u32> {
-        self.tcp_keepalive.clone()
+        self.inner.tcp_keepalive.clone()
     }
 
     /// Whether `TCP_NODELAY` will be set for mysql connection.
     pub fn get_tcp_nodelay(&self) -> bool {
-        self.tcp_nodelay
+        self.inner.tcp_nodelay
     }
 
     /// Local infile handler
     pub fn get_local_infile_handler(&self) -> Option<Arc<LocalInfileHandler>> {
-        self.local_infile_handler.as_ref().map(|x| x.clone_inner())
+        self.inner
+            .local_infile_handler
+            .as_ref()
+            .map(|x| x.clone_inner())
     }
 
     /// Lower bound of opened connections for `Pool` (defaults to 10).
     pub fn get_pool_min(&self) -> usize {
-        self.pool_min
+        self.inner.pool_min
     }
 
     /// Upper bound of opened connections for `Pool` (defaults to 100).
     pub fn get_pool_max(&self) -> usize {
-        self.pool_max
+        self.inner.pool_max
     }
 
     /// Pool will close connection if time since last IO exceeds this value
     /// (defaults to `wait_timeout`).
     pub fn get_conn_ttl(&self) -> Option<u32> {
-        self.conn_ttl
+        self.inner.conn_ttl
     }
 
     /// Number of prepared statements cached on the client side (per connection). Defaults to `10`.
     pub fn get_stmt_cache_size(&self) -> usize {
-        self.stmt_cache_size
+        self.inner.stmt_cache_size
     }
 
     /// Driver will require SSL connection if this option isn't `None` (default to `None`).
     ///
     /// This option requires `ssl` feature to work.
     pub fn get_ssl_opts(&self) -> Option<&SslOpts> {
-        self.ssl_opts.as_ref()
+        self.inner.ssl_opts.as_ref()
     }
 
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
@@ -247,10 +260,10 @@ impl Opts {
             | CapabilityFlags::CLIENT_DEPRECATE_EOF
             | CapabilityFlags::CLIENT_PLUGIN_AUTH;
 
-        if self.db_name.is_some() {
+        if self.inner.db_name.is_some() {
             out |= CapabilityFlags::CLIENT_CONNECT_WITH_DB;
         }
-        if self.ssl_opts.is_some() {
+        if self.inner.ssl_opts.is_some() {
             out |= CapabilityFlags::CLIENT_SSL;
         }
 
@@ -258,9 +271,9 @@ impl Opts {
     }
 }
 
-impl Default for Opts {
-    fn default() -> Opts {
-        Opts {
+impl Default for InnerOpts {
+    fn default() -> InnerOpts {
+        InnerOpts {
             ip_or_hostname: "127.0.0.1".to_string(),
             tcp_port: 3306,
             user: None,
@@ -295,7 +308,7 @@ impl Default for Opts {
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct OptsBuilder {
-    opts: Opts,
+    opts: InnerOpts,
 }
 
 impl OptsBuilder {
@@ -304,7 +317,9 @@ impl OptsBuilder {
     }
 
     pub fn from_opts<T: Into<Opts>>(opts: T) -> Self {
-        OptsBuilder { opts: opts.into() }
+        OptsBuilder {
+            opts: (*opts.into().inner).clone(),
+        }
     }
 
     /// Address of mysql server (defaults to `127.0.0.1`). Hostnames should also work.
@@ -410,7 +425,9 @@ impl OptsBuilder {
 
 impl From<OptsBuilder> for Opts {
     fn from(builder: OptsBuilder) -> Opts {
-        builder.opts
+        Opts {
+            inner: Arc::new(builder.opts),
+        }
     }
 }
 
@@ -451,7 +468,7 @@ fn get_opts_db_name_from_url(url: &Url) -> Option<String> {
     }
 }
 
-fn from_url_basic(url_str: &str) -> Result<(Opts, Vec<(String, String)>)> {
+fn from_url_basic(url_str: &str) -> Result<(InnerOpts, Vec<(String, String)>)> {
     let url = Url::parse(url_str)?;
     if url.scheme() != "mysql" {
         return Err(ErrorKind::UrlUnsupportedScheme(url.scheme().to_string()).into());
@@ -469,19 +486,19 @@ fn from_url_basic(url_str: &str) -> Result<(Opts, Vec<(String, String)>)> {
     let db_name = get_opts_db_name_from_url(&url);
 
     let query_pairs = url.query_pairs().into_owned().collect();
-    let opts = Opts {
+    let opts = InnerOpts {
         user: user,
         pass: pass,
         ip_or_hostname: ip_or_hostname,
         tcp_port: tcp_port,
         db_name: db_name,
-        ..Opts::default()
+        ..InnerOpts::default()
     };
 
     Ok((opts, query_pairs))
 }
 
-fn from_url(url: &str) -> Result<Opts> {
+fn from_url(url: &str) -> Result<InnerOpts> {
     let (mut opts, query_pairs) = from_url_basic(url)?;
     for (key, value) in query_pairs {
         if key == "pool_min" {
@@ -538,30 +555,27 @@ fn from_url(url: &str) -> Result<Opts> {
 
 impl<T: AsRef<str> + Sized> From<T> for Opts {
     fn from(url: T) -> Opts {
-        match from_url(url.as_ref()) {
-            Ok(opts) => opts,
-            Err(err) => panic!("{}", err),
-        }
+        Opts::from_url(url.as_ref()).unwrap()
     }
 }
 
 #[cfg(test)]
 mod test {
-    use super::Opts;
+    use super::{from_url, InnerOpts, Opts};
 
     #[test]
     fn should_convert_url_into_opts() {
         let opts = "mysql://usr:pw@192.168.1.1:3309/dbname";
         assert_eq!(
-            Opts {
+            InnerOpts {
                 user: Some("usr".to_string()),
                 pass: Some("pw".to_string()),
                 ip_or_hostname: "192.168.1.1".to_string(),
                 tcp_port: 3309,
                 db_name: Some("dbname".to_string()),
-                ..Opts::default()
+                ..InnerOpts::default()
             },
-            opts.into()
+            from_url(opts).unwrap(),
         );
     }
 

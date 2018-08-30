@@ -6,52 +6,37 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use byteorder::LittleEndian as LE;
-use byteorder::WriteBytesExt;
-use consts;
+use consts::MAX_PAYLOAD_LEN;
 use errors::*;
 use io::Stream;
-use lib_futures::Async::Ready;
+use lib_futures::Async;
+use lib_futures::AsyncSink;
 use lib_futures::Future;
 use lib_futures::Poll;
-use tokio_io::io::write_all;
-use tokio_io::io::WriteAll;
+use lib_futures::Sink;
+use myc::packets::RawPacket;
 
 /// Future that writes packet to a `Stream` and resolves to a pair of `Stream` and MySql's sequence
 /// id.
 pub struct WritePacket {
-    future: WriteAll<Stream, Vec<u8>>,
+    data: Option<RawPacket>,
+    stream: Option<Stream>,
     seq_id: u8,
+    out_seq_id: u8,
 }
 
-pub fn new(stream: Stream, data: Vec<u8>, mut seq_id: u8) -> WritePacket {
-    let data = {
-        if data.len() == 0 {
-            let out = vec![0, 0, 0, seq_id];
-            seq_id = seq_id.wrapping_add(1);
-            out
-        } else {
-            let mut last_was_max = false;
-            let capacity = data.len() + 4 * (data.len() / consts::MAX_PAYLOAD_LEN + 2);
-            let mut out = Vec::with_capacity(capacity);
-            for chunk in data.chunks(consts::MAX_PAYLOAD_LEN) {
-                out.write_uint::<LE>(chunk.len() as u64, 3).unwrap();
-                out.write_u8(seq_id).unwrap();
-                out.extend_from_slice(chunk);
-                seq_id = seq_id.wrapping_add(1);
-                last_was_max = chunk.len() == consts::MAX_PAYLOAD_LEN;
-            }
-            if last_was_max {
-                out.extend_from_slice(&[0, 0, 0, seq_id][..]);
-                seq_id = seq_id.wrapping_add(1);
-            }
-            out
-        }
-    };
+pub fn new(stream: Stream, data: Vec<u8>, seq_id: u8) -> WritePacket {
+    let mut out_seq_id = ((data.len() / MAX_PAYLOAD_LEN) % 256) as u8;
+
+    if data.len() % MAX_PAYLOAD_LEN == 0 {
+        out_seq_id = out_seq_id.wrapping_add(1);
+    }
 
     WritePacket {
-        future: write_all(stream, data),
-        seq_id: seq_id,
+        data: Some(RawPacket(data)),
+        stream: Some(stream),
+        seq_id,
+        out_seq_id,
     }
 }
 
@@ -60,8 +45,31 @@ impl Future for WritePacket {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match try_ready!(self.future.poll()) {
-            (stream, _) => Ok(Ready((stream, self.seq_id))),
+        match self.data.take() {
+            Some(data) => match self
+                .stream
+                .as_mut()
+                .unwrap()
+                .codec
+                .start_send((data, self.seq_id))?
+            {
+                AsyncSink::Ready => (),
+                AsyncSink::NotReady(data) => {
+                    self.data = Some(data.0);
+                    return Ok(Async::NotReady);
+                }
+            },
+            None => (),
         }
+
+        try_ready!(
+            self.stream
+                .as_mut()
+                .unwrap()
+                .codec
+                .poll_complete()
+                .map_err(Error::from)
+        );
+        Ok(Async::Ready((self.stream.take().unwrap(), self.out_seq_id)))
     }
 }

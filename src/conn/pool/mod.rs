@@ -35,6 +35,17 @@ pub struct Inner {
     tasks: Vec<Task>,
 }
 
+impl Inner {
+    fn conn_count(&self) -> usize {
+        self.new.len()
+            + self.idle.len()
+            + self.disconnecting.len()
+            + self.dropping.len()
+            + self.rollback.len()
+            + self.ongoing
+    }
+}
+
 #[derive(Clone)]
 /// Asynchronous pool of MySql connections.
 pub struct Pool {
@@ -46,15 +57,28 @@ pub struct Pool {
 
 impl fmt::Debug for Pool {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let (new_len, idle_len, disconnecing_len, dropping_len, rollback_len, ongoing, tasks_len) =
+            self.with_inner(|inner| {
+                (
+                    inner.new.len(),
+                    inner.idle.len(),
+                    inner.disconnecting.len(),
+                    inner.dropping.len(),
+                    inner.rollback.len(),
+                    inner.ongoing,
+                    inner.tasks.len(),
+                )
+            });
         f.debug_struct("Pool")
             .field("min", &self.min)
             .field("max", &self.max)
-            .field("new connections count", &self.inner_ref().new.len())
-            .field("idle connections count", &self.inner_ref().idle.len())
-            .field(
-                "disconnecting connections count",
-                &self.inner_ref().disconnecting.len(),
-            )
+            .field("new connections count", &new_len)
+            .field("idle connections count", &idle_len)
+            .field("disconnecting connections count", &disconnecing_len)
+            .field("dropping connections count", &dropping_len)
+            .field("rollback connections count", &rollback_len)
+            .field("ongoing connections count", &ongoing)
+            .field("tasks count", &tasks_len)
             .finish()
     }
 }
@@ -103,10 +127,17 @@ impl Pool {
     /// Active connections taken from this pool should be disconnected manually.
     /// Also all pending and new `GetConn`'s will resolve to error.
     pub fn disconnect(mut self) -> DisconnectPool {
-        if !self.inner_ref().closed {
-            self.inner_ref().closed = true;
+        let become_closed = self.with_inner(|mut inner| {
+            if !inner.closed {
+                inner.closed = true;
+                return true;
+            } else {
+                return false;
+            }
+        });
+        if become_closed {
             while let Some(conn) = self.take_conn() {
-                self.inner_ref().disconnecting.push(conn.disconnect());
+                self.with_inner(move |mut inner| inner.disconnecting.push(conn.disconnect()));
             }
         }
         new_disconnect_pool(self)
@@ -114,12 +145,13 @@ impl Pool {
 
     /// Returns true if futures is in queue.
     fn in_queue(&self) -> bool {
-        let inner = self.inner_ref();
-        let count = inner.new.len()
-            + inner.disconnecting.len()
-            + inner.dropping.len()
-            + inner.rollback.len();
-        count > 0
+        self.with_inner(|inner| {
+            let count = inner.new.len()
+                + inner.disconnecting.len()
+                + inner.dropping.len()
+                + inner.rollback.len();
+            count > 0
+        })
     }
 
     /// A way to take connection from a pool.
@@ -128,54 +160,54 @@ impl Pool {
             // Do not return connection until queue is empty
             return None;
         }
-        while self.inner_ref().idle.len() > 0 {
-            let conn = self.inner_ref().idle.pop();
-            let conn = conn.and_then(|mut conn| {
+        self.with_inner(|mut inner| {
+            while let Some(mut conn) = inner.idle.pop() {
                 if conn.expired() {
-                    self.inner_ref().disconnecting.push(conn.disconnect());
-                    None
+                    inner.disconnecting.push(conn.disconnect());
                 } else {
                     conn.pool = Some(self.clone());
-                    Some(conn)
+                    inner.ongoing += 1;
+                    return Some(conn);
                 }
-            });
-            if conn.is_some() {
-                self.inner_ref().ongoing += 1;
-                return conn;
             }
-        }
-        None
+            None
+        })
     }
 
     /// A way to return connection taken from a pool.
     fn return_conn(&mut self, conn: Conn) {
-        if self.inner_ref().closed {
-            return;
-        }
         let min = self.min;
-        let mut inner = self.inner_ref();
 
-        if conn.has_result.is_some() {
-            inner.dropping.push(Box::new(conn.drop_result()));
-        } else if conn.in_transaction {
-            inner.rollback.push(Box::new(conn.rollback_transaction()))
-        } else {
-            let idle_len = inner.idle.len();
-            if idle_len >= min {
-                inner.disconnecting.push(conn.disconnect());
-            } else {
-                inner.ongoing -= 1;
-                inner.idle.push(conn);
+        self.with_inner(|mut inner| {
+            if inner.closed {
+                return;
             }
-        }
 
-        while let Some(task) = inner.tasks.pop() {
-            task.notify()
-        }
+            if conn.has_result.is_some() {
+                inner.dropping.push(Box::new(conn.drop_result()));
+            } else if conn.in_transaction {
+                inner.rollback.push(Box::new(conn.rollback_transaction()));
+            } else {
+                if inner.idle.len() >= min {
+                    inner.disconnecting.push(conn.disconnect());
+                } else {
+                    inner.ongoing -= 1;
+                    inner.idle.push(conn);
+                }
+            }
+
+            while let Some(task) = inner.tasks.pop() {
+                task.notify()
+            }
+        });
     }
 
-    fn inner_ref(&self) -> MutexGuard<Inner> {
-        self.inner.lock().unwrap()
+    fn with_inner<F, T>(&self, fun: F) -> T
+    where
+        F: FnOnce(MutexGuard<Inner>) -> T,
+        T: 'static,
+    {
+        fun(self.inner.lock().unwrap())
     }
 
     /// Will manage lifetime of futures stored in a pool.
@@ -187,10 +219,10 @@ impl Pool {
 
         macro_rules! handle {
             ($vec:ident { $($p:pat => $b:block,)+ }) => ({
-                let len = self.inner_ref().$vec.len();
+                let len = self.with_inner(|inner| inner.$vec.len());
                 let mut done_fut_idxs = Vec::new();
                 for i in 0..len {
-                    let result = self.inner_ref().$vec.get_mut(i).unwrap().poll();
+                    let result = self.with_inner(|mut inner| inner.$vec.get_mut(i).unwrap().poll());
                     match result {
                         Ok(Ready(_)) | Err(_) => done_fut_idxs.push(i),
                         _ => (),
@@ -207,7 +239,7 @@ impl Pool {
                         Err(err) => {
                             // early return in case of error
                             while let Some(i) = done_fut_idxs.pop() {
-                                let _ = self.inner_ref().$vec.swap_remove(i);
+                                let _ = self.with_inner(|mut inner| inner.$vec.swap_remove(i));
                             }
                             return Err(err)
                         }
@@ -216,7 +248,7 @@ impl Pool {
                 }
 
                 while let Some(i) = done_fut_idxs.pop() {
-                    let _ = self.inner_ref().$vec.swap_remove(i);
+                    let _ = self.with_inner(|mut inner| inner.$vec.swap_remove(i));
                 }
             });
         }
@@ -235,9 +267,9 @@ impl Pool {
         // Handle dirty connections.
         handle!(dropping {
             Ok(Ready(conn)) => {
-                let closed = self.inner_ref().closed;
+                let closed = self.with_inner(|inner| inner.closed);
                 if closed {
-                    self.inner_ref().disconnecting.push(conn.disconnect());
+                    self.with_inner(|mut inner| inner.disconnecting.push(conn.disconnect()));
                 } else {
                     self.return_conn(conn);
                 }
@@ -250,9 +282,9 @@ impl Pool {
         // Handle in-transaction connections
         handle!(rollback {
             Ok(Ready(conn)) => {
-                let closed = self.inner_ref().closed;
+                let closed = self.with_inner(|inner| inner.closed);
                 if closed {
-                    self.inner_ref().disconnecting.push(conn.disconnect());
+                    self.with_inner(|mut inner| inner.disconnecting.push(conn.disconnect()));
                 } else {
                     self.return_conn(conn);
                 }
@@ -265,18 +297,18 @@ impl Pool {
         // Handle connecting connections.
         handle!(new {
             Ok(Ready(conn)) => {
-                let closed = self.inner_ref().closed;
+                let closed = self.with_inner(|inner| inner.closed);
                 if closed {
-                    self.inner_ref().disconnecting.push(conn.disconnect());
+                    self.with_inner(|mut inner| inner.disconnecting.push(conn.disconnect()));
                 } else {
-                    self.inner_ref().ongoing += 1;
+                    self.with_inner(|mut inner| inner.ongoing += 1);
                     self.return_conn(conn);
                 }
                 handled = true;
                 Ok(())
             },
             Err(err) => {
-                if ! self.inner_ref().closed {
+                if ! self.with_inner(|inner| inner.closed) {
                     Err(err)
                 } else {
                     Ok(())
@@ -291,19 +323,9 @@ impl Pool {
         }
     }
 
-    fn conn_count(&self) -> usize {
-        let inner = self.inner_ref();
-        inner.new.len()
-            + inner.idle.len()
-            + inner.disconnecting.len()
-            + inner.dropping.len()
-            + inner.rollback.len()
-            + inner.ongoing
-    }
-
     /// Will poll pool for connection.
     fn poll(&mut self) -> Result<Async<Conn>> {
-        if self.inner_ref().closed {
+        if self.with_inner(|inner| inner.closed) {
             return Err(ErrorKind::PoolDisconnected.into());
         }
 
@@ -312,13 +334,19 @@ impl Pool {
         match self.take_conn() {
             Some(conn) => Ok(Ready(conn)),
             None => {
-                let new_len = self.inner_ref().new.len();
-                if new_len == 0 && self.conn_count() < self.max {
-                    let new_conn = Conn::new(self.opts.clone());
-                    self.inner_ref().new.push(Box::new(new_conn));
+                let new_conn_created = self.with_inner(|mut inner| {
+                    if inner.new.len() == 0 && inner.conn_count() < self.max {
+                        let new_conn = Conn::new(self.opts.clone());
+                        inner.new.push(Box::new(new_conn));
+                        true
+                    } else {
+                        inner.tasks.push(task::current());
+                        false
+                    }
+                });
+                if new_conn_created {
                     self.poll()
                 } else {
-                    self.inner_ref().tasks.push(task::current());
                     Ok(NotReady)
                 }
             }
@@ -411,30 +439,80 @@ mod test {
             .and_then(move |(mut conn1, conn2)| {
                 let new_conn = pool_clone.get_conn();
                 conn1.pool.as_mut().unwrap().handle_futures().unwrap();
-                assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().new.len(), 0);
-                assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().idle.len(), 0);
                 assert_eq!(
-                    conn2.pool.as_ref().unwrap().inner_ref().disconnecting.len(),
+                    conn1
+                        .pool
+                        .as_ref()
+                        .unwrap()
+                        .with_inner(|inner| inner.new.len()),
                     0
                 );
-                assert_eq!(conn2.pool.as_ref().unwrap().inner_ref().dropping.len(), 0);
+                assert_eq!(
+                    conn1
+                        .pool
+                        .as_ref()
+                        .unwrap()
+                        .with_inner(|inner| inner.idle.len()),
+                    0
+                );
+                assert_eq!(
+                    conn2
+                        .pool
+                        .as_ref()
+                        .unwrap()
+                        .with_inner(|inner| inner.disconnecting.len()),
+                    0
+                );
+                assert_eq!(
+                    conn2
+                        .pool
+                        .as_ref()
+                        .unwrap()
+                        .with_inner(|inner| inner.dropping.len()),
+                    0
+                );
                 new_conn
             })
             .and_then(|conn1| {
-                assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().new.len(), 0);
-                assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().idle.len(), 0);
                 assert_eq!(
-                    conn1.pool.as_ref().unwrap().inner_ref().disconnecting.len(),
+                    conn1
+                        .pool
+                        .as_ref()
+                        .unwrap()
+                        .with_inner(|inner| inner.new.len()),
                     0
                 );
-                assert_eq!(conn1.pool.as_ref().unwrap().inner_ref().dropping.len(), 0);
+                assert_eq!(
+                    conn1
+                        .pool
+                        .as_ref()
+                        .unwrap()
+                        .with_inner(|inner| inner.idle.len()),
+                    0
+                );
+                assert_eq!(
+                    conn1
+                        .pool
+                        .as_ref()
+                        .unwrap()
+                        .with_inner(|inner| inner.disconnecting.len()),
+                    0
+                );
+                assert_eq!(
+                    conn1
+                        .pool
+                        .as_ref()
+                        .unwrap()
+                        .with_inner(|inner| inner.dropping.len()),
+                    0
+                );
                 Ok(())
             })
             .and_then(|_| {
-                assert_eq!(pool.inner_ref().new.len(), 0);
-                assert_eq!(pool.inner_ref().idle.len(), 1);
-                assert_eq!(pool.inner_ref().disconnecting.len(), 0);
-                assert_eq!(pool.inner_ref().dropping.len(), 0);
+                assert_eq!(pool.with_inner(|inner| inner.new.len()), 0);
+                assert_eq!(pool.with_inner(|inner| inner.idle.len()), 1);
+                assert_eq!(pool.with_inner(|inner| inner.disconnecting.len()), 0);
+                assert_eq!(pool.with_inner(|inner| inner.dropping.len()), 0);
                 pool.disconnect()
             });
 
@@ -452,7 +530,7 @@ mod test {
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
-            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut runtime = tokio::executor::current_thread::CurrentThread::new();
             let pool = Pool::new(&**DATABASE_URL);
 
             bencher.iter(|| {
@@ -461,7 +539,6 @@ mod test {
             });
 
             runtime.block_on(pool.disconnect()).unwrap();
-            runtime.shutdown_on_idle().wait().unwrap();
         }
     }
 }

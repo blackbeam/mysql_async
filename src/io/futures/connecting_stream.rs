@@ -7,7 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use errors::*;
-use io::Stream;
+use io::{packet_codec::PacketCodec, Stream};
 use lib_futures::failed;
 use lib_futures::future::select_ok;
 use lib_futures::future::SelectOk;
@@ -16,11 +16,11 @@ use lib_futures::Async::Ready;
 use lib_futures::Failed;
 use lib_futures::Future;
 use lib_futures::Poll;
-use myc::packets::PacketParser;
 use std::io;
 use std::net::ToSocketAddrs;
 use tokio::net::ConnectFuture;
 use tokio::net::TcpStream;
+use tokio_codec::Framed;
 
 steps! {
     ConnectingStream {
@@ -74,10 +74,7 @@ impl Future for ConnectingStream {
         match try_ready!(self.either_poll()) {
             Out::WaitForStream((stream, _)) => Ok(Ready(Stream {
                 closed: false,
-                parser: Some(PacketParser::empty()),
-                packets: Default::default(),
-                buf: Vec::new(),
-                endpoint: Some(stream.into()),
+                codec: Framed::new(stream.into(), PacketCodec::new()),
             })),
             Out::Fail(_) => unreachable!(),
         }

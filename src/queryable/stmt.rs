@@ -279,7 +279,7 @@ where
         )
     }
 
-    /// This will close statement (it it's not in the cache) and resolve to a wrapped queryable.
+    /// This will close statement (if it's not in the cache) and resolve to a wrapped queryable.
     pub fn close(mut self) -> impl MyFuture<T> {
         let cached = self.cached.take();
         match self.conn_like {

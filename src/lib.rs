@@ -126,6 +126,7 @@ extern crate test;
 
 extern crate bit_vec;
 extern crate byteorder;
+extern crate bytes;
 #[macro_use]
 extern crate error_chain;
 extern crate fnv;
@@ -142,6 +143,7 @@ extern crate regex;
 extern crate serde;
 extern crate serde_json;
 extern crate tokio;
+extern crate tokio_codec;
 extern crate tokio_io;
 extern crate twox_hash;
 extern crate url;
