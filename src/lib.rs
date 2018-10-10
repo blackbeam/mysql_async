@@ -281,10 +281,14 @@ pub use self::queryable::{BinaryProtocol, TextProtocol};
 pub use self::queryable::stmt::Stmt;
 
 /// Futures used in this crate
-mod futures {
+pub mod futures {
+    #[doc(inline)]
     pub use queryable::query_result::{
         ForEach, ForEachAndDrop, Map, MapAndDrop, Reduce, ReduceAndDrop,
     };
+
+    #[doc(inline)]
+    pub use conn::pool::futures::{GetConn, DisconnectPool};
 }
 
 /// Traits used in this crate
