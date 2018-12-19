@@ -30,6 +30,8 @@ use std::net::ToSocketAddrs;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_codec::Framed;
+#[cfg(feature = "ssl")]
+use tokio_codec::FramedParts;
 use tokio_io::AsyncRead;
 use tokio_io::AsyncWrite;
 use MyFuture;
@@ -82,13 +84,7 @@ impl Endpoint {
 
     #[cfg(feature = "ssl")]
     pub fn make_secure(self, domain: String, ssl_opts: SslOpts) -> impl MyFuture<Self> {
-        ::std::fs::File::open(ssl_opts.pkcs12_path())
-            .map_err(Error::from)
-            .and_then(|mut file| {
-                let mut der = vec![];
-                file.read_to_end(&mut der)?;
-                let identity = Identity::from_pkcs12(&*der, ssl_opts.password().unwrap_or(""))
-                    .chain_err(|| "Can't parse der")?;
+            (|| {
                 let mut builder = TlsConnector::builder();
                 match ssl_opts.root_cert_path() {
                     Some(root_cert_path) => {
@@ -101,12 +97,17 @@ impl Endpoint {
                     }
                     None => (),
                 }
-                builder.identity(identity);
+                if let Some(pkcs12_path) = ssl_opts.pkcs12_path() {
+                    let der = std::fs::read(pkcs12_path)?;
+                    let identity = Identity::from_pkcs12(&*der, ssl_opts.password().unwrap_or(""))
+                        .chain_err(|| "Can't parse der")?;
+                    builder.identity(identity);
+                }
                 builder.danger_accept_invalid_hostnames(ssl_opts.skip_domain_validation());
                 builder
                     .build()
                     .chain_err(|| "Can't build TlsConnectorBuilder")
-            })
+            })()
             .into_future()
             .and_then(move |tls_connector| match self {
                 Endpoint::Plain(stream) => {
@@ -183,12 +184,12 @@ impl AsyncWrite for Endpoint {
 /// Stream connected to MySql server.
 pub struct Stream {
     closed: bool,
-    codec: Framed<Endpoint, packet_codec::PacketCodec>,
+    codec: Option<Framed<Endpoint, packet_codec::PacketCodec>>,
 }
 
 impl fmt::Debug for Stream {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Stream (endpoint={:?})", self.codec.get_ref())
+        write!(f, "Stream (endpoint={:?})", self.codec.as_ref().unwrap().get_ref())
     }
 }
 
@@ -205,11 +206,11 @@ impl Stream {
     }
 
     pub fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
-        self.codec.get_ref().set_keepalive_ms(ms)
+        self.codec.as_ref().unwrap().get_ref().set_keepalive_ms(ms)
     }
 
     pub fn set_tcp_nodelay(&self, val: bool) -> Result<()> {
-        self.codec.get_ref().set_tcp_nodelay(val)
+        self.codec.as_ref().unwrap().get_ref().set_tcp_nodelay(val)
     }
 
     #[cfg(not(feature = "ssl"))]
@@ -220,17 +221,19 @@ impl Stream {
 
     #[cfg(feature = "ssl")]
     pub fn make_secure(mut self, domain: String, ssl_opts: SslOpts) -> impl MyFuture<Self> {
-        match self.endpoint.take() {
-            Some(endpoint) => endpoint.make_secure(domain, ssl_opts).map(|endpoint| {
-                self.endpoint = Some(endpoint);
+        let codec = self.codec.take().unwrap();
+        let FramedParts { io, codec, .. } = codec.into_parts();
+        io
+            .make_secure(domain, ssl_opts)
+            .map(move |endpoint| {
+                let codec = Framed::new(endpoint, codec);
+                self.codec = Some(codec);
                 self
-            }),
-            None => unreachable!(),
-        }
+            })
     }
 
     pub fn is_secure(&self) -> bool {
-        self.codec.get_ref().is_secure()
+        self.codec.as_ref().unwrap().get_ref().is_secure()
     }
 }
 
@@ -240,7 +243,7 @@ impl stream::Stream for Stream {
 
     fn poll(&mut self) -> Poll<Option<(RawPacket, u8)>, Error> {
         if !self.closed {
-            self.codec.poll().map_err(Error::from)
+            self.codec.as_mut().unwrap().poll().map_err(Error::from)
         } else {
             Ok(Async::Ready(None))
         }

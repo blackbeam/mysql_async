@@ -535,8 +535,8 @@ mod test {
         builder.stmt_cache_size(None);
         #[cfg(feature = "ssl")]
         {
-            let mut ssl_opts =
-                SslOpts::new(AsRef::<::std::path::Path>::as_ref("./test/client.p12"));
+            let mut ssl_opts = SslOpts::new();
+            ssl_opts.set_pkcs12_path(Some(AsRef::<::std::path::Path>::as_ref("./test/client.p12")));
             ssl_opts.set_root_cert_path(Some(AsRef::<::std::path::Path>::as_ref(
                 "./test/ca-cert.der",
             )));
@@ -663,14 +663,16 @@ mod test {
                     ),
                 )
             })
-            .and_then(|result| {
-                result.reduce_and_drop(vec![], |mut acc, row| {
+            .and_then(move |result| {
+                result.reduce_and_drop(vec![], move |mut acc, row| {
                     acc.push(from_row(row));
                     acc
                 })
             })
-            .and_then(|(conn, out)| Queryable::disconnect(conn).map(|_| out))
-            .map(|result| {
+            .and_then(move |(conn, out)| {
+                Queryable::disconnect(conn).map(|_| out)
+            })
+            .map(move |result| {
                 assert_eq!((String::from("hello"), 123), result[0]);
                 assert_eq!((long_string, 231), result[1]);
             });

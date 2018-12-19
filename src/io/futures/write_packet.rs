@@ -22,21 +22,27 @@ pub struct WritePacket {
     data: Option<RawPacket>,
     stream: Option<Stream>,
     seq_id: u8,
-    out_seq_id: u8,
+    resulting_seq_id: u8,
 }
 
 pub fn new(stream: Stream, data: Vec<u8>, seq_id: u8) -> WritePacket {
-    let mut out_seq_id = ((data.len() / MAX_PAYLOAD_LEN) % 256) as u8;
+    // at least one packet will be written
+    let resulting_seq_id = seq_id.wrapping_add(1);
 
-    if data.len() % MAX_PAYLOAD_LEN == 0 {
-        out_seq_id = out_seq_id.wrapping_add(1);
+    // each new packet after 2²⁴−1 will add to the resulting sequence id
+    let mut resulting_seq_id = resulting_seq_id
+        .wrapping_add(((data.len() / MAX_PAYLOAD_LEN) % 256) as u8);
+
+    // empty tail packet will also add to the resulting sequence id
+    if data.len() > 0 && data.len() % MAX_PAYLOAD_LEN == 0 {
+        resulting_seq_id = resulting_seq_id.wrapping_add(1);
     }
 
     WritePacket {
         data: Some(RawPacket(data)),
         stream: Some(stream),
         seq_id,
-        out_seq_id,
+        resulting_seq_id,
     }
 }
 
@@ -51,6 +57,8 @@ impl Future for WritePacket {
                 .as_mut()
                 .unwrap()
                 .codec
+                .as_mut()
+                .unwrap()
                 .start_send((data, self.seq_id))?
             {
                 AsyncSink::Ready => (),
@@ -67,9 +75,11 @@ impl Future for WritePacket {
                 .as_mut()
                 .unwrap()
                 .codec
+                .as_mut()
+                .unwrap()
                 .poll_complete()
                 .map_err(Error::from)
         );
-        Ok(Async::Ready((self.stream.take().unwrap(), self.out_seq_id)))
+        Ok(Async::Ready((self.stream.take().unwrap(), self.resulting_seq_id)))
     }
 }

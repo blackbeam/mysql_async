@@ -18,8 +18,7 @@ use lib_futures::Future;
 use lib_futures::Poll;
 use std::io;
 use std::net::ToSocketAddrs;
-use tokio::net::ConnectFuture;
-use tokio::net::TcpStream;
+use tokio::net::{tcp::ConnectFuture, TcpStream};
 use tokio_codec::Framed;
 
 steps! {
@@ -74,7 +73,7 @@ impl Future for ConnectingStream {
         match try_ready!(self.either_poll()) {
             Out::WaitForStream((stream, _)) => Ok(Ready(Stream {
                 closed: false,
-                codec: Framed::new(stream.into(), PacketCodec::new()),
+                codec: Framed::new(stream.into(), PacketCodec::new()).into(),
             })),
             Out::Fail(_) => unreachable!(),
         }

@@ -7,7 +7,7 @@ use tokio_codec::{Decoder, Encoder};
 #[derive(Debug)]
 pub struct PacketCodec {
     chunk_len: isize,
-    packet_data: Vec<u8>,
+    packet_data: BytesMut,
     seq_id: u8,
 }
 
@@ -15,7 +15,7 @@ impl PacketCodec {
     pub fn new() -> PacketCodec {
         PacketCodec {
             chunk_len: -1,
-            packet_data: Vec::with_capacity(256),
+            packet_data: BytesMut::with_capacity(256),
             seq_id: 0,
         }
     }
@@ -37,7 +37,7 @@ impl Decoder for PacketCodec {
                 if chunk_len == MAX_PAYLOAD_LEN {
                     Ok(None)
                 } else {
-                    let packet_data = self.packet_data.clone();
+                    let packet_data = self.packet_data.as_ref().into();
                     self.packet_data.clear();
                     Ok(Some((RawPacket(packet_data), self.seq_id)))
                 }

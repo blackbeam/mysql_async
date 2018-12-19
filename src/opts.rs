@@ -27,16 +27,16 @@ const DEFAULT_STMT_CACHE_SIZE: usize = 10;
 /// Ssl Options.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct SslOpts {
-    pkcs12_path: Cow<'static, Path>,
+    pkcs12_path: Option<Cow<'static, Path>>,
     password: Option<Cow<'static, str>>,
     root_cert_path: Option<Cow<'static, Path>>,
     skip_domain_validation: bool,
 }
 
 impl SslOpts {
-    pub fn new<T: Into<Cow<'static, Path>>>(pkcs12_path: T) -> SslOpts {
+    pub fn new() -> SslOpts {
         SslOpts {
-            pkcs12_path: pkcs12_path.into(),
+            pkcs12_path: None,
             password: None,
             root_cert_path: None,
             skip_domain_validation: false,
@@ -44,8 +44,8 @@ impl SslOpts {
     }
 
     /// Sets path to the pkcs12 archive.
-    pub fn set_pkcs12_path<T: Into<Cow<'static, Path>>>(&mut self, pkcs12_path: T) -> &mut Self {
-        self.pkcs12_path = pkcs12_path.into();
+    pub fn set_pkcs12_path<T: Into<Cow<'static, Path>>>(&mut self, pkcs12_path: Option<T>) -> &mut Self {
+        self.pkcs12_path = pkcs12_path.map(Into::into);
         self
     }
 
@@ -71,8 +71,8 @@ impl SslOpts {
         self
     }
 
-    pub fn pkcs12_path(&self) -> &Path {
-        self.pkcs12_path.as_ref()
+    pub fn pkcs12_path(&self) -> Option<&Path> {
+        self.pkcs12_path.as_ref().map(|x| x.as_ref())
     }
 
     pub fn password(&self) -> Option<&str> {
