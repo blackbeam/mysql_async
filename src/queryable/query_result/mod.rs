@@ -368,8 +368,8 @@ where
         })
     }
 
-    /// Returns columns of this query result as reported by server.
-    pub fn columns(&self) -> &[Column] {
+    /// Returns reference to columns in this query result.
+    pub fn columns_ref(&self) -> &[Column] {
         match self.0 {
             QueryResultInner::Empty(..) => {
                 static EMPTY: &'static [Column] = &[];
@@ -377,6 +377,18 @@ where
             }
             QueryResultInner::WithRows(_, ref columns, ..) => {
                 &**columns
+            }
+        }
+    }
+
+    /// Returns copy of columns of this query result.
+    pub fn columns(&self) -> Option<Arc<Vec<Column>>> {
+        match self.0 {
+            QueryResultInner::Empty(..) => {
+                None
+            }
+            QueryResultInner::WithRows(_, ref columns, ..) => {
+                Some(columns.clone())
             }
         }
     }
