@@ -283,7 +283,7 @@ pub use self::queryable::{BinaryProtocol, TextProtocol};
 pub use self::queryable::stmt::Stmt;
 
 /// Futures used in this crate
-mod futures {
+pub mod futures {
     pub use queryable::query_result::{
         ForEach, ForEachAndDrop, Map, MapAndDrop, Reduce, ReduceAndDrop,
     };
