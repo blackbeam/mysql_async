@@ -367,6 +367,19 @@ where
             }
         })
     }
+
+    /// Returns columns of this query result as reported by server.
+    pub fn columns(&self) -> &[Column] {
+        match self.0 {
+            QueryResultInner::Empty(..) => {
+                static EMPTY: &'static [Column] = &[];
+                EMPTY
+            }
+            QueryResultInner::WithRows(_, ref columns, ..) => {
+                &**columns
+            }
+        }
+    }
 }
 
 impl<T: ConnectionLike + 'static, P: Protocol> ConnectionLikeWrapper for QueryResult<T, P> {
