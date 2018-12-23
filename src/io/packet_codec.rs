@@ -1,6 +1,6 @@
+use crate::myc::{constants::MAX_PAYLOAD_LEN, packets::RawPacket};
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
-use crate::myc::{constants::MAX_PAYLOAD_LEN, packets::RawPacket};
 use std::io;
 use tokio_codec::{Decoder, Encoder};
 

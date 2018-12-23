@@ -6,9 +6,9 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use crate::BoxFuture;
 use std::{fmt, sync::Arc};
 use tokio_io::AsyncRead;
-use crate::BoxFuture;
 
 pub mod builtin;
 

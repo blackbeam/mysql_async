@@ -124,13 +124,8 @@
 #[cfg(feature = "nightly")]
 extern crate test;
 
-
-
-
 #[macro_use]
 extern crate error_chain;
-
-
 
 #[macro_use]
 extern crate futures as lib_futures;
@@ -142,11 +137,7 @@ use mysql_common as myc;
 #[cfg(feature = "ssl")]
 extern crate native_tls;
 
-
-
 use tokio;
-
-
 
 use url;
 
@@ -222,7 +213,8 @@ mod local_infile_handler;
 mod opts;
 mod queryable;
 
-pub type BoxFuture<T> = Box<dyn lib_futures::Future<Item = T, Error = errors::Error> + Send + 'static>;
+pub type BoxFuture<T> =
+    Box<dyn lib_futures::Future<Item = T, Error = errors::Error> + Send + 'static>;
 
 /// Alias for `Future` with library error as `Future::Error`.
 pub trait MyFuture<T>:

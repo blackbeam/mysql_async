@@ -7,24 +7,25 @@
 // modified, or distributed except according to those terms.
 
 use self::futures::*;
-use crate::conn::Conn;
-use crate::errors::*;
-use crate::lib_futures::{
-    task::{self, Task},
-    Async::{self, NotReady, Ready},
-    Future,
-};
-use crate::opts::Opts;
-use crate::queryable::{
-    transaction::{Transaction, TransactionOptions},
-    Queryable,
+use crate::{
+    conn::Conn,
+    errors::*,
+    lib_futures::{
+        task::{self, Task},
+        Async::{self, NotReady, Ready},
+        Future,
+    },
+    opts::Opts,
+    queryable::{
+        transaction::{Transaction, TransactionOptions},
+        Queryable,
+    },
+    BoxFuture, MyFuture,
 };
 use std::{
     fmt,
     sync::{Arc, Mutex, MutexGuard},
 };
-use crate::BoxFuture;
-use crate::MyFuture;
 
 pub mod futures;
 
@@ -371,12 +372,11 @@ impl Drop for Conn {
 
 #[cfg(test)]
 mod test {
-    use crate::conn::pool::Pool;
-    use crate::lib_futures::Future;
-    use crate::queryable::Queryable;
-    use crate::test_misc::DATABASE_URL;
+    use crate::{
+        conn::pool::Pool, lib_futures::Future, queryable::Queryable, test_misc::DATABASE_URL,
+        TransactionOptions,
+    };
     use tokio;
-    use crate::TransactionOptions;
 
     /// Same as `tokio::run`, but will panic if future panics and will return the result
     /// of future execution.

@@ -6,28 +6,27 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use crate::{
+    connection_like::{
+        streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
+    },
+    consts::{ColumnType, Command},
+    errors::*,
+    io,
+    lib_futures::future::{
+        err, loop_fn, ok,
+        Either::{self, *},
+        Future, IntoFuture, Loop,
+    },
+    myc::value::serialize_bin_many,
+    prelude::FromRow,
+    queryable::{query_result::QueryResult, BinaryProtocol},
+    Column, MyFuture, Params, Row,
+    Value::{self, *},
+};
 use bit_vec::BitVec;
 use byteorder::{LittleEndian as LE, ReadBytesExt, WriteBytesExt};
-use crate::connection_like::{
-    streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
-};
-use crate::consts::{ColumnType, Command};
-use crate::errors::*;
-use crate::io;
-use crate::lib_futures::future::{
-    err, loop_fn, ok,
-    Either::{self, *},
-    Future, IntoFuture, Loop,
-};
-use crate::myc::value::serialize_bin_many;
-use crate::prelude::FromRow;
-use crate::queryable::{query_result::QueryResult, BinaryProtocol};
 use std::io::Write;
-use crate::Column;
-use crate::MyFuture;
-use crate::Params;
-use crate::Row;
-use crate::Value::{self, *};
 
 /// Inner statement representation.
 #[derive(Eq, PartialEq, Clone, Debug)]

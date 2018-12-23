@@ -6,17 +6,19 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use crate::connection_like::{streamless::Streamless, ConnectionLike, ConnectionLikeWrapper};
-use crate::errors::*;
-use crate::io;
-use crate::lib_futures::future::{
-    err, ok,
-    Either::{self, *},
-    Future, IntoFuture,
+use crate::{
+    connection_like::{streamless::Streamless, ConnectionLike, ConnectionLikeWrapper},
+    errors::*,
+    io,
+    lib_futures::future::{
+        err, ok,
+        Either::{self, *},
+        Future, IntoFuture,
+    },
+    queryable::Queryable,
+    MyFuture,
 };
-use crate::queryable::Queryable;
 use std::fmt;
-use crate::MyFuture;
 
 /// Options for transaction
 #[derive(Eq, PartialEq, Debug, Hash, Clone, Default)]

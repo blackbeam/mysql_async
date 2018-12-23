@@ -6,11 +6,12 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use crate::myc::{packets::ErrPacket, params::MissingNamedParameterError};
+use crate::{
+    myc::{packets::ErrPacket, params::MissingNamedParameterError},
+    Row, Value,
+};
 use std::io;
 use url;
-use crate::Row;
-use crate::Value;
 
 error_chain! {
     foreign_links {

@@ -11,22 +11,20 @@ use self::{
     stmt::Stmt,
     transaction::{Transaction, TransactionOptions},
 };
-use crate::connection_like::ConnectionLike;
-use crate::consts::Command;
-use crate::errors::*;
-use crate::lib_futures::future::Future;
-use crate::myc::{
-    packets::{parse_ok_packet, RawPacket},
-    row::new_row,
-    value::{read_bin_values, read_text_values},
+use crate::{
+    connection_like::ConnectionLike,
+    consts::Command,
+    errors::*,
+    lib_futures::future::Future,
+    myc::{
+        packets::{parse_ok_packet, RawPacket},
+        row::new_row,
+        value::{read_bin_values, read_text_values},
+    },
+    prelude::FromRow,
+    BoxFuture, Column, Conn, Params, Row,
 };
-use crate::prelude::FromRow;
 use std::sync::Arc;
-use crate::BoxFuture;
-use crate::Column;
-use crate::Conn;
-use crate::Params;
-use crate::Row;
 
 pub mod query_result;
 pub mod stmt;

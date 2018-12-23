@@ -7,7 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use super::LocalInfileHandler;
-use crate::lib_futures::IntoFuture;
+use crate::{lib_futures::IntoFuture, BoxFuture};
 use mio::{Evented, Poll, PollOpt, Ready, Registration, Token};
 use std::{
     collections::HashSet,
@@ -20,7 +20,6 @@ use std::{
 };
 use tokio::reactor::PollEvented2;
 use tokio_io::AsyncRead;
-use crate::BoxFuture;
 
 #[derive(Debug)]
 enum Message {
@@ -187,8 +186,9 @@ impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
         };
         if self.white_list.contains(&path) {
             let fut =
-                Ok(Box::new(PollEvented2::new(File::new(path))) as Box<dyn AsyncRead + Send + 'static>)
-                    .into_future();
+                Ok(Box::new(PollEvented2::new(File::new(path)))
+                    as Box<dyn AsyncRead + Send + 'static>)
+                .into_future();
             Box::new(fut) as BoxFuture<Box<_>>
         } else {
             let err_msg = format!("Path `{}' is not in white list", path.display());

@@ -6,17 +6,20 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use crate::errors::*;
-use crate::io::futures::{new_connecting_stream, new_write_packet, ConnectingStream, WritePacket};
 #[cfg(not(feature = "ssl"))]
 use crate::lib_futures::future::ok;
-use crate::lib_futures::{stream, Async, Poll};
+use crate::{
+    errors::*,
+    io::futures::{new_connecting_stream, new_write_packet, ConnectingStream, WritePacket},
+    lib_futures::{stream, Async, Poll},
+    myc::packets::RawPacket,
+    opts::SslOpts,
+    MyFuture,
+};
 #[cfg(feature = "ssl")]
 use lib_futures::{Future, IntoFuture};
-use crate::myc::packets::RawPacket;
 #[cfg(feature = "ssl")]
 use native_tls::{Certificate, Identity, TlsConnector};
-use crate::opts::SslOpts;
 #[cfg(feature = "ssl")]
 use std::fs::File;
 #[cfg(feature = "ssl")]
@@ -27,7 +30,6 @@ use tokio_codec::Framed;
 #[cfg(feature = "ssl")]
 use tokio_codec::FramedParts;
 use tokio_io::{AsyncRead, AsyncWrite};
-use crate::MyFuture;
 
 #[cfg(feature = "ssl")]
 mod async_tls;

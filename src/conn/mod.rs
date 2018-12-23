@@ -7,24 +7,27 @@
 // modified, or distributed except according to those terms.
 
 use self::stmt_cache::StmtCache;
-use crate::conn::pool::Pool;
-use crate::connection_like::{streamless::Streamless, ConnectionLike, StmtCacheResult};
-use crate::consts::{self, CapabilityFlags};
-use crate::errors::*;
-use crate::io::Stream;
-use crate::local_infile_handler::LocalInfileHandler;
-use crate::opts::Opts;
-use crate::queryable::{query_result, BinaryProtocol, Queryable, TextProtocol};
-use crate::Column;
-use crate::MyFuture;
-
-use crate::lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
-use crate::myc::{
-    crypto,
-    packets::{parse_handshake_packet, AuthPlugin, HandshakeResponse, SslRequest},
-    scramble,
+use crate::{
+    conn::pool::Pool,
+    connection_like::{streamless::Streamless, ConnectionLike, StmtCacheResult},
+    consts::{self, CapabilityFlags},
+    errors::*,
+    io::Stream,
+    local_infile_handler::LocalInfileHandler,
+    opts::Opts,
+    queryable::{query_result, BinaryProtocol, Queryable, TextProtocol},
+    Column, MyFuture,
 };
-use crate::time::SteadyTime;
+
+use crate::{
+    lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop},
+    myc::{
+        crypto,
+        packets::{parse_handshake_packet, AuthPlugin, HandshakeResponse, SslRequest},
+        scramble,
+    },
+    time::SteadyTime,
+};
 
 use std::{fmt, mem, sync::Arc};
 
@@ -505,17 +508,13 @@ impl ConnectionLike for Conn {
 
 #[cfg(test)]
 mod test {
-    use crate::from_row;
-    use crate::lib_futures::Future;
-    use crate::prelude::*;
-    use crate::test_misc::DATABASE_URL;
-    use tokio;
-    use crate::Conn;
-    use crate::OptsBuilder;
     #[cfg(feature = "ssl")]
     use crate::SslOpts;
-    use crate::TransactionOptions;
-    use crate::WhiteListFsLocalInfileHandler;
+    use crate::{
+        from_row, lib_futures::Future, prelude::*, test_misc::DATABASE_URL, Conn, OptsBuilder,
+        TransactionOptions, WhiteListFsLocalInfileHandler,
+    };
+    use tokio;
 
     /// Same as `tokio::run`, but will panic if future panics and will return the result
     /// of future execution.

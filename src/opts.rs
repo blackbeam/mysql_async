@@ -6,8 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use crate::consts::CapabilityFlags;
-use crate::errors::*;
+use crate::{consts::CapabilityFlags, errors::*};
 
 use crate::local_infile_handler::{LocalInfileHandler, LocalInfileHandlerObject};
 

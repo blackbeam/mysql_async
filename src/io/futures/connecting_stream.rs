@@ -6,13 +6,15 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use crate::errors::*;
-use crate::io::{packet_codec::PacketCodec, Stream};
-use crate::lib_futures::{
-    failed,
-    future::{select_ok, SelectOk},
-    Async::{self, Ready},
-    Failed, Future, Poll,
+use crate::{
+    errors::*,
+    io::{packet_codec::PacketCodec, Stream},
+    lib_futures::{
+        failed,
+        future::{select_ok, SelectOk},
+        Async::{self, Ready},
+        Failed, Future, Poll,
+    },
 };
 use std::{io, net::ToSocketAddrs};
 use tokio::net::{tcp::ConnectFuture, TcpStream};

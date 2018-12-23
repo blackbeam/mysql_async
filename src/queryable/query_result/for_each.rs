@@ -7,12 +7,13 @@
 // modified, or distributed except according to those terms.
 
 use super::QueryResult;
-use crate::connection_like::ConnectionLike;
-use crate::errors::*;
-use crate::lib_futures::{Async::Ready, Future, Poll};
-use crate::queryable::Protocol;
-use crate::BoxFuture;
-use crate::Row;
+use crate::{
+    connection_like::ConnectionLike,
+    errors::*,
+    lib_futures::{Async::Ready, Future, Poll},
+    queryable::Protocol,
+    BoxFuture, Row,
+};
 
 pub struct ForEach<T, P, F> {
     fut: BoxFuture<(QueryResult<T, P>, Option<Row>)>,

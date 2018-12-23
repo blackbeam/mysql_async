@@ -7,27 +7,27 @@
 // modified, or distributed except according to those terms.
 
 use self::{read_packet::ReadPacket, streamless::Streamless, write_packet::WritePacket};
+use crate::{
+    conn::{named_params::parse_named_params, stmt_cache::StmtCache},
+    consts::{CapabilityFlags, Command, StatusFlags},
+    errors::*,
+    io,
+    lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop},
+    local_infile_handler::LocalInfileHandler,
+    myc::{
+        io::ReadMysqlExt,
+        packets::{column_from_payload, parse_local_infile_packet, Column, RawPacket},
+    },
+    queryable::{
+        query_result::{self, QueryResult},
+        stmt::InnerStmt,
+        Protocol,
+    },
+    BoxFuture, MyFuture, Opts,
+};
 use byteorder::{ByteOrder, LittleEndian};
-use crate::conn::{named_params::parse_named_params, stmt_cache::StmtCache};
-use crate::consts::{CapabilityFlags, Command, StatusFlags};
-use crate::errors::*;
-use crate::io;
-use crate::lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
-use crate::local_infile_handler::LocalInfileHandler;
-use crate::myc::{
-    io::ReadMysqlExt,
-    packets::{column_from_payload, parse_local_infile_packet, Column, RawPacket},
-};
-use crate::queryable::{
-    query_result::{self, QueryResult},
-    stmt::InnerStmt,
-    Protocol,
-};
 use std::sync::Arc;
 use tokio_io::io::read;
-use crate::BoxFuture;
-use crate::MyFuture;
-use crate::Opts;
 
 pub mod read_packet;
 pub mod streamless {
