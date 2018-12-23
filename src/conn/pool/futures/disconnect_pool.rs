@@ -6,9 +6,9 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use conn::pool::Pool;
-use errors::*;
-use lib_futures::{
+use crate::conn::pool::Pool;
+use crate::errors::*;
+use crate::lib_futures::{
     Async::{NotReady, Ready},
     Future, Poll,
 };

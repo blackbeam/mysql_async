@@ -6,15 +6,15 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use connection_like::{streamless::Streamless, ConnectionLike};
-use errors::*;
-use io;
-use lib_futures::{
+use crate::connection_like::{streamless::Streamless, ConnectionLike};
+use crate::errors::*;
+use crate::io;
+use crate::lib_futures::{
     stream::{Stream, StreamFuture},
     Async::Ready,
     Future, Poll,
 };
-use myc::packets::{parse_err_packet, parse_ok_packet, RawPacket};
+use crate::myc::packets::{parse_err_packet, parse_ok_packet, RawPacket};
 
 pub struct ReadPacket<T> {
     conn_like: Option<Streamless<T>>,

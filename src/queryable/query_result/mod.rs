@@ -8,25 +8,25 @@
 
 use self::QueryResultInner::*;
 pub use self::{for_each::ForEach, map::Map, reduce::Reduce};
-use connection_like::{
+use crate::connection_like::{
     streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
 };
-use consts::StatusFlags;
-use errors::*;
-use io;
-use lib_futures::future::{
+use crate::consts::StatusFlags;
+use crate::errors::*;
+use crate::io;
+use crate::lib_futures::future::{
     loop_fn, ok, AndThen,
     Either::{self, *},
     Future, FutureResult, Loop,
 };
-use myc::packets::RawPacket;
-use prelude::FromRow;
-use queryable::Protocol;
+use crate::myc::packets::RawPacket;
+use crate::prelude::FromRow;
+use crate::queryable::Protocol;
 use std::{marker::PhantomData, mem, sync::Arc};
-use BoxFuture;
-use Column;
-use MyFuture;
-use Row;
+use crate::BoxFuture;
+use crate::Column;
+use crate::MyFuture;
+use crate::Row;
 
 mod for_each;
 mod map;

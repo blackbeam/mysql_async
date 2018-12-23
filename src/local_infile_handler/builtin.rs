@@ -7,7 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use super::LocalInfileHandler;
-use lib_futures::IntoFuture;
+use crate::lib_futures::IntoFuture;
 use mio::{Evented, Poll, PollOpt, Ready, Registration, Token};
 use std::{
     collections::HashSet,
@@ -20,7 +20,7 @@ use std::{
 };
 use tokio::reactor::PollEvented2;
 use tokio_io::AsyncRead;
-use BoxFuture;
+use crate::BoxFuture;
 
 #[derive(Debug)]
 enum Message {
@@ -180,14 +180,14 @@ impl WhiteListFsLocalInfileHandler {
 }
 
 impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
-    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead + Send + 'static>> {
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<dyn AsyncRead + Send + 'static>> {
         let path: PathBuf = match from_utf8(file_name) {
             Ok(path_str) => path_str.into(),
             Err(_) => return Box::new(Err("Invalid file name".into()).into_future()),
         };
         if self.white_list.contains(&path) {
             let fut =
-                Ok(Box::new(PollEvented2::new(File::new(path))) as Box<AsyncRead + Send + 'static>)
+                Ok(Box::new(PollEvented2::new(File::new(path))) as Box<dyn AsyncRead + Send + 'static>)
                     .into_future();
             Box::new(fut) as BoxFuture<Box<_>>
         } else {

@@ -7,13 +7,13 @@
 // modified, or distributed except according to those terms.
 
 use super::QueryResult;
-use connection_like::ConnectionLike;
-use errors::*;
-use lib_futures::{Async::Ready, Future, Poll};
-use queryable::Protocol;
+use crate::connection_like::ConnectionLike;
+use crate::errors::*;
+use crate::lib_futures::{Async::Ready, Future, Poll};
+use crate::queryable::Protocol;
 use std::mem;
-use BoxFuture;
-use Row;
+use crate::BoxFuture;
+use crate::Row;
 
 pub struct Map<T, P, F, U> {
     fut: BoxFuture<(QueryResult<T, P>, Option<Row>)>,

@@ -6,10 +6,10 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use consts::CapabilityFlags;
-use errors::*;
+use crate::consts::CapabilityFlags;
+use crate::errors::*;
 
-use local_infile_handler::{LocalInfileHandler, LocalInfileHandlerObject};
+use crate::local_infile_handler::{LocalInfileHandler, LocalInfileHandlerObject};
 
 use std::{
     borrow::Cow,
@@ -217,7 +217,7 @@ impl Opts {
     }
 
     /// Local infile handler
-    pub fn get_local_infile_handler(&self) -> Option<Arc<LocalInfileHandler>> {
+    pub fn get_local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>> {
         self.inner
             .local_infile_handler
             .as_ref()

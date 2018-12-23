@@ -8,7 +8,7 @@
 
 use std::{fmt, sync::Arc};
 use tokio_io::AsyncRead;
-use BoxFuture;
+use crate::BoxFuture;
 
 pub mod builtin;
 
@@ -86,34 +86,34 @@ pub mod builtin;
 pub trait LocalInfileHandler: Sync + Send {
     /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
     /// query.
-    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<AsyncRead + Send + 'static>>;
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<dyn AsyncRead + Send + 'static>>;
 }
 
 /// Object used to wrap `T: LocalInfileHandler` inside of Opts.
 #[derive(Clone)]
-pub struct LocalInfileHandlerObject(Arc<LocalInfileHandler>);
+pub struct LocalInfileHandlerObject(Arc<dyn LocalInfileHandler>);
 
 impl LocalInfileHandlerObject {
     pub fn new<T: LocalInfileHandler + 'static>(handler: T) -> Self {
         LocalInfileHandlerObject(Arc::new(handler))
     }
 
-    pub fn clone_inner(&self) -> Arc<LocalInfileHandler> {
+    pub fn clone_inner(&self) -> Arc<dyn LocalInfileHandler> {
         self.0.clone()
     }
 }
 
 impl PartialEq for LocalInfileHandlerObject {
     fn eq(&self, other: &LocalInfileHandlerObject) -> bool {
-        self.0.as_ref() as *const LocalInfileHandler
-            == other.0.as_ref() as *const LocalInfileHandler
+        self.0.as_ref() as *const dyn LocalInfileHandler
+            == other.0.as_ref() as *const dyn LocalInfileHandler
     }
 }
 
 impl Eq for LocalInfileHandlerObject {}
 
 impl fmt::Debug for LocalInfileHandlerObject {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Local infile handler object")
     }
 }

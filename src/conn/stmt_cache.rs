@@ -6,7 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use queryable::stmt::InnerStmt;
+use crate::queryable::stmt::InnerStmt;
 #[cfg(test)]
 use std::collections::vec_deque::Iter;
 use std::{

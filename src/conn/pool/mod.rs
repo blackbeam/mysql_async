@@ -7,15 +7,15 @@
 // modified, or distributed except according to those terms.
 
 use self::futures::*;
-use conn::Conn;
-use errors::*;
-use lib_futures::{
+use crate::conn::Conn;
+use crate::errors::*;
+use crate::lib_futures::{
     task::{self, Task},
     Async::{self, NotReady, Ready},
     Future,
 };
-use opts::Opts;
-use queryable::{
+use crate::opts::Opts;
+use crate::queryable::{
     transaction::{Transaction, TransactionOptions},
     Queryable,
 };
@@ -23,8 +23,8 @@ use std::{
     fmt,
     sync::{Arc, Mutex, MutexGuard},
 };
-use BoxFuture;
-use MyFuture;
+use crate::BoxFuture;
+use crate::MyFuture;
 
 pub mod futures;
 
@@ -60,7 +60,7 @@ pub struct Pool {
 }
 
 impl fmt::Debug for Pool {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (new_len, idle_len, disconnecing_len, dropping_len, rollback_len, ongoing, tasks_len) =
             self.with_inner(|inner| {
                 (
@@ -208,7 +208,7 @@ impl Pool {
 
     fn with_inner<F, T>(&self, fun: F) -> T
     where
-        F: FnOnce(MutexGuard<Inner>) -> T,
+        F: FnOnce(MutexGuard<'_, Inner>) -> T,
         T: 'static,
     {
         fun(self.inner.lock().unwrap())
@@ -371,12 +371,12 @@ impl Drop for Conn {
 
 #[cfg(test)]
 mod test {
-    use conn::pool::Pool;
-    use lib_futures::Future;
-    use queryable::Queryable;
-    use test_misc::DATABASE_URL;
+    use crate::conn::pool::Pool;
+    use crate::lib_futures::Future;
+    use crate::queryable::Queryable;
+    use crate::test_misc::DATABASE_URL;
     use tokio;
-    use TransactionOptions;
+    use crate::TransactionOptions;
 
     /// Same as `tokio::run`, but will panic if future panics and will return the result
     /// of future execution.

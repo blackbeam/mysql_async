@@ -6,17 +6,17 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use errors::*;
-use io::futures::{new_connecting_stream, new_write_packet, ConnectingStream, WritePacket};
+use crate::errors::*;
+use crate::io::futures::{new_connecting_stream, new_write_packet, ConnectingStream, WritePacket};
 #[cfg(not(feature = "ssl"))]
-use lib_futures::future::ok;
-use lib_futures::{stream, Async, Poll};
+use crate::lib_futures::future::ok;
+use crate::lib_futures::{stream, Async, Poll};
 #[cfg(feature = "ssl")]
 use lib_futures::{Future, IntoFuture};
-use myc::packets::RawPacket;
+use crate::myc::packets::RawPacket;
 #[cfg(feature = "ssl")]
 use native_tls::{Certificate, Identity, TlsConnector};
-use opts::SslOpts;
+use crate::opts::SslOpts;
 #[cfg(feature = "ssl")]
 use std::fs::File;
 #[cfg(feature = "ssl")]
@@ -27,7 +27,7 @@ use tokio_codec::Framed;
 #[cfg(feature = "ssl")]
 use tokio_codec::FramedParts;
 use tokio_io::{AsyncRead, AsyncWrite};
-use MyFuture;
+use crate::MyFuture;
 
 #[cfg(feature = "ssl")]
 mod async_tls;
@@ -181,7 +181,7 @@ pub struct Stream {
 }
 
 impl fmt::Debug for Stream {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "Stream (endpoint={:?})",

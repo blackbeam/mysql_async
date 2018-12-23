@@ -8,23 +8,23 @@
 
 use self::stmt_cache::StmtCache;
 use crate::conn::pool::Pool;
-use connection_like::{streamless::Streamless, ConnectionLike, StmtCacheResult};
-use consts::{self, CapabilityFlags};
-use errors::*;
-use io::Stream;
-use local_infile_handler::LocalInfileHandler;
-use opts::Opts;
-use queryable::{query_result, BinaryProtocol, Queryable, TextProtocol};
-use Column;
-use MyFuture;
+use crate::connection_like::{streamless::Streamless, ConnectionLike, StmtCacheResult};
+use crate::consts::{self, CapabilityFlags};
+use crate::errors::*;
+use crate::io::Stream;
+use crate::local_infile_handler::LocalInfileHandler;
+use crate::opts::Opts;
+use crate::queryable::{query_result, BinaryProtocol, Queryable, TextProtocol};
+use crate::Column;
+use crate::MyFuture;
 
-use lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
-use myc::{
+use crate::lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
+use crate::myc::{
     crypto,
     packets::{parse_handshake_packet, AuthPlugin, HandshakeResponse, SslRequest},
     scramble,
 };
-use time::SteadyTime;
+use crate::time::SteadyTime;
 
 use std::{fmt, mem, sync::Arc};
 
@@ -57,7 +57,7 @@ pub struct Conn {
 }
 
 impl fmt::Debug for Conn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Conn")
             .field("connection id", &self.id)
             .field("server version", &self.version)
@@ -434,7 +434,7 @@ impl ConnectionLike for Conn {
         self.last_command
     }
 
-    fn get_local_infile_handler(&self) -> Option<Arc<LocalInfileHandler>> {
+    fn get_local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>> {
         self.opts.get_local_infile_handler()
     }
 
@@ -505,17 +505,17 @@ impl ConnectionLike for Conn {
 
 #[cfg(test)]
 mod test {
-    use from_row;
-    use lib_futures::Future;
-    use prelude::*;
-    use test_misc::DATABASE_URL;
+    use crate::from_row;
+    use crate::lib_futures::Future;
+    use crate::prelude::*;
+    use crate::test_misc::DATABASE_URL;
     use tokio;
-    use Conn;
-    use OptsBuilder;
+    use crate::Conn;
+    use crate::OptsBuilder;
     #[cfg(feature = "ssl")]
-    use SslOpts;
-    use TransactionOptions;
-    use WhiteListFsLocalInfileHandler;
+    use crate::SslOpts;
+    use crate::TransactionOptions;
+    use crate::WhiteListFsLocalInfileHandler;
 
     /// Same as `tokio::run`, but will panic if future panics and will return the result
     /// of future execution.
@@ -598,8 +598,8 @@ mod test {
             .and_then(|conn| conn.drop_exec("DO ?", (1,)))
             .and_then(|conn| {
                 conn.prepare("DO 2").and_then(|stmt| {
-                    stmt.first::<_, (::Value,)>(())
-                        .and_then(|(stmt, _)| stmt.first::<_, (::Value,)>(()))
+                    stmt.first::<_, (crate::Value,)>(())
+                        .and_then(|(stmt, _)| stmt.first::<_, (crate::Value,)>(()))
                         .and_then(|(stmt, _)| stmt.close())
                 })
             })
@@ -620,7 +620,7 @@ mod test {
 
     #[test]
     fn should_hold_stmt_cache_size_bound() {
-        use connection_like::ConnectionLike;
+        use crate::connection_like::ConnectionLike;
 
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.stmt_cache_size(3);
@@ -1094,7 +1094,7 @@ mod test {
             })
             .then(|result| match result {
                 Err(err) => match err.kind() {
-                    ::errors::ErrorKind::Server(_, 1148, _) => {
+                    crate::errors::ErrorKind::Server(_, 1148, _) => {
                         // The used command is not allowed with this MySQL version
                         Ok(())
                     }

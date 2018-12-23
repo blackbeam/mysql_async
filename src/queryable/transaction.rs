@@ -6,17 +6,17 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use connection_like::{streamless::Streamless, ConnectionLike, ConnectionLikeWrapper};
-use errors::*;
-use io;
-use lib_futures::future::{
+use crate::connection_like::{streamless::Streamless, ConnectionLike, ConnectionLikeWrapper};
+use crate::errors::*;
+use crate::io;
+use crate::lib_futures::future::{
     err, ok,
     Either::{self, *},
     Future, IntoFuture,
 };
-use queryable::Queryable;
+use crate::queryable::Queryable;
 use std::fmt;
-use MyFuture;
+use crate::MyFuture;
 
 /// Options for transaction
 #[derive(Eq, PartialEq, Debug, Hash, Clone, Default)]
@@ -75,7 +75,7 @@ pub enum IsolationLevel {
 }
 
 impl fmt::Display for IsolationLevel {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             IsolationLevel::ReadUncommitted => write!(f, "READ UNCOMMITTED"),
             IsolationLevel::ReadCommitted => write!(f, "READ COMMITTED"),

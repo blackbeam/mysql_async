@@ -8,26 +8,26 @@
 
 use bit_vec::BitVec;
 use byteorder::{LittleEndian as LE, ReadBytesExt, WriteBytesExt};
-use connection_like::{
+use crate::connection_like::{
     streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
 };
-use consts::{ColumnType, Command};
-use errors::*;
-use io;
-use lib_futures::future::{
+use crate::consts::{ColumnType, Command};
+use crate::errors::*;
+use crate::io;
+use crate::lib_futures::future::{
     err, loop_fn, ok,
     Either::{self, *},
     Future, IntoFuture, Loop,
 };
-use myc::value::serialize_bin_many;
-use prelude::FromRow;
-use queryable::{query_result::QueryResult, BinaryProtocol};
+use crate::myc::value::serialize_bin_many;
+use crate::prelude::FromRow;
+use crate::queryable::{query_result::QueryResult, BinaryProtocol};
 use std::io::Write;
-use Column;
-use MyFuture;
-use Params;
-use Row;
-use Value::{self, *};
+use crate::Column;
+use crate::MyFuture;
+use crate::Params;
+use crate::Row;
+use crate::Value::{self, *};
 
 /// Inner statement representation.
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -97,7 +97,7 @@ where
         index: usize,
     ) -> impl MyFuture<(Self, Vec<Value>)> {
         loop_fn((self, params, index, 0), |(this, params, index, chunk)| {
-            let data_cap = ::consts::MAX_PAYLOAD_LEN - 10;
+            let data_cap = crate::consts::MAX_PAYLOAD_LEN - 10;
             let buf = match params[index] {
                 Bytes(ref x) => {
                     let statement_id = this.inner.statement_id;
