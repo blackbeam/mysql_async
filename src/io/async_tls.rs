@@ -56,7 +56,7 @@ impl<S: AsyncRead + AsyncWrite> AsyncWrite for TlsStream<S> {
         match self.inner.shutdown() {
             Ok(t) => t,
             Err(ref e) if e.kind() == ::std::io::ErrorKind::WouldBlock => {
-                return Ok(::lib_futures::Async::NotReady)
+                return Ok(::lib_futures::Async::NotReady);
             }
             Err(e) => return Err(e.into()),
         }

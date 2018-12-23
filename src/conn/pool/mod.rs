@@ -9,16 +9,20 @@
 use self::futures::*;
 use conn::Conn;
 use errors::*;
-use lib_futures::task::{self, Task};
-use lib_futures::Async;
-use lib_futures::Async::NotReady;
-use lib_futures::Async::Ready;
-use lib_futures::Future;
+use lib_futures::{
+    task::{self, Task},
+    Async::{self, NotReady, Ready},
+    Future,
+};
 use opts::Opts;
-use queryable::transaction::{Transaction, TransactionOptions};
-use queryable::Queryable;
-use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard};
+use queryable::{
+    transaction::{Transaction, TransactionOptions},
+    Queryable,
+};
+use std::{
+    fmt,
+    sync::{Arc, Mutex, MutexGuard},
+};
 use BoxFuture;
 use MyFuture;
 

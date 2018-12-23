@@ -7,28 +7,26 @@
 // modified, or distributed except according to those terms.
 
 use self::stmt_cache::StmtCache;
-use conn::pool::Pool;
-use connection_like::streamless::Streamless;
-use connection_like::{ConnectionLike, StmtCacheResult};
+use crate::conn::pool::Pool;
+use connection_like::{streamless::Streamless, ConnectionLike, StmtCacheResult};
 use consts::{self, CapabilityFlags};
 use errors::*;
 use io::Stream;
-use lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
 use local_infile_handler::LocalInfileHandler;
+use opts::Opts;
+use queryable::{query_result, BinaryProtocol, Queryable, TextProtocol};
+use Column;
+use MyFuture;
+
+use lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
 use myc::{
     crypto,
     packets::{parse_handshake_packet, AuthPlugin, HandshakeResponse, SslRequest},
     scramble,
 };
-use opts::Opts;
-use queryable::query_result;
-use queryable::{BinaryProtocol, Queryable, TextProtocol};
-use std::fmt;
-use std::mem;
-use std::sync::Arc;
 use time::SteadyTime;
-use Column;
-use MyFuture;
+
+use std::{fmt, mem, sync::Arc};
 
 pub mod named_params;
 pub mod pool;
@@ -257,22 +255,24 @@ impl Conn {
                 0xfe => A(err(ErrorKind::AuthSwitch.into())),
                 0x01 => match packet.as_ref()[1] {
                     0x03 => A(ok(conn)),
-                    0x04 => if conn.is_secure() {
-                        B(A(conn.write_packet(&*pass)))
-                    } else {
-                        let fut = conn
-                            .write_packet(&[0x02][..])
-                            .and_then(|conn| conn.read_packet())
-                            .and_then(move |(conn, packet)| {
-                                let key = &packet.as_ref()[1..];
-                                for i in 0..pass.len() {
-                                    pass[i] ^= conn.nonce[i % conn.nonce.len()];
-                                }
-                                let encrypted_pass = crypto::encrypt(&*pass, key);
-                                conn.write_packet(&*encrypted_pass)
-                            });
-                        B(B(fut))
-                    },
+                    0x04 => {
+                        if conn.is_secure() {
+                            B(A(conn.write_packet(&*pass)))
+                        } else {
+                            let fut = conn
+                                .write_packet(&[0x02][..])
+                                .and_then(|conn| conn.read_packet())
+                                .and_then(move |(conn, packet)| {
+                                    let key = &packet.as_ref()[1..];
+                                    for i in 0..pass.len() {
+                                        pass[i] ^= conn.nonce[i % conn.nonce.len()];
+                                    }
+                                    let encrypted_pass = crypto::encrypt(&*pass, key);
+                                    conn.write_packet(&*encrypted_pass)
+                                });
+                            B(B(fut))
+                        }
+                    }
                     _ => unreachable!(),
                 },
                 _ => unreachable!(),
@@ -380,12 +380,14 @@ impl Conn {
                 self,
                 Some(columns),
                 None,
-            ).drop_result())),
+            )
+            .drop_result())),
             Some((columns, cached)) => A(A(query_result::assemble::<_, BinaryProtocol>(
                 self,
                 Some(columns),
                 cached,
-            ).drop_result())),
+            )
+            .drop_result())),
             None => B(ok(self)),
         }
     }
@@ -536,7 +538,9 @@ mod test {
         #[cfg(feature = "ssl")]
         {
             let mut ssl_opts = SslOpts::new();
-            ssl_opts.set_pkcs12_path(Some(AsRef::<::std::path::Path>::as_ref("./test/client.p12")));
+            ssl_opts.set_pkcs12_path(Some(AsRef::<::std::path::Path>::as_ref(
+                "./test/client.p12",
+            )));
             ssl_opts.set_root_cert_path(Some(AsRef::<::std::path::Path>::as_ref(
                 "./test/ca-cert.der",
             )));
@@ -669,9 +673,7 @@ mod test {
                     acc
                 })
             })
-            .and_then(move |(conn, out)| {
-                Queryable::disconnect(conn).map(|_| out)
-            })
+            .and_then(move |(conn, out)| Queryable::disconnect(conn).map(|_| out))
             .map(move |result| {
                 assert_eq!((String::from("hello"), 123), result[0]);
                 assert_eq!((long_string, 231), result[1]);

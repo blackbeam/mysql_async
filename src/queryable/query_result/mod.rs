@@ -6,23 +6,23 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-pub use self::for_each::ForEach;
-pub use self::map::Map;
-pub use self::reduce::Reduce;
 use self::QueryResultInner::*;
-use connection_like::streamless::Streamless;
-use connection_like::{ConnectionLike, ConnectionLikeWrapper, StmtCacheResult};
+pub use self::{for_each::ForEach, map::Map, reduce::Reduce};
+use connection_like::{
+    streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
+};
 use consts::StatusFlags;
 use errors::*;
 use io;
-use lib_futures::future::Either::*;
-use lib_futures::future::{loop_fn, ok, AndThen, Either, Future, FutureResult, Loop};
+use lib_futures::future::{
+    loop_fn, ok, AndThen,
+    Either::{self, *},
+    Future, FutureResult, Loop,
+};
 use myc::packets::RawPacket;
 use prelude::FromRow;
 use queryable::Protocol;
-use std::marker::PhantomData;
-use std::mem;
-use std::sync::Arc;
+use std::{marker::PhantomData, mem, sync::Arc};
 use BoxFuture;
 use Column;
 use MyFuture;
@@ -163,7 +163,8 @@ where
                         P::read_result_set_row(&packet, columns.clone())
                     }
                     _ => unreachable!(),
-                }.map(|row| (this, Some(row))),
+                }
+                .map(|row| (this, Some(row))),
                 None => Ok((this, None)),
             })
     }
@@ -375,21 +376,15 @@ where
                 static EMPTY: &'static [Column] = &[];
                 EMPTY
             }
-            QueryResultInner::WithRows(_, ref columns, ..) => {
-                &**columns
-            }
+            QueryResultInner::WithRows(_, ref columns, ..) => &**columns,
         }
     }
 
     /// Returns copy of columns of this query result.
     pub fn columns(&self) -> Option<Arc<Vec<Column>>> {
         match self.0 {
-            QueryResultInner::Empty(..) => {
-                None
-            }
-            QueryResultInner::WithRows(_, ref columns, ..) => {
-                Some(columns.clone())
-            }
+            QueryResultInner::Empty(..) => None,
+            QueryResultInner::WithRows(_, ref columns, ..) => Some(columns.clone()),
         }
     }
 }

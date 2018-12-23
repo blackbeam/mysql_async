@@ -9,13 +9,15 @@
 use super::LocalInfileHandler;
 use lib_futures::IntoFuture;
 use mio::{Evented, Poll, PollOpt, Ready, Registration, Token};
-use std::collections::HashSet;
-use std::fs;
-use std::io::{self, Read};
-use std::path::PathBuf;
-use std::str::from_utf8;
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-use std::thread;
+use std::{
+    collections::HashSet,
+    fs,
+    io::{self, Read},
+    path::PathBuf,
+    str::from_utf8,
+    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
+    thread,
+};
 use tokio::reactor::PollEvented2;
 use tokio_io::AsyncRead;
 use BoxFuture;
@@ -114,7 +116,7 @@ impl Read for File {
                             return Err(io::Error::new(
                                 io::ErrorKind::Other,
                                 "Read thread disconnected",
-                            ))
+                            ));
                         }
                     }
                 }
@@ -184,9 +186,9 @@ impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
             Err(_) => return Box::new(Err("Invalid file name".into()).into_future()),
         };
         if self.white_list.contains(&path) {
-            let fut = Ok(
-                Box::new(PollEvented2::new(File::new(path))) as Box<AsyncRead + Send + 'static>
-            ).into_future();
+            let fut =
+                Ok(Box::new(PollEvented2::new(File::new(path))) as Box<AsyncRead + Send + 'static>)
+                    .into_future();
             Box::new(fut) as BoxFuture<Box<_>>
         } else {
             let err_msg = format!("Path `{}' is not in white list", path.display());

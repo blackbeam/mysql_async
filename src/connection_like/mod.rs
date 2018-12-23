@@ -6,23 +6,23 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use self::read_packet::ReadPacket;
-use self::streamless::Streamless;
-use self::write_packet::WritePacket;
+use self::{read_packet::ReadPacket, streamless::Streamless, write_packet::WritePacket};
 use byteorder::{ByteOrder, LittleEndian};
-use conn::named_params::parse_named_params;
-use conn::stmt_cache::StmtCache;
+use conn::{named_params::parse_named_params, stmt_cache::StmtCache};
 use consts::{CapabilityFlags, Command, StatusFlags};
 use errors::*;
 use io;
-use lib_futures::future::Either::*;
-use lib_futures::future::{err, loop_fn, ok, Future, IntoFuture, Loop};
+use lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
 use local_infile_handler::LocalInfileHandler;
-use myc::io::ReadMysqlExt;
-use myc::packets::{column_from_payload, parse_local_infile_packet, Column, RawPacket};
-use queryable::query_result::{self, QueryResult};
-use queryable::stmt::InnerStmt;
-use queryable::Protocol;
+use myc::{
+    io::ReadMysqlExt,
+    packets::{column_from_payload, parse_local_infile_packet, Column, RawPacket},
+};
+use queryable::{
+    query_result::{self, QueryResult},
+    stmt::InnerStmt,
+    Protocol,
+};
 use std::sync::Arc;
 use tokio_io::io::read;
 use BoxFuture;
@@ -463,8 +463,9 @@ where
                             Loop::Break(this)
                         }
                     })
-            }).and_then(|this| this.read_packet())
-                .map(|(this, _)| query_result::new(this, None, cached))
+            })
+            .and_then(|this| this.read_packet())
+            .map(|(this, _)| query_result::new(this, None, cached))
         })
 }
 

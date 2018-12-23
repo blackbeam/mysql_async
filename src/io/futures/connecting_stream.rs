@@ -8,16 +8,13 @@
 
 use errors::*;
 use io::{packet_codec::PacketCodec, Stream};
-use lib_futures::failed;
-use lib_futures::future::select_ok;
-use lib_futures::future::SelectOk;
-use lib_futures::Async;
-use lib_futures::Async::Ready;
-use lib_futures::Failed;
-use lib_futures::Future;
-use lib_futures::Poll;
-use std::io;
-use std::net::ToSocketAddrs;
+use lib_futures::{
+    failed,
+    future::{select_ok, SelectOk},
+    Async::{self, Ready},
+    Failed, Future, Poll,
+};
+use std::{io, net::ToSocketAddrs};
 use tokio::net::{tcp::ConnectFuture, TcpStream};
 use tokio_codec::Framed;
 

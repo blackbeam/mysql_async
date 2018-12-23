@@ -8,10 +8,10 @@
 
 use conn::pool::Pool;
 use errors::*;
-use lib_futures::Async::NotReady;
-use lib_futures::Async::Ready;
-use lib_futures::Future;
-use lib_futures::Poll;
+use lib_futures::{
+    Async::{NotReady, Ready},
+    Future, Poll,
+};
 
 /// Future that disconnects this pool from server and resolves to `()`.
 ///

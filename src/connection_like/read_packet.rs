@@ -6,13 +6,14 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use connection_like::streamless::Streamless;
-use connection_like::ConnectionLike;
+use connection_like::{streamless::Streamless, ConnectionLike};
 use errors::*;
 use io;
-use lib_futures::stream::{Stream, StreamFuture};
-use lib_futures::Async::Ready;
-use lib_futures::{Future, Poll};
+use lib_futures::{
+    stream::{Stream, StreamFuture},
+    Async::Ready,
+    Future, Poll,
+};
 use myc::packets::{parse_err_packet, parse_ok_packet, RawPacket};
 
 pub struct ReadPacket<T> {

@@ -7,26 +7,27 @@
 // modified, or distributed except according to those terms.
 
 use bit_vec::BitVec;
-use byteorder::LittleEndian as LE;
-use byteorder::{ReadBytesExt, WriteBytesExt};
-use connection_like::streamless::Streamless;
-use connection_like::{ConnectionLike, ConnectionLikeWrapper, StmtCacheResult};
+use byteorder::{LittleEndian as LE, ReadBytesExt, WriteBytesExt};
+use connection_like::{
+    streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
+};
 use consts::{ColumnType, Command};
 use errors::*;
 use io;
-use lib_futures::future::Either::*;
-use lib_futures::future::{err, loop_fn, ok, Either, Future, IntoFuture, Loop};
+use lib_futures::future::{
+    err, loop_fn, ok,
+    Either::{self, *},
+    Future, IntoFuture, Loop,
+};
 use myc::value::serialize_bin_many;
 use prelude::FromRow;
-use queryable::query_result::QueryResult;
-use queryable::BinaryProtocol;
+use queryable::{query_result::QueryResult, BinaryProtocol};
 use std::io::Write;
 use Column;
 use MyFuture;
 use Params;
 use Row;
-use Value;
-use Value::*;
+use Value::{self, *};
 
 /// Inner statement representation.
 #[derive(Eq, PartialEq, Clone, Debug)]

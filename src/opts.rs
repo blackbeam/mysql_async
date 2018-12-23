@@ -11,14 +11,15 @@ use errors::*;
 
 use local_infile_handler::{LocalInfileHandler, LocalInfileHandlerObject};
 
-use std::borrow::Cow;
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::path::Path;
-use std::str::FromStr;
-use std::sync::Arc;
+use std::{
+    borrow::Cow,
+    net::{Ipv4Addr, Ipv6Addr},
+    path::Path,
+    str::FromStr,
+    sync::Arc,
+};
 
-use url::percent_encoding::percent_decode;
-use url::Url;
+use url::{percent_encoding::percent_decode, Url};
 
 const DEFAULT_MIN_CONNS: usize = 10;
 const DEFAULT_MAX_CONNS: usize = 100;
@@ -44,7 +45,10 @@ impl SslOpts {
     }
 
     /// Sets path to the pkcs12 archive.
-    pub fn set_pkcs12_path<T: Into<Cow<'static, Path>>>(&mut self, pkcs12_path: Option<T>) -> &mut Self {
+    pub fn set_pkcs12_path<T: Into<Cow<'static, Path>>>(
+        &mut self,
+        pkcs12_path: Option<T>,
+    ) -> &mut Self {
         self.pkcs12_path = pkcs12_path.map(Into::into);
         self
     }
@@ -522,14 +526,14 @@ fn from_url(url: &str) -> Result<InnerOpts> {
                 _ => {
                     return Err(
                         ErrorKind::UrlInvalidParamValue("tcp_keepalive_ms".into(), value).into(),
-                    )
+                    );
                 }
             }
         } else if key == "tcp_nodelay" {
             match bool::from_str(&*value) {
                 Ok(value) => opts.tcp_nodelay = value,
                 _ => {
-                    return Err(ErrorKind::UrlInvalidParamValue("tcp_nodelay".into(), value).into())
+                    return Err(ErrorKind::UrlInvalidParamValue("tcp_nodelay".into(), value).into());
                 }
             }
         } else if key == "stmt_cache_size" {

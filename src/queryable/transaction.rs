@@ -6,12 +6,14 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use connection_like::streamless::Streamless;
-use connection_like::{ConnectionLike, ConnectionLikeWrapper};
+use connection_like::{streamless::Streamless, ConnectionLike, ConnectionLikeWrapper};
 use errors::*;
 use io;
-use lib_futures::future::Either::*;
-use lib_futures::future::{err, ok, Either, Future, IntoFuture};
+use lib_futures::future::{
+    err, ok,
+    Either::{self, *},
+    Future, IntoFuture,
+};
 use queryable::Queryable;
 use std::fmt;
 use MyFuture;

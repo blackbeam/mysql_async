@@ -170,7 +170,8 @@ mod test {
                     r#"
                 SELECT :one, :two, :three, :four, :five, :six, :seven, :eight, :nine, :ten
                 "#,
-                ).unwrap();
+                )
+                .unwrap();
                 test::black_box(result);
             });
         }
@@ -182,7 +183,8 @@ mod test {
                     r"
                 SELECT one, two, three, four, five, six, seven, eight, nine, ten
                 ",
-                ).unwrap();
+                )
+                .unwrap();
                 test::black_box(result);
             });
         }

@@ -148,10 +148,7 @@ extern crate tokio_io;
 extern crate twox_hash;
 extern crate url;
 
-pub use myc::chrono;
-pub use myc::constants as consts;
-pub use myc::time;
-pub use myc::uuid;
+pub use myc::{chrono, constants as consts, time, uuid};
 
 // Until `macro_reexport` stabilisation.
 /// This macro is a convenient way to pass named parameters to a statement.
@@ -232,7 +229,8 @@ pub trait MyFuture<T>:
 }
 impl<T, U> MyFuture<T> for U where
     U: lib_futures::Future<Item = T, Error = errors::Error> + Send + 'static
-{}
+{
+}
 
 #[doc(inline)]
 pub use self::conn::Conn;

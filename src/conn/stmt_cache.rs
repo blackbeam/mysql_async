@@ -7,12 +7,13 @@
 // modified, or distributed except according to those terms.
 
 use queryable::stmt::InnerStmt;
-use std::borrow::Borrow;
-use std::collections::hash_map::IntoIter;
 #[cfg(test)]
 use std::collections::vec_deque::Iter;
-use std::collections::{HashMap, VecDeque};
-use std::hash::{BuildHasherDefault, Hash};
+use std::{
+    borrow::Borrow,
+    collections::{hash_map::IntoIter, HashMap, VecDeque},
+    hash::{BuildHasherDefault, Hash},
+};
 use twox_hash::XxHash;
 
 #[derive(Debug)]

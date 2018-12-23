@@ -9,8 +9,7 @@
 use super::QueryResult;
 use connection_like::ConnectionLike;
 use errors::*;
-use lib_futures::Async::Ready;
-use lib_futures::{Future, Poll};
+use lib_futures::{Async::Ready, Future, Poll};
 use queryable::Protocol;
 use BoxFuture;
 use Row;

@@ -6,8 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use myc::packets::ErrPacket;
-use myc::params::MissingNamedParameterError;
+use myc::{packets::ErrPacket, params::MissingNamedParameterError};
 use std::io;
 use url;
 use Row;
@@ -108,7 +107,8 @@ impl<'a> From<ErrPacket<'a>> for Error {
             err.sql_state_str().into_owned(),
             err.error_code(),
             err.message_str().into_owned(),
-        ).into()
+        )
+        .into()
     }
 }
 
