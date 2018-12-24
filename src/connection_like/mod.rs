@@ -369,7 +369,7 @@ pub trait ConnectionLike: Send {
                     Box::new(fut)
                 }
             }
-            Err(err) => Box::new(Err(err).into_future()),
+            Err(err) => Box::new(Err(Error::from(err)).into_future()),
         }
     }
 

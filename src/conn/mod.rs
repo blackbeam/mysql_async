@@ -31,7 +31,7 @@ use crate::{
 
 use std::{fmt, mem, sync::Arc};
 
-pub mod named_params;
+pub use crate::myc::named_params;
 pub mod pool;
 pub mod stmt_cache;
 

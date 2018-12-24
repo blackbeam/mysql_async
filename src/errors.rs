@@ -7,7 +7,11 @@
 // modified, or distributed except according to those terms.
 
 use crate::{
-    myc::{packets::ErrPacket, params::MissingNamedParameterError},
+    myc::{
+        named_params::MixedParamsError,
+        packets::ErrPacket,
+        params::MissingNamedParameterError,
+    },
     Row, Value,
 };
 use std::io;
@@ -122,5 +126,11 @@ impl From<(Error, crate::io::Stream)> for Error {
 impl From<MissingNamedParameterError> for Error {
     fn from(err: MissingNamedParameterError) -> Self {
         ErrorKind::MissingNamedParameter(err.0).into()
+    }
+}
+
+impl From<MixedParamsError> for Error {
+    fn from(_err: MixedParamsError) -> Self {
+        ErrorKind::MixedParams.into()
     }
 }
