@@ -9,7 +9,7 @@
 use self::futures::*;
 use crate::{
     conn::Conn,
-    errors::*,
+    error::*,
     lib_futures::{
         task::{self, Task},
         Async::{self, NotReady, Ready},
@@ -331,7 +331,7 @@ impl Pool {
     /// Will poll pool for connection.
     fn poll(&mut self) -> Result<Async<Conn>> {
         if self.with_inner(|inner| inner.closed) {
-            return Err(ErrorKind::PoolDisconnected.into());
+            return Err(DriverError::PoolDisconnected.into());
         }
 
         self.handle_futures()?;

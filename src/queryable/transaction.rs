@@ -8,7 +8,7 @@
 
 use crate::{
     connection_like::{streamless::Streamless, ConnectionLike, ConnectionLikeWrapper},
-    errors::*,
+    error::*,
     io,
     lib_futures::future::{
         err, ok,
@@ -110,11 +110,11 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
         } = options;
 
         if conn_like.get_in_transaction() {
-            return A(err(ErrorKind::NestedTransaction.into()));
+            return A(err(DriverError::NestedTransaction.into()));
         }
 
         if readonly.is_some() && conn_like.get_server_version() < (5, 6, 5) {
-            return A(err(ErrorKind::ReadOnlyTransNotSupported.into()));
+            return A(err(DriverError::ReadOnlyTransNotSupported.into()));
         }
 
         let fut = if let Some(isolation_level) = isolation_level {

@@ -123,10 +123,6 @@
 
 #[cfg(feature = "nightly")]
 extern crate test;
-
-#[macro_use]
-extern crate error_chain;
-
 #[macro_use]
 extern crate futures as lib_futures;
 #[cfg(test)]
@@ -138,91 +134,31 @@ use mysql_common as myc;
 extern crate native_tls;
 
 use tokio;
-
 use url;
 
-pub use crate::myc::{chrono, constants as consts, time, uuid};
-
-// Until `macro_reexport` stabilisation.
-/// This macro is a convenient way to pass named parameters to a statement.
-///
-/// ```ignore
-/// let foo = 42;
-/// conn.prep_exec("SELECT :foo, :foo2x", params! {
-///     foo,
-///     "foo2x" => foo * 2,
-/// });
-/// ```
-#[macro_export]
-macro_rules! params {
-    () => {};
-    (@to_pair $name:expr => $value:expr) => (
-        (::std::string::String::from($name), $crate::Value::from($value))
-    );
-    (@to_pair $name:ident) => (
-        (::std::string::String::from(stringify!($name)), $crate::Value::from($name))
-    );
-    (@expand $vec:expr;) => {};
-    (@expand $vec:expr; $name:expr => $value:expr, $($tail:tt)*) => {
-        $vec.push(params!(@to_pair $name => $value));
-        params!(@expand $vec; $($tail)*);
-    };
-    (@expand $vec:expr; $name:expr => $value:expr $(, $tail:tt)*) => {
-        $vec.push(params!(@to_pair $name => $value));
-        params!(@expand $vec; $($tail)*);
-    };
-    (@expand $vec:expr; $name:ident, $($tail:tt)*) => {
-        $vec.push(params!(@to_pair $name));
-        params!(@expand $vec; $($tail)*);
-    };
-    (@expand $vec:expr; $name:ident $(, $tail:tt)*) => {
-        $vec.push(params!(@to_pair $name));
-        params!(@expand $vec; $($tail)*);
-    };
-    ($i:ident, $($tail:tt)*) => {
-        {
-            let mut output = ::std::vec::Vec::new();
-            params!(@expand output; $i, $($tail)*);
-            output
-        }
-    };
-    ($i:expr => $($tail:tt)*) => {
-        {
-            let mut output = ::std::vec::Vec::new();
-            params!(@expand output; $i => $($tail)*);
-            output
-        }
-    };
-    ($i:ident) => {
-        {
-            let mut output = ::std::vec::Vec::new();
-            params!(@expand output; $i);
-            output
-        }
-    }
-}
+pub use crate::myc::{chrono, constants as consts, params, time, uuid};
 
 #[macro_use]
 pub mod macros;
 mod conn;
 mod connection_like;
 /// Errors used in this crate
-pub mod errors;
+pub mod error;
 mod io;
 mod local_infile_handler;
 mod opts;
 mod queryable;
 
 pub type BoxFuture<T> =
-    Box<dyn lib_futures::Future<Item = T, Error = errors::Error> + Send + 'static>;
+    Box<dyn lib_futures::Future<Item = T, Error = error::Error> + Send + 'static>;
 
 /// Alias for `Future` with library error as `Future::Error`.
 pub trait MyFuture<T>:
-    lib_futures::Future<Item = T, Error = errors::Error> + Send + 'static
+    lib_futures::Future<Item = T, Error = error::Error> + Send + 'static
 {
 }
 impl<T, U> MyFuture<T> for U where
-    U: lib_futures::Future<Item = T, Error = errors::Error> + Send + 'static
+    U: lib_futures::Future<Item = T, Error = error::Error> + Send + 'static
 {
 }
 

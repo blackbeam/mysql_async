@@ -14,7 +14,7 @@ use self::{
 use crate::{
     connection_like::ConnectionLike,
     consts::Command,
-    errors::*,
+    error::*,
     lib_futures::future::Future,
     myc::{
         packets::{parse_ok_packet, RawPacket},

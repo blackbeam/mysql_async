@@ -8,7 +8,7 @@
 
 use crate::{
     consts::MAX_PAYLOAD_LEN,
-    errors::*,
+    error::*,
     io::Stream,
     lib_futures::{Async, AsyncSink, Future, Poll, Sink},
     myc::packets::RawPacket,

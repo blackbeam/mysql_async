@@ -9,7 +9,7 @@
 #[cfg(not(feature = "ssl"))]
 use crate::lib_futures::future::ok;
 use crate::{
-    errors::*,
+    error::*,
     io::futures::{new_connecting_stream, new_write_packet, ConnectingStream, WritePacket},
     lib_futures::{stream, Async, Poll},
     myc::packets::RawPacket,

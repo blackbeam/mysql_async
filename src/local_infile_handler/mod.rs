@@ -43,7 +43,7 @@ pub mod builtin;
 /// struct ExampleHandler(&'static [u8]);
 ///
 /// impl LocalInfileHandler for ExampleHandler {
-///     fn handle(&self, _: &[u8]) -> Box<Future<Item=Box<AsyncRead + Send>, Error=my::errors::Error> + Send> {
+///     fn handle(&self, _: &[u8]) -> Box<Future<Item=Box<AsyncRead + Send>, Error=my::error::Error> + Send> {
 ///         Box::new(futures::future::ok(Box::new(self.0) as Box<_>))
 ///     }
 /// }
@@ -74,7 +74,7 @@ pub mod builtin;
 ///     })
 ///     .and_then(|_| pool.disconnect())
 ///     .map_err(|err| match err.kind() {
-///         my::errors::ErrorKind::Server(_, 1148, _) => {
+///         my::error::ErrorKind::Server(_, 1148, _) => {
 ///             // The used command is not allowed with this MySQL version
 ///         },
 ///         _ => panic!("{}", err),

@@ -8,7 +8,7 @@
 
 use crate::{
     conn::{pool::Pool, Conn},
-    errors::*,
+    error::*,
     lib_futures::{Future, Poll},
 };
 

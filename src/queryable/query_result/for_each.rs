@@ -9,7 +9,7 @@
 use super::QueryResult;
 use crate::{
     connection_like::ConnectionLike,
-    errors::*,
+    error::*,
     lib_futures::{Async::Ready, Future, Poll},
     queryable::Protocol,
     BoxFuture, Row,

@@ -10,7 +10,7 @@ use self::{read_packet::ReadPacket, streamless::Streamless, write_packet::WriteP
 use crate::{
     conn::{named_params::parse_named_params, stmt_cache::StmtCache},
     consts::{CapabilityFlags, Command, StatusFlags},
-    errors::*,
+    error::*,
     io,
     lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop},
     local_infile_handler::LocalInfileHandler,
@@ -434,10 +434,10 @@ where
     T: Send + Sized + 'static,
 {
     parse_local_infile_packet(&*packet.0)
-        .chain_err(|| Error::from(ErrorKind::UnexpectedPacket))
+        .map_err(Error::from)
         .and_then(|local_infile| match this.get_local_infile_handler() {
             Some(handler) => Ok((local_infile.into_owned(), handler)),
-            None => Err(ErrorKind::NoLocalInfileHandler.into()),
+            None => Err(DriverError::NoLocalInfileHandler.into()),
         })
         .into_future()
         .and_then(|(local_infile, handler)| handler.handle(local_infile.file_name_ref()))

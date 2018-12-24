@@ -8,7 +8,7 @@
 
 use crate::{
     connection_like::{streamless::Streamless, ConnectionLike},
-    errors::*,
+    error::*,
     io,
     lib_futures::{Async::Ready, Future, Poll},
 };

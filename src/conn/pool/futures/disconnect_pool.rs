@@ -8,7 +8,7 @@
 
 use crate::{
     conn::pool::Pool,
-    errors::*,
+    error::*,
     lib_futures::{
         Async::{NotReady, Ready},
         Future, Poll,

@@ -11,7 +11,7 @@ use crate::{
     conn::pool::Pool,
     connection_like::{streamless::Streamless, ConnectionLike, StmtCacheResult},
     consts::{self, CapabilityFlags},
-    errors::*,
+    error::*,
     io::Stream,
     local_infile_handler::LocalInfileHandler,
     opts::Opts,
@@ -162,7 +162,7 @@ impl Conn {
     fn handle_handshake(self) -> impl MyFuture<Conn> {
         self.read_packet().and_then(move |(mut conn, packet)| {
             parse_handshake_packet(&*packet.0)
-                .chain_err(|| "Invalid handshake from server")
+                .map_err(Error::from)
                 .and_then(|handshake| {
                     conn.nonce = {
                         let mut nonce = Vec::from(handshake.scramble_1_ref());
@@ -179,7 +179,7 @@ impl Conn {
                         Some(AuthPlugin::CachingSha2Password) => AuthPlugin::CachingSha2Password,
                         Some(AuthPlugin::Other(ref name)) => {
                             let name = String::from_utf8_lossy(name).into();
-                            return Err(ErrorKind::UnknownAuthPlugin(name).into());
+                            return Err(DriverError::UnknownAuthPlugin { name }.into());
                         }
                         None => unreachable!(),
                     };
@@ -255,7 +255,7 @@ impl Conn {
 
         self.read_packet()
             .and_then(move |(conn, packet)| match packet.as_ref()[0] {
-                0xfe => A(err(ErrorKind::AuthSwitch.into())),
+                0xfe => A(err(DriverError::AuthSwitchUnimplemented.into())),
                 0x01 => match packet.as_ref()[1] {
                     0x03 => A(ok(conn)),
                     0x04 => {
@@ -511,8 +511,8 @@ mod test {
     #[cfg(feature = "ssl")]
     use crate::SslOpts;
     use crate::{
-        from_row, lib_futures::Future, prelude::*, test_misc::DATABASE_URL, Conn, OptsBuilder,
-        TransactionOptions, WhiteListFsLocalInfileHandler,
+        from_row, lib_futures::Future, params, prelude::*, test_misc::DATABASE_URL, Conn,
+        OptsBuilder, TransactionOptions, WhiteListFsLocalInfileHandler,
     };
     use tokio;
 
@@ -1092,8 +1092,8 @@ mod test {
                 x
             })
             .then(|result| match result {
-                Err(err) => match err.kind() {
-                    crate::errors::ErrorKind::Server(_, 1148, _) => {
+                Err(err) => match err {
+                    crate::error::Error::Server(ref err) if err.code == 1148 => {
                         // The used command is not allowed with this MySQL version
                         Ok(())
                     }

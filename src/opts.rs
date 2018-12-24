@@ -6,7 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use crate::{consts::CapabilityFlags, errors::*};
+use crate::{consts::CapabilityFlags, error::*};
 
 use crate::local_infile_handler::{LocalInfileHandler, LocalInfileHandlerObject};
 
@@ -474,10 +474,13 @@ fn get_opts_db_name_from_url(url: &Url) -> Option<String> {
 fn from_url_basic(url_str: &str) -> Result<(InnerOpts, Vec<(String, String)>)> {
     let url = Url::parse(url_str)?;
     if url.scheme() != "mysql" {
-        return Err(ErrorKind::UrlUnsupportedScheme(url.scheme().to_string()).into());
+        return Err(UrlError::UnsupportedScheme {
+            scheme: url.scheme().to_string(),
+        }
+        .into());
     }
     if url.cannot_be_a_base() || !url.has_host() {
-        return Err(ErrorKind::UrlInvalid.into());
+        return Err(UrlError::Invalid.into());
     }
     let user = get_opts_user_from_url(&url);
     let pass = get_opts_pass_from_url(&url);
@@ -507,32 +510,56 @@ fn from_url(url: &str) -> Result<InnerOpts> {
         if key == "pool_min" {
             match usize::from_str(&*value) {
                 Ok(value) => opts.pool_min = value,
-                _ => return Err(ErrorKind::UrlInvalidParamValue("pool_min".into(), value).into()),
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "pool_min".into(),
+                        value,
+                    }
+                    .into());
+                }
             }
         } else if key == "pool_max" {
             match usize::from_str(&*value) {
                 Ok(value) => opts.pool_max = value,
-                _ => return Err(ErrorKind::UrlInvalidParamValue("pool_max".into(), value).into()),
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "pool_max".into(),
+                        value,
+                    }
+                    .into());
+                }
             }
         } else if key == "conn_ttl" {
             match u32::from_str(&*value) {
                 Ok(value) => opts.conn_ttl = Some(value),
-                _ => return Err(ErrorKind::UrlInvalidParamValue("conn_ttl".into(), value).into()),
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "conn_ttl".into(),
+                        value,
+                    }
+                    .into());
+                }
             }
         } else if key == "tcp_keepalive" {
             match u32::from_str(&*value) {
                 Ok(value) => opts.tcp_keepalive = Some(value),
                 _ => {
-                    return Err(
-                        ErrorKind::UrlInvalidParamValue("tcp_keepalive_ms".into(), value).into(),
-                    );
+                    return Err(UrlError::InvalidParamValue {
+                        param: "tcp_keepalive_ms".into(),
+                        value,
+                    }
+                    .into());
                 }
             }
         } else if key == "tcp_nodelay" {
             match bool::from_str(&*value) {
                 Ok(value) => opts.tcp_nodelay = value,
                 _ => {
-                    return Err(ErrorKind::UrlInvalidParamValue("tcp_nodelay".into(), value).into());
+                    return Err(UrlError::InvalidParamValue {
+                        param: "tcp_nodelay".into(),
+                        value,
+                    }
+                    .into());
                 }
             }
         } else if key == "stmt_cache_size" {
@@ -541,17 +568,23 @@ fn from_url(url: &str) -> Result<InnerOpts> {
                     opts.stmt_cache_size = stmt_cache_size;
                 }
                 _ => {
-                    return Err(
-                        ErrorKind::UrlInvalidParamValue("stmt_cache_size".into(), value).into(),
-                    );
+                    return Err(UrlError::InvalidParamValue {
+                        param: "stmt_cache_size".into(),
+                        value,
+                    }
+                    .into());
                 }
             }
         } else {
-            return Err(ErrorKind::UrlUnknownParameter(key).into());
+            return Err(UrlError::UnknownParameter { param: key }.into());
         }
     }
     if opts.pool_min > opts.pool_max {
-        return Err(ErrorKind::InvalidPoolConstraints(opts.pool_min, opts.pool_max).into());
+        return Err(DriverError::InvalidPoolConstraints {
+            min: opts.pool_min,
+            max: opts.pool_max,
+        }
+        .into());
     }
     Ok(opts)
 }

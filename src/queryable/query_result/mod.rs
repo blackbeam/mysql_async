@@ -13,7 +13,7 @@ use crate::{
         streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
     },
     consts::StatusFlags,
-    errors::*,
+    error::*,
     io,
     lib_futures::future::{
         loop_fn, ok, AndThen,

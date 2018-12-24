@@ -8,7 +8,7 @@
 
 use crate::{
     connection_like::{streamless::Streamless, ConnectionLike},
-    errors::*,
+    error::*,
     io,
     lib_futures::{
         stream::{Stream, StreamFuture},
@@ -57,7 +57,7 @@ impl<T: ConnectionLike> Future for ReadPacket<T> {
                 conn_like.set_seq_id(seq_id.wrapping_add(1));
                 Ok(Ready((conn_like, packet)))
             }
-            None => return Err(ErrorKind::ConnectionClosed.into()),
+            None => return Err(DriverError::ConnectionClosed.into()),
         }
     }
 }

@@ -7,7 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use crate::{
-    errors::*,
+    error::*,
     io::{packet_codec::PacketCodec, Stream},
     lib_futures::{
         failed,
