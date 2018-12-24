@@ -20,8 +20,11 @@ use std::{
 
 use url::{percent_encoding::percent_decode, Url};
 
-const DEFAULT_MIN_CONNS: usize = 10;
-const DEFAULT_MAX_CONNS: usize = 100;
+const DEFAULT_POOL_CONSTRAINTS: PoolConstraints = PoolConstraints { min: 10, max: 100 };
+const_assert!(
+    _DEFAULT_POOL_CONSTRAINTS_ARE_CORRECT,
+    DEFAULT_POOL_CONSTRAINTS.min <= DEFAULT_POOL_CONSTRAINTS.max,
+);
 const DEFAULT_STMT_CACHE_SIZE: usize = 10;
 
 /// Ssl Options.
@@ -123,11 +126,8 @@ pub struct InnerOpts {
     /// Local infile handler
     local_infile_handler: Option<LocalInfileHandlerObject>,
 
-    /// Lower bound of opened connections for `Pool` (defaults to 10).
-    pool_min: usize,
-
-    /// Upper bound of opened connections for `Pool` (defaults to 100).
-    pool_max: usize,
+    /// Bounds for the number of opened connections in `Pool` (defaults to `min: 10, max: 100`).
+    pool_constraints: PoolConstraints,
 
     /// Pool will close connection if time since last IO exceeds this value
     /// (defaults to `wait_timeout`).
@@ -169,7 +169,7 @@ impl Opts {
         }
     }
 
-    pub fn from_url(url: &str) -> Result<Opts> {
+    pub fn from_url(url: &str) -> std::result::Result<Opts, UrlError> {
         Ok(Opts {
             inner: Arc::new(from_url(url)?),
         })
@@ -223,14 +223,9 @@ impl Opts {
             .map(|x| x.clone_inner())
     }
 
-    /// Lower bound of opened connections for `Pool` (defaults to 10).
-    pub fn get_pool_min(&self) -> usize {
-        self.inner.pool_min
-    }
-
-    /// Upper bound of opened connections for `Pool` (defaults to 100).
-    pub fn get_pool_max(&self) -> usize {
-        self.inner.pool_max
+    /// /// Bounds for the number of opened connections in `Pool` (defaults to `min: 10, max: 100`).
+    pub fn get_pool_constraints(&self) -> &PoolConstraints {
+        &self.inner.pool_constraints
     }
 
     /// Pool will close connection if time since last IO exceeds this value
@@ -286,12 +281,54 @@ impl Default for InnerOpts {
             tcp_keepalive: None,
             tcp_nodelay: true,
             local_infile_handler: None,
-            pool_min: 10,
-            pool_max: 100,
+            pool_constraints: Default::default(),
             conn_ttl: None,
             stmt_cache_size: DEFAULT_STMT_CACHE_SIZE,
             ssl_opts: None,
         }
+    }
+}
+
+/// Connection pool constraints.
+///
+/// This type stores `min` and `max` constraints for `Pool` and ensures that `min <= max`.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct PoolConstraints {
+    min: usize,
+    max: usize,
+}
+
+impl PoolConstraints {
+    /// Creates new `PoolConstraints` if constraints are valid (`min <= max`).
+    pub fn new(min: usize, max: usize) -> Option<PoolConstraints> {
+        if min <= max {
+            Some(PoolConstraints { min, max })
+        } else {
+            None
+        }
+    }
+
+    /// Lower bound of this pool constraints.
+    pub fn min(&self) -> usize {
+        self.min
+    }
+
+    /// Upper bound of this pool constraints.
+    pub fn max(&self) -> usize {
+        self.max
+    }
+}
+
+impl Default for PoolConstraints {
+    fn default() -> Self {
+        DEFAULT_POOL_CONSTRAINTS
+    }
+}
+
+impl From<PoolConstraints> for (usize, usize) {
+    /// Transforms constraints to a pair of `(min, max)`.
+    fn from(PoolConstraints { min, max }: PoolConstraints) -> Self {
+        (min, max)
     }
 }
 
@@ -385,17 +422,9 @@ impl OptsBuilder {
         self
     }
 
-    /// Lower bound of opened connections for `Pool`
-    /// (defaults to `10`. `None` to reset to default).
-    pub fn pool_min<T: Into<usize>>(&mut self, pool_min: Option<T>) -> &mut Self {
-        self.opts.pool_min = pool_min.map(Into::into).unwrap_or(DEFAULT_MIN_CONNS);
-        self
-    }
-
-    /// Lower bound of opened connections for `Pool`
-    /// (defaults to `100`. `None` to reset to default).
-    pub fn pool_max<T: Into<usize>>(&mut self, pool_max: Option<T>) -> &mut Self {
-        self.opts.pool_max = pool_max.map(Into::into).unwrap_or(DEFAULT_MAX_CONNS);
+    /// Pool constraints. (defaults to `min: 10, max: 100`).
+    pub fn pool_constraints(&mut self, pool_constraints: Option<PoolConstraints>) -> &mut Self {
+        self.opts.pool_constraints = pool_constraints.unwrap_or(DEFAULT_POOL_CONSTRAINTS);
         self
     }
 
@@ -471,16 +500,17 @@ fn get_opts_db_name_from_url(url: &Url) -> Option<String> {
     }
 }
 
-fn from_url_basic(url_str: &str) -> Result<(InnerOpts, Vec<(String, String)>)> {
+fn from_url_basic(
+    url_str: &str,
+) -> std::result::Result<(InnerOpts, Vec<(String, String)>), UrlError> {
     let url = Url::parse(url_str)?;
     if url.scheme() != "mysql" {
         return Err(UrlError::UnsupportedScheme {
             scheme: url.scheme().to_string(),
-        }
-        .into());
+        });
     }
     if url.cannot_be_a_base() || !url.has_host() {
-        return Err(UrlError::Invalid.into());
+        return Err(UrlError::Invalid);
     }
     let user = get_opts_user_from_url(&url);
     let pass = get_opts_pass_from_url(&url);
@@ -504,29 +534,29 @@ fn from_url_basic(url_str: &str) -> Result<(InnerOpts, Vec<(String, String)>)> {
     Ok((opts, query_pairs))
 }
 
-fn from_url(url: &str) -> Result<InnerOpts> {
+fn from_url(url: &str) -> std::result::Result<InnerOpts, UrlError> {
     let (mut opts, query_pairs) = from_url_basic(url)?;
+    let mut pool_min = DEFAULT_POOL_CONSTRAINTS.min;
+    let mut pool_max = DEFAULT_POOL_CONSTRAINTS.max;
     for (key, value) in query_pairs {
         if key == "pool_min" {
             match usize::from_str(&*value) {
-                Ok(value) => opts.pool_min = value,
+                Ok(value) => pool_min = value,
                 _ => {
                     return Err(UrlError::InvalidParamValue {
                         param: "pool_min".into(),
                         value,
-                    }
-                    .into());
+                    });
                 }
             }
         } else if key == "pool_max" {
             match usize::from_str(&*value) {
-                Ok(value) => opts.pool_max = value,
+                Ok(value) => pool_max = value,
                 _ => {
                     return Err(UrlError::InvalidParamValue {
                         param: "pool_max".into(),
                         value,
-                    }
-                    .into());
+                    });
                 }
             }
         } else if key == "conn_ttl" {
@@ -536,8 +566,7 @@ fn from_url(url: &str) -> Result<InnerOpts> {
                     return Err(UrlError::InvalidParamValue {
                         param: "conn_ttl".into(),
                         value,
-                    }
-                    .into());
+                    });
                 }
             }
         } else if key == "tcp_keepalive" {
@@ -547,8 +576,7 @@ fn from_url(url: &str) -> Result<InnerOpts> {
                     return Err(UrlError::InvalidParamValue {
                         param: "tcp_keepalive_ms".into(),
                         value,
-                    }
-                    .into());
+                    });
                 }
             }
         } else if key == "tcp_nodelay" {
@@ -558,8 +586,7 @@ fn from_url(url: &str) -> Result<InnerOpts> {
                     return Err(UrlError::InvalidParamValue {
                         param: "tcp_nodelay".into(),
                         value,
-                    }
-                    .into());
+                    });
                 }
             }
         } else if key == "stmt_cache_size" {
@@ -571,22 +598,32 @@ fn from_url(url: &str) -> Result<InnerOpts> {
                     return Err(UrlError::InvalidParamValue {
                         param: "stmt_cache_size".into(),
                         value,
-                    }
-                    .into());
+                    });
                 }
             }
         } else {
-            return Err(UrlError::UnknownParameter { param: key }.into());
+            return Err(UrlError::UnknownParameter { param: key });
         }
     }
-    if opts.pool_min > opts.pool_max {
-        return Err(DriverError::InvalidPoolConstraints {
-            min: opts.pool_min,
-            max: opts.pool_max,
-        }
-        .into());
+
+    if let Some(pool_constraints) = PoolConstraints::new(pool_min, pool_max) {
+        opts.pool_constraints = pool_constraints;
+    } else {
+        return Err(UrlError::InvalidPoolConstraints {
+            min: pool_min,
+            max: pool_max,
+        });
     }
+
     Ok(opts)
+}
+
+impl FromStr for Opts {
+    type Err = UrlError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, <Self as FromStr>::Err> {
+        Opts::from_url(s)
+    }
 }
 
 impl<T: AsRef<str> + Sized> From<T> for Opts {

@@ -29,7 +29,7 @@ use crate::{
     time::SteadyTime,
 };
 
-use std::{fmt, mem, sync::Arc};
+use std::{fmt, mem, str::FromStr, sync::Arc};
 
 pub use crate::myc::named_params;
 pub mod pool;
@@ -308,6 +308,7 @@ impl Conn {
         )
     }
 
+    /// Returns future that resolves to `Conn`.
     pub fn new<T: Into<Opts>>(opts: T) -> impl MyFuture<Conn> {
         let mut conn = Conn::empty(opts.into());
 
@@ -325,6 +326,14 @@ impl Conn {
             .and_then(Conn::read_max_allowed_packet)
             .and_then(Conn::read_wait_timeout)
             .and_then(Conn::run_init_commands)
+    }
+
+    /// Returns future that resolves to `Conn`.
+    pub fn from_url<T: AsRef<str>>(url: T) -> impl MyFuture<Conn> {
+        Opts::from_str(url.as_ref())
+            .map_err(Error::from)
+            .into_future()
+            .and_then(Conn::new)
     }
 
     /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.

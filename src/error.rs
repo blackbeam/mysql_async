@@ -66,6 +66,12 @@ pub enum UrlError {
     )]
     InvalidParamValue { param: String, value: String },
 
+    #[fail(
+        display = "Invalid pool constraints: pool_min ({}) > pool_max ({}).",
+        min, max
+    )]
+    InvalidPoolConstraints { min: usize, max: usize },
+
     #[fail(display = "URL parse error: {}", _0)]
     Parse(#[cause] ParseError),
 
@@ -96,12 +102,6 @@ pub enum DriverError {
 
     #[fail(display = "Error converting from mysql row.")]
     FromRow { row: Row },
-
-    #[fail(
-        display = "Invalid pool constraints: pool_min ({}) > pool_max ({}).",
-        min, max
-    )]
-    InvalidPoolConstraints { min: usize, max: usize },
 
     #[fail(display = "Missing named parameter `{}'.", name)]
     MissingNamedParam { name: String },

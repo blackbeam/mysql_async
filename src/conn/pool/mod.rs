@@ -15,7 +15,7 @@ use crate::{
         Async::{self, NotReady, Ready},
         Future,
     },
-    opts::Opts,
+    opts::{Opts, PoolConstraints},
     queryable::{
         transaction::{Transaction, TransactionOptions},
         Queryable,
@@ -24,6 +24,7 @@ use crate::{
 };
 use std::{
     fmt,
+    str::FromStr,
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -56,8 +57,7 @@ impl Inner {
 pub struct Pool {
     opts: Opts,
     inner: Arc<Mutex<Inner>>,
-    min: usize,
-    max: usize,
+    pool_constraints: PoolConstraints,
 }
 
 impl fmt::Debug for Pool {
@@ -75,8 +75,7 @@ impl fmt::Debug for Pool {
                 )
             });
         f.debug_struct("Pool")
-            .field("min", &self.min)
-            .field("max", &self.max)
+            .field("pool_constraints", &self.pool_constraints)
             .field("new connections count", &new_len)
             .field("idle connections count", &idle_len)
             .field("disconnecting connections count", &disconnecing_len)
@@ -92,13 +91,12 @@ impl Pool {
     /// Creates new pool of connections.
     pub fn new<O: Into<Opts>>(opts: O) -> Pool {
         let opts = opts.into();
-        let pool_min = opts.get_pool_min();
-        let pool_max = opts.get_pool_max();
+        let pool_constraints = opts.get_pool_constraints().clone();
         let pool = Pool {
-            opts: opts,
+            opts,
             inner: Arc::new(Mutex::new(Inner {
                 closed: false,
-                new: Vec::with_capacity(pool_min),
+                new: Vec::with_capacity(pool_constraints.min()),
                 idle: Vec::new(),
                 disconnecting: Vec::new(),
                 dropping: Vec::new(),
@@ -106,11 +104,16 @@ impl Pool {
                 ongoing: 0,
                 tasks: Vec::new(),
             })),
-            min: pool_min,
-            max: pool_max,
+            pool_constraints,
         };
 
         pool
+    }
+
+    /// Creates new pool of connections.
+    pub fn from_url<T: AsRef<str>>(url: T) -> Result<Pool> {
+        let opts = Opts::from_str(url.as_ref())?;
+        Ok(Pool::new(opts))
     }
 
     /// Returns future that resolves to `Conn`.
@@ -181,7 +184,7 @@ impl Pool {
 
     /// A way to return connection taken from a pool.
     fn return_conn(&mut self, conn: Conn) {
-        let min = self.min;
+        let min = self.pool_constraints.min();
 
         self.with_inner(|mut inner| {
             if inner.closed {
@@ -340,7 +343,7 @@ impl Pool {
             Some(conn) => Ok(Ready(conn)),
             None => {
                 let new_conn_created = self.with_inner(|mut inner| {
-                    if inner.new.len() == 0 && inner.conn_count() < self.max {
+                    if inner.new.len() == 0 && inner.conn_count() < self.pool_constraints.max() {
                         let new_conn = Conn::new(self.opts.clone());
                         inner.new.push(Box::new(new_conn));
                         true
