@@ -29,7 +29,7 @@ use crate::{
     opts::Opts,
     queryable::{query_result, BinaryProtocol, Queryable, TextProtocol},
     time::SteadyTime,
-    Column, MyFuture,
+    BoxFuture, Column, MyFuture,
 };
 
 pub mod pool;
@@ -236,7 +236,7 @@ impl Conn {
     fn perform_auth_switch(
         mut self,
         auth_switch_request: AuthSwitchRequest<'_>,
-    ) -> impl MyFuture<Conn> {
+    ) -> BoxFuture<Conn> {
         if !self.auth_switched {
             self.auth_switched = true;
             self.nonce = auth_switch_request.plugin_data().into();
@@ -245,7 +245,9 @@ impl Conn {
                 .auth_plugin
                 .gen_data(self.opts.get_pass(), &*self.nonce)
                 .unwrap_or_else(Vec::new);
-            self.write_packet(plugin_data).and_then(Conn::continue_auth)
+            let fut = self.write_packet(plugin_data).and_then(Conn::continue_auth);
+            // We'll box it to avoid recursion.
+            Box::new(fut)
         } else {
             unreachable!("auth_switched flag should be checked by caller")
         }
