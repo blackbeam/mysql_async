@@ -88,9 +88,6 @@ pub enum UrlError {
 /// This type enumerates driver errors.
 #[derive(Debug, Fail)]
 pub enum DriverError {
-    #[fail(display = "AuthSwitchRequest handling is not implemented.")]
-    AuthSwitchUnimplemented,
-
     #[fail(
         display = "Can't parse server version from string `{}'.",
         version_string

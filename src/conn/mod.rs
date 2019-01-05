@@ -11,8 +11,10 @@ pub use mysql_common::named_params;
 use futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
 use mysql_common::{
     crypto,
-    packets::{parse_handshake_packet, AuthPlugin, HandshakeResponse, SslRequest},
-    scramble,
+    packets::{
+        parse_auth_switch_request, parse_handshake_packet, AuthPlugin, AuthSwitchRequest,
+        HandshakeResponse, SslRequest,
+    },
 };
 
 use std::{fmt, mem, str::FromStr, sync::Arc};
@@ -55,6 +57,7 @@ pub struct Conn {
     stmt_cache: StmtCache,
     nonce: Vec<u8>,
     auth_plugin: AuthPlugin<'static>,
+    auth_switched: bool,
 }
 
 impl fmt::Debug for Conn {
@@ -117,6 +120,7 @@ impl Conn {
                 stmt_cache: StmtCache::new(0),
                 nonce: Vec::default(),
                 auth_plugin: AuthPlugin::MysqlNativePassword,
+                auth_switched: false,
             },
         )
     }
@@ -143,6 +147,7 @@ impl Conn {
             opts: opts,
             nonce: Vec::default(),
             auth_plugin: AuthPlugin::MysqlNativePassword,
+            auth_switched: false,
         }
     }
 
@@ -179,7 +184,7 @@ impl Conn {
                             let name = String::from_utf8_lossy(name).into();
                             return Err(DriverError::UnknownAuthPlugin { name }.into());
                         }
-                        None => unreachable!(),
+                        None => AuthPlugin::MysqlNativePassword,
                     };
                     Ok(conn)
                 })
@@ -212,23 +217,12 @@ impl Conn {
     }
 
     fn do_handshake_response(self) -> impl MyFuture<Conn> {
-        let scramble = self
-            .opts
-            .get_pass()
-            .and_then(|pass| match self.auth_plugin {
-                AuthPlugin::MysqlNativePassword => {
-                    scramble::scramble_native(&*self.nonce, pass.as_bytes())
-                        .map(|x| Vec::from(&x[..]))
-                }
-                AuthPlugin::CachingSha2Password => {
-                    scramble::scramble_sha256(&*self.nonce, pass.as_bytes())
-                        .map(|x| Vec::from(&x[..]))
-                }
-                _ => unreachable!(),
-            });
+        let auth_data = self
+            .auth_plugin
+            .gen_data(self.opts.get_pass(), &*self.nonce);
 
         let handshake_response = HandshakeResponse::new(
-            &scramble,
+            &auth_data,
             self.version,
             self.opts.get_user().as_ref().map(|x| x.as_ref()),
             self.opts.get_db_name().as_ref().map(|x| x.as_ref()),
@@ -239,30 +233,49 @@ impl Conn {
         self.write_packet(handshake_response.as_ref())
     }
 
-    fn perform_auth(self) -> impl MyFuture<Conn> {
+    fn perform_auth_switch(
+        mut self,
+        auth_switch_request: AuthSwitchRequest<'_>,
+    ) -> impl MyFuture<Conn> {
+        if !self.auth_switched {
+            self.auth_switched = true;
+            self.nonce = auth_switch_request.plugin_data().into();
+            self.auth_plugin = auth_switch_request.auth_plugin().clone().into_owned();
+            let plugin_data = self
+                .auth_plugin
+                .gen_data(self.opts.get_pass(), &*self.nonce)
+                .unwrap_or_else(Vec::new);
+            self.write_packet(plugin_data).and_then(Conn::continue_auth)
+        } else {
+            unreachable!("auth_switched flag should be checked by caller")
+        }
+    }
+
+    fn continue_auth(self) -> impl MyFuture<Conn> {
         match self.auth_plugin {
-            AuthPlugin::MysqlNativePassword => A(self.perform_mysql_native_password_auth()),
-            AuthPlugin::CachingSha2Password => B(self.perform_caching_sha2_password_auth()),
+            AuthPlugin::MysqlNativePassword => A(self.continue_mysql_native_password_auth()),
+            AuthPlugin::CachingSha2Password => B(self.continue_caching_sha2_password_auth()),
             _ => unreachable!(),
         }
     }
 
-    fn perform_caching_sha2_password_auth(self) -> impl MyFuture<Conn> {
-        let mut pass = self.opts.get_pass().map(Vec::from).unwrap_or(vec![]);
-        pass.push(0);
-
+    fn continue_caching_sha2_password_auth(self) -> impl MyFuture<Conn> {
         self.read_packet()
-            .and_then(move |(conn, packet)| match packet.as_ref()[0] {
-                0xfe => A(err(DriverError::AuthSwitchUnimplemented.into())),
-                0x01 => match packet.as_ref()[1] {
-                    0x03 => A(ok(conn)),
-                    0x04 => {
-                        if conn.is_secure() {
-                            B(A(conn.write_packet(&*pass)))
+            .and_then(|(conn, packet)| match packet.as_ref().get(0) {
+                Some(0x01) => match packet.as_ref().get(1) {
+                    Some(0x03) => {
+                        // auth ok
+                        A(conn.drop_packet())
+                    }
+                    Some(0x04) => {
+                        let mut pass = conn.opts.get_pass().map(Vec::from).unwrap_or(vec![]);
+                        pass.push(0);
+                        let fut = if conn.is_secure() {
+                            A(conn.write_packet(&*pass))
                         } else {
-                            let fut = conn
+                            B(conn
                                 .write_packet(&[0x02][..])
-                                .and_then(|conn| conn.read_packet())
+                                .and_then(Conn::read_packet)
                                 .and_then(move |(conn, packet)| {
                                     let key = &packet.as_ref()[1..];
                                     for i in 0..pass.len() {
@@ -270,19 +283,51 @@ impl Conn {
                                     }
                                     let encrypted_pass = crypto::encrypt(&*pass, key);
                                     conn.write_packet(&*encrypted_pass)
-                                });
-                            B(B(fut))
-                        }
+                                }))
+                        };
+                        B(A(fut.and_then(Conn::drop_packet)))
                     }
-                    _ => unreachable!(),
+                    _ => B(B(A(err(DriverError::UnexpectedPacket {
+                        payload: packet.as_ref().into(),
+                    }
+                    .into())))),
                 },
-                _ => unreachable!(),
+                Some(0xfe) if !conn.auth_switched => {
+                    let fut = parse_auth_switch_request(packet.as_ref())
+                        .map(AuthSwitchRequest::into_owned)
+                        .map_err(Error::from)
+                        .into_future()
+                        .and_then(|auth_switch_request| {
+                            conn.perform_auth_switch(auth_switch_request)
+                        });
+                    B(B(B(A(fut))))
+                }
+                _ => B(B(B(B(err(DriverError::UnexpectedPacket {
+                    payload: packet.as_ref().into(),
+                }
+                .into()))))),
             })
     }
 
-    fn perform_mysql_native_password_auth(self) -> impl MyFuture<Conn> {
-        // there is nothing to do after handshake response
-        ok(self)
+    fn continue_mysql_native_password_auth(self) -> impl MyFuture<Conn> {
+        self.read_packet()
+            .and_then(|(this, packet)| match packet.0.get(0) {
+                Some(0x00) => A(ok(this)),
+                Some(0xfe) if !this.auth_switched => {
+                    let fut = parse_auth_switch_request(packet.as_ref())
+                        .map(AuthSwitchRequest::into_owned)
+                        .map_err(Error::from)
+                        .into_future()
+                        .and_then(|auth_switch_request| {
+                            this.perform_auth_switch(auth_switch_request)
+                        });
+                    B(A(fut))
+                }
+                _ => B(B(err(DriverError::UnexpectedPacket {
+                    payload: packet.0.into(),
+                }
+                .into()))),
+            })
     }
 
     fn drop_packet(self) -> impl MyFuture<Conn> {
@@ -319,8 +364,7 @@ impl Conn {
             .and_then(Conn::handle_handshake)
             .and_then(Conn::switch_to_ssl_if_needed)
             .and_then(Conn::do_handshake_response)
-            .and_then(Conn::perform_auth)
-            .and_then(Conn::drop_packet)
+            .and_then(Conn::continue_auth)
             .and_then(Conn::read_max_allowed_packet)
             .and_then(Conn::read_wait_timeout)
             .and_then(Conn::run_init_commands)
