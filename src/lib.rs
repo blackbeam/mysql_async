@@ -221,6 +221,12 @@ mod test_misc {
 
     use crate::opts;
 
+    #[allow(dead_code)]
+    fn error_should_implement_send_and_sync() {
+        fn _dummy<T: Send + Sync>(_: T) {}
+        _dummy(crate::error::Error::from("foo"));
+    }
+
     lazy_static! {
         pub static ref DATABASE_URL: String = {
             if let Ok(url) = env::var("DATABASE_URL") {
