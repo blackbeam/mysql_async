@@ -123,23 +123,11 @@
 
 #[cfg(feature = "nightly")]
 extern crate test;
-#[macro_use]
-extern crate futures as lib_futures;
-#[cfg(test)]
-#[macro_use]
-extern crate lazy_static;
 
-use mysql_common as myc;
-#[cfg(feature = "ssl")]
-extern crate native_tls;
-
-use tokio;
-use url;
-
-pub use crate::myc::{chrono, constants as consts, params, time, uuid};
+pub use mysql_common::{chrono, constants as consts, params, time, uuid};
 
 #[macro_use]
-pub mod macros;
+mod macros;
 mod conn;
 mod connection_like;
 /// Errors used in this crate
@@ -149,16 +137,12 @@ mod local_infile_handler;
 mod opts;
 mod queryable;
 
-pub type BoxFuture<T> =
-    Box<dyn lib_futures::Future<Item = T, Error = error::Error> + Send + 'static>;
+pub type BoxFuture<T> = Box<dyn ::futures::Future<Item = T, Error = error::Error> + Send + 'static>;
 
 /// Alias for `Future` with library error as `Future::Error`.
-pub trait MyFuture<T>:
-    lib_futures::Future<Item = T, Error = error::Error> + Send + 'static
-{
-}
+pub trait MyFuture<T>: ::futures::Future<Item = T, Error = error::Error> + Send + 'static {}
 impl<T, U> MyFuture<T> for U where
-    U: lib_futures::Future<Item = T, Error = error::Error> + Send + 'static
+    U: ::futures::Future<Item = T, Error = error::Error> + Send + 'static
 {
 }
 
@@ -178,25 +162,25 @@ pub use self::opts::{Opts, OptsBuilder, SslOpts};
 pub use self::local_infile_handler::builtin::WhiteListFsLocalInfileHandler;
 
 #[doc(inline)]
-pub use crate::myc::packets::Column;
+pub use mysql_common::packets::Column;
 
 #[doc(inline)]
-pub use crate::myc::row::Row;
+pub use mysql_common::row::Row;
 
 #[doc(inline)]
-pub use crate::myc::params::Params;
+pub use mysql_common::params::Params;
 
 #[doc(inline)]
-pub use crate::myc::value::Value;
+pub use mysql_common::value::Value;
 
 #[doc(inline)]
-pub use crate::myc::row::convert::{from_row, from_row_opt, FromRowError};
+pub use mysql_common::row::convert::{from_row, from_row_opt, FromRowError};
 
 #[doc(inline)]
-pub use crate::myc::value::convert::{from_value, from_value_opt, FromValueError};
+pub use mysql_common::value::convert::{from_value, from_value_opt, FromValueError};
 
 #[doc(inline)]
-pub use crate::myc::value::json::{Deserialized, Serialized};
+pub use mysql_common::value::json::{Deserialized, Serialized};
 
 #[doc(inline)]
 pub use self::queryable::query_result::QueryResult;
@@ -222,17 +206,21 @@ pub mod prelude {
     #[doc(inline)]
     pub use crate::local_infile_handler::LocalInfileHandler;
     #[doc(inline)]
-    pub use crate::myc::row::convert::FromRow;
-    #[doc(inline)]
-    pub use crate::myc::value::convert::{ConvIr, FromValue, ToValue};
-    #[doc(inline)]
     pub use crate::queryable::Queryable;
+    #[doc(inline)]
+    pub use mysql_common::row::convert::FromRow;
+    #[doc(inline)]
+    pub use mysql_common::value::convert::{ConvIr, FromValue, ToValue};
 }
 
 #[cfg(test)]
 mod test_misc {
-    use crate::opts;
+    use lazy_static::lazy_static;
+
     use std::env;
+
+    use crate::opts;
+
     lazy_static! {
         pub static ref DATABASE_URL: String = {
             if let Ok(url) = env::var("DATABASE_URL") {

@@ -6,18 +6,23 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use self::{read_packet::ReadPacket, streamless::Streamless, write_packet::WritePacket};
+use byteorder::{ByteOrder, LittleEndian};
+use futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
+use mysql_common::{
+    io::ReadMysqlExt,
+    packets::{column_from_payload, parse_local_infile_packet, Column, RawPacket},
+};
+use tokio_io::io::read;
+
+use std::sync::Arc;
+
 use crate::{
     conn::{named_params::parse_named_params, stmt_cache::StmtCache},
+    connection_like::{read_packet::ReadPacket, streamless::Streamless, write_packet::WritePacket},
     consts::{CapabilityFlags, Command, StatusFlags},
     error::*,
     io,
-    lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop},
     local_infile_handler::LocalInfileHandler,
-    myc::{
-        io::ReadMysqlExt,
-        packets::{column_from_payload, parse_local_infile_packet, Column, RawPacket},
-    },
     queryable::{
         query_result::{self, QueryResult},
         stmt::InnerStmt,
@@ -25,9 +30,6 @@ use crate::{
     },
     BoxFuture, MyFuture, Opts,
 };
-use byteorder::{ByteOrder, LittleEndian};
-use std::sync::Arc;
-use tokio_io::io::read;
 
 pub mod read_packet;
 pub mod streamless {

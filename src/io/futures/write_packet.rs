@@ -6,13 +6,10 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use crate::{
-    consts::MAX_PAYLOAD_LEN,
-    error::*,
-    io::Stream,
-    lib_futures::{Async, AsyncSink, Future, Poll, Sink},
-    myc::packets::RawPacket,
-};
+use futures::{try_ready, Async, AsyncSink, Future, Poll, Sink};
+use mysql_common::packets::RawPacket;
+
+use crate::{consts::MAX_PAYLOAD_LEN, error::*, io::Stream};
 
 /// Future that writes packet to a `Stream` and resolves to a pair of `Stream` and MySql's sequence
 /// id.

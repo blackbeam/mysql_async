@@ -6,26 +6,27 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use self::futures::*;
+use ::futures::{
+    task::{self, Task},
+    Async::{self, NotReady, Ready},
+    Future,
+};
+
+use std::{
+    fmt,
+    str::FromStr,
+    sync::{Arc, Mutex, MutexGuard},
+};
+
 use crate::{
-    conn::Conn,
+    conn::{pool::futures::*, Conn},
     error::*,
-    lib_futures::{
-        task::{self, Task},
-        Async::{self, NotReady, Ready},
-        Future,
-    },
     opts::{Opts, PoolConstraints},
     queryable::{
         transaction::{Transaction, TransactionOptions},
         Queryable,
     },
     BoxFuture, MyFuture,
-};
-use std::{
-    fmt,
-    str::FromStr,
-    sync::{Arc, Mutex, MutexGuard},
 };
 
 pub mod futures;
@@ -375,11 +376,11 @@ impl Drop for Conn {
 
 #[cfg(test)]
 mod test {
+    use futures::Future;
+
     use crate::{
-        conn::pool::Pool, lib_futures::Future, queryable::Queryable, test_misc::DATABASE_URL,
-        TransactionOptions,
+        conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL, TransactionOptions,
     };
-    use tokio;
 
     /// Same as `tokio::run`, but will panic if future panics and will return the result
     /// of future execution.
@@ -528,12 +529,9 @@ mod test {
 
     #[cfg(feature = "nightly")]
     mod bench {
-        use conn::pool::Pool;
-        use lib_futures::Future;
-        use queryable::Queryable;
-        use test;
-        use test_misc::DATABASE_URL;
-        use tokio;
+        use futures::Future;
+
+        use crate::{conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL};
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {

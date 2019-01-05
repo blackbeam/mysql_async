@@ -6,10 +6,11 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use futures::{Future, Poll};
+
 use crate::{
     conn::{pool::Pool, Conn},
     error::*,
-    lib_futures::{Future, Poll},
 };
 
 /// This future will take connection from a pool and resolve to `Conn`.

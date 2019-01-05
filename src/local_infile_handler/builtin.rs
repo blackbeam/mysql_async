@@ -6,9 +6,11 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use super::LocalInfileHandler;
-use crate::{lib_futures::IntoFuture, BoxFuture};
+use futures::IntoFuture;
 use mio::{Evented, Poll, PollOpt, Ready, Registration, Token};
+use tokio::reactor::PollEvented2;
+use tokio_io::AsyncRead;
+
 use std::{
     collections::HashSet,
     fs,
@@ -18,8 +20,8 @@ use std::{
     sync::mpsc::{channel, Receiver, Sender, TryRecvError},
     thread,
 };
-use tokio::reactor::PollEvented2;
-use tokio_io::AsyncRead;
+
+use crate::{local_infile_handler::LocalInfileHandler, BoxFuture};
 
 #[derive(Debug)]
 enum Message {

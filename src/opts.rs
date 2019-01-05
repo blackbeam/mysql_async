@@ -6,9 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use crate::{consts::CapabilityFlags, error::*};
-
-use crate::local_infile_handler::{LocalInfileHandler, LocalInfileHandlerObject};
+use url::{percent_encoding::percent_decode, Url};
 
 use std::{
     borrow::Cow,
@@ -18,7 +16,11 @@ use std::{
     sync::Arc,
 };
 
-use url::{percent_encoding::percent_decode, Url};
+use crate::{
+    consts::CapabilityFlags,
+    error::*,
+    local_infile_handler::{LocalInfileHandler, LocalInfileHandlerObject},
+};
 
 const DEFAULT_POOL_CONSTRAINTS: PoolConstraints = PoolConstraints { min: 10, max: 100 };
 const_assert!(

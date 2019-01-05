@@ -6,9 +6,10 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+pub use self::{
+    disconnect_pool::{new as new_disconnect_pool, DisconnectPool},
+    get_conn::{new as new_get_conn, GetConn},
+};
+
 mod disconnect_pool;
 mod get_conn;
-
-pub use self::get_conn::{new as new_get_conn, GetConn};
-
-pub use self::disconnect_pool::{new as new_disconnect_pool, DisconnectPool};

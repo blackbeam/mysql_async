@@ -6,19 +6,21 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use futures::future::{
+    err, ok,
+    Either::{self, *},
+    Future, IntoFuture,
+};
+
+use std::fmt;
+
 use crate::{
     connection_like::{streamless::Streamless, ConnectionLike, ConnectionLikeWrapper},
     error::*,
     io,
-    lib_futures::future::{
-        err, ok,
-        Either::{self, *},
-        Future, IntoFuture,
-    },
     queryable::Queryable,
     MyFuture,
 };
-use std::fmt;
 
 /// Options for transaction
 #[derive(Eq, PartialEq, Debug, Hash, Clone, Default)]

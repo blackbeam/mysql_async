@@ -6,8 +6,18 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use self::QueryResultInner::*;
 pub use self::{for_each::ForEach, map::Map, reduce::Reduce};
+
+use futures::future::{
+    loop_fn, ok, AndThen,
+    Either::{self, *},
+    Future, FutureResult, Loop,
+};
+use mysql_common::packets::RawPacket;
+
+use std::{marker::PhantomData, mem, sync::Arc};
+
+use self::QueryResultInner::*;
 use crate::{
     connection_like::{
         streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
@@ -15,17 +25,10 @@ use crate::{
     consts::StatusFlags,
     error::*,
     io,
-    lib_futures::future::{
-        loop_fn, ok, AndThen,
-        Either::{self, *},
-        Future, FutureResult, Loop,
-    },
-    myc::packets::RawPacket,
     prelude::FromRow,
     queryable::Protocol,
     BoxFuture, Column, MyFuture, Row,
 };
-use std::{marker::PhantomData, mem, sync::Arc};
 
 mod for_each;
 mod map;

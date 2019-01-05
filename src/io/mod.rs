@@ -7,29 +7,29 @@
 // modified, or distributed except according to those terms.
 
 #[cfg(not(feature = "ssl"))]
-use crate::lib_futures::future::ok;
-use crate::{
-    error::*,
-    io::futures::{new_connecting_stream, new_write_packet, ConnectingStream, WritePacket},
-    lib_futures::{stream, Async, Poll},
-    myc::packets::RawPacket,
-    opts::SslOpts,
-    MyFuture,
-};
+use ::futures::future::ok;
+use ::futures::{stream, Async, Poll};
 #[cfg(feature = "ssl")]
-use lib_futures::{Future, IntoFuture};
+use ::futures::{Future, IntoFuture};
+use mysql_common::packets::RawPacket;
 #[cfg(feature = "ssl")]
 use native_tls::{Certificate, Identity, TlsConnector};
-#[cfg(feature = "ssl")]
-use std::fs::File;
-#[cfg(feature = "ssl")]
-use std::io::Read;
-use std::{fmt, io, net::ToSocketAddrs, time::Duration};
 use tokio::net::TcpStream;
 use tokio_codec::Framed;
 #[cfg(feature = "ssl")]
 use tokio_codec::FramedParts;
 use tokio_io::{AsyncRead, AsyncWrite};
+
+use std::{fmt, io, net::ToSocketAddrs, time::Duration};
+#[cfg(feature = "ssl")]
+use std::{fs::File, io::Read};
+
+use crate::{
+    error::*,
+    io::futures::{new_connecting_stream, new_write_packet, ConnectingStream, WritePacket},
+    opts::SslOpts,
+    MyFuture,
+};
 
 #[cfg(feature = "ssl")]
 mod async_tls;
@@ -86,8 +86,7 @@ impl Endpoint {
                     let mut root_cert_der = vec![];
                     let mut root_cert_file = File::open(root_cert_path)?;
                     root_cert_file.read_to_end(&mut root_cert_der)?;
-                    let root_cert = Certificate::from_der(&*root_cert_der)
-                        .chain_err(|| "Can't parse root certificate")?;
+                    let root_cert = Certificate::from_der(&*root_cert_der).map_err(Error::from)?;
                     builder.add_root_certificate(root_cert);
                 }
                 None => (),
@@ -95,19 +94,17 @@ impl Endpoint {
             if let Some(pkcs12_path) = ssl_opts.pkcs12_path() {
                 let der = std::fs::read(pkcs12_path)?;
                 let identity = Identity::from_pkcs12(&*der, ssl_opts.password().unwrap_or(""))
-                    .chain_err(|| "Can't parse der")?;
+                    .map_err(Error::from)?;
                 builder.identity(identity);
             }
             builder.danger_accept_invalid_hostnames(ssl_opts.skip_domain_validation());
-            builder
-                .build()
-                .chain_err(|| "Can't build TlsConnectorBuilder")
+            builder.build().map_err(Error::from)
         })()
         .into_future()
         .and_then(move |tls_connector| match self {
             Endpoint::Plain(stream) => {
-                let fut = self::async_tls::connect_async(&tls_connector, &*domain, stream);
-                fut.then(|result| result.chain_err(|| "Can't connect TlsConnector"))
+                self::async_tls::connect_async(&tls_connector, &*domain, stream)
+                    .map_err(Error::from)
             }
             Endpoint::Secure(_) => unreachable!(),
         })

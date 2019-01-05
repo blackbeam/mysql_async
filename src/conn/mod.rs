@@ -6,9 +6,19 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use self::stmt_cache::StmtCache;
+pub use mysql_common::named_params;
+
+use futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
+use mysql_common::{
+    crypto,
+    packets::{parse_handshake_packet, AuthPlugin, HandshakeResponse, SslRequest},
+    scramble,
+};
+
+use std::{fmt, mem, str::FromStr, sync::Arc};
+
 use crate::{
-    conn::pool::Pool,
+    conn::{pool::Pool, stmt_cache::StmtCache},
     connection_like::{streamless::Streamless, ConnectionLike, StmtCacheResult},
     consts::{self, CapabilityFlags},
     error::*,
@@ -16,22 +26,10 @@ use crate::{
     local_infile_handler::LocalInfileHandler,
     opts::Opts,
     queryable::{query_result, BinaryProtocol, Queryable, TextProtocol},
+    time::SteadyTime,
     Column, MyFuture,
 };
 
-use crate::{
-    lib_futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop},
-    myc::{
-        crypto,
-        packets::{parse_handshake_packet, AuthPlugin, HandshakeResponse, SslRequest},
-        scramble,
-    },
-    time::SteadyTime,
-};
-
-use std::{fmt, mem, str::FromStr, sync::Arc};
-
-pub use crate::myc::named_params;
 pub mod pool;
 pub mod stmt_cache;
 
@@ -517,13 +515,14 @@ impl ConnectionLike for Conn {
 
 #[cfg(test)]
 mod test {
+    use futures::Future;
+
     #[cfg(feature = "ssl")]
     use crate::SslOpts;
     use crate::{
-        from_row, lib_futures::Future, params, prelude::*, test_misc::DATABASE_URL, Conn,
-        OptsBuilder, TransactionOptions, WhiteListFsLocalInfileHandler,
+        from_row, params, prelude::*, test_misc::DATABASE_URL, Conn, OptsBuilder,
+        TransactionOptions, WhiteListFsLocalInfileHandler,
     };
-    use tokio;
 
     /// Same as `tokio::run`, but will panic if future panics and will return the result
     /// of future execution.
@@ -1116,12 +1115,10 @@ mod test {
 
     #[cfg(feature = "nightly")]
     mod bench {
+        use futures::Future;
+
         use super::get_opts;
-        use conn::Conn;
-        use lib_futures::Future;
-        use queryable::Queryable;
-        use test;
-        use tokio;
+        use crate::{conn::Conn, queryable::Queryable};
 
         #[bench]
         fn simple_exec(bencher: &mut test::Bencher) {

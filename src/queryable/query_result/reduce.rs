@@ -6,12 +6,12 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use super::QueryResult;
+use futures::{try_ready, Async::Ready, Future, Poll};
+
 use crate::{
     connection_like::ConnectionLike,
     error::*,
-    lib_futures::{Async::Ready, Future, Poll},
-    queryable::Protocol,
+    queryable::{query_result::QueryResult, Protocol},
     BoxFuture, Row,
 };
 

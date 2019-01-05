@@ -6,6 +6,17 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use bit_vec::BitVec;
+use byteorder::{LittleEndian as LE, ReadBytesExt, WriteBytesExt};
+use futures::future::{
+    err, loop_fn, ok,
+    Either::{self, *},
+    Future, IntoFuture, Loop,
+};
+use mysql_common::value::serialize_bin_many;
+
+use std::io::Write;
+
 use crate::{
     connection_like::{
         streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
@@ -13,20 +24,11 @@ use crate::{
     consts::{ColumnType, Command},
     error::*,
     io,
-    lib_futures::future::{
-        err, loop_fn, ok,
-        Either::{self, *},
-        Future, IntoFuture, Loop,
-    },
-    myc::value::serialize_bin_many,
     prelude::FromRow,
     queryable::{query_result::QueryResult, BinaryProtocol},
     Column, MyFuture, Params, Row,
     Value::{self, *},
 };
-use bit_vec::BitVec;
-use byteorder::{LittleEndian as LE, ReadBytesExt, WriteBytesExt};
-use std::io::Write;
 
 /// Inner statement representation.
 #[derive(Eq, PartialEq, Clone, Debug)]

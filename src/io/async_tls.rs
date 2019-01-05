@@ -8,10 +8,12 @@
 
 //! This module implements async TLS streams and source
 //! of this module is mostly copyed from tokio_tls crate.
-use lib_futures::{Async, Future, Poll};
+
+use futures::{Async, Future, Poll};
 use native_tls::{self, Error, HandshakeError, TlsConnector};
-use std::io::{self, Read, Write};
 use tokio_io::{AsyncRead, AsyncWrite};
+
+use std::io::{self, Read, Write};
 
 /// A wrapper around an underlying raw stream which implements the TLS or SSL
 /// protocol.
@@ -56,7 +58,7 @@ impl<S: AsyncRead + AsyncWrite> AsyncWrite for TlsStream<S> {
         match self.inner.shutdown() {
             Ok(t) => t,
             Err(ref e) if e.kind() == ::std::io::ErrorKind::WouldBlock => {
-                return Ok(::lib_futures::Async::NotReady);
+                return Ok(futures::Async::NotReady);
             }
             Err(e) => return Err(e.into()),
         }

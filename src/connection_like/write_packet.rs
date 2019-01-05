@@ -6,11 +6,12 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use futures::{try_ready, Async::Ready, Future, Poll};
+
 use crate::{
     connection_like::{streamless::Streamless, ConnectionLike},
     error::*,
     io,
-    lib_futures::{Async::Ready, Future, Poll},
 };
 
 pub struct WritePacket<T> {

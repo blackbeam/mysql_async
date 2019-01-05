@@ -6,16 +6,18 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use futures::{
+    stream::{Stream, StreamFuture},
+    try_ready,
+    Async::Ready,
+    Future, Poll,
+};
+use mysql_common::packets::{parse_err_packet, parse_ok_packet, RawPacket};
+
 use crate::{
     connection_like::{streamless::Streamless, ConnectionLike},
     error::*,
     io,
-    lib_futures::{
-        stream::{Stream, StreamFuture},
-        Async::Ready,
-        Future, Poll,
-    },
-    myc::packets::{parse_err_packet, parse_ok_packet, RawPacket},
 };
 
 pub struct ReadPacket<T> {

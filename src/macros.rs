@@ -26,7 +26,7 @@ macro_rules! steps {
         impl $fut {
             fn either_poll(&mut self) -> Result<Async<Out>> {
                 match self.step {
-                    $(Step::$step(ref mut fut) => Ok(Ready(Out::$step(try_ready!(fut.poll())))),)+
+                    $(Step::$step(ref mut fut) => Ok(Ready(Out::$step(::futures::try_ready!(fut.poll())))),)+
                 }
             }
         }

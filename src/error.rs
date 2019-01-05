@@ -6,16 +6,15 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use failure::Fail;
-use url;
 pub use url::ParseError;
 
-use std::{io, result};
-
-use crate::{
-    myc::{named_params::MixedParamsError, packets::ErrPacket, params::MissingNamedParameterError},
-    Row, Value,
+use failure::Fail;
+use mysql_common::{
+    named_params::MixedParamsError, packets::ErrPacket, params::MissingNamedParameterError,
+    row::Row, value::Value,
 };
+
+use std::{io, result};
 
 /// Result type alias for this library.
 pub type Result<T> = result::Result<T, Error>;
@@ -34,6 +33,10 @@ pub enum Error {
 
     #[fail(display = "Server error: `{}'", _0)]
     Server(#[cause] ServerError),
+
+    #[cfg(feature = "ssl")]
+    #[fail(display = "TLS error: `{}'", _0)]
+    Tls(#[cause] native_tls::Error),
 
     #[fail(display = "URL error: `{}'", _0)]
     Url(#[cause] UrlError),
@@ -163,6 +166,13 @@ impl From<ServerError> for Error {
 impl From<UrlError> for Error {
     fn from(err: UrlError) -> Self {
         Error::Url(err)
+    }
+}
+
+#[cfg(feature = "ssl")]
+impl From<native_tls::Error> for Error {
+    fn from(err: native_tls::Error) -> Self {
+        Error::Tls(err)
     }
 }
 
