@@ -75,8 +75,8 @@ pub mod builtin;
 ///         assert_eq!(result[0], "foobar");
 ///     })
 ///     .and_then(|_| pool.disconnect())
-///     .map_err(|err| match err.kind() {
-///         my::error::ErrorKind::Server(_, 1148, _) => {
+///     .map_err(|err| match err {
+///         my::error::Error::Server(ref err) if err.code == 1148 => {
 ///             // The used command is not allowed with this MySQL version
 ///         },
 ///         _ => panic!("{}", err),
