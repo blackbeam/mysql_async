@@ -156,7 +156,7 @@ pub use self::conn::pool::Pool;
 pub use self::queryable::transaction::IsolationLevel;
 
 #[doc(inline)]
-pub use self::opts::{Opts, OptsBuilder, SslOpts};
+pub use self::opts::{Opts, OptsBuilder, PoolConstraints, SslOpts};
 
 #[doc(inline)]
 pub use self::local_infile_handler::builtin::WhiteListFsLocalInfileHandler;
