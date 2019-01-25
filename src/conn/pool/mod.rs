@@ -226,104 +226,111 @@ impl Pool {
             return Ok(());
         }
 
-        macro_rules! handle {
-            ($vec:ident { $($p:pat => $b:block,)+ }) => ({
-                let len = self.with_inner(|inner| inner.$vec.len());
-                let mut done_fut_idxs = Vec::new();
-                for i in 0..len {
-                    let result = self.with_inner(|mut inner| inner.$vec.get_mut(i).unwrap().poll());
-                    match result {
-                        Ok(Ready(_)) | Err(_) => done_fut_idxs.push(i),
-                        _ => (),
-                    }
-
-                    let out: Result<()> = match result {
-                        $($p => $b),+
-                        _ => {
-                            Ok(())
-                        }
-                    };
-
-                    match out {
-                        Err(err) => {
-                            // early return in case of error
-                            while let Some(i) = done_fut_idxs.pop() {
-                                let _ = self.with_inner(|mut inner| inner.$vec.swap_remove(i));
-                            }
-                            return Err(err)
-                        }
-                        _ => (),
-                    }
-                }
-
-                while let Some(i) = done_fut_idxs.pop() {
-                    let _ = self.with_inner(|mut inner| inner.$vec.swap_remove(i));
-                }
-            });
-        }
-
         let mut handled = false;
 
-        // Handle closing connections.
-        handle!(disconnecting {
-            Ok(Ready(_)) => {
-                handled = true;
-                Ok(())
-            },
-            Err(_) => { Ok(()) },
-        });
+        let mut returned_conns: Vec<Conn> = vec![];
 
-        // Handle dirty connections.
-        handle!(dropping {
-            Ok(Ready(conn)) => {
-                let closed = self.with_inner(|inner| inner.closed);
-                if closed {
-                    self.with_inner(|mut inner| inner.disconnecting.push(conn.disconnect()));
-                } else {
-                    self.return_conn(conn);
-                }
-                handled = true;
-                Ok(())
-            },
-            Err(_) => { Ok(()) },
-        });
+        self.with_inner(|mut inner| {
+            macro_rules! handle {
+                ($vec:ident { $($p:pat => $b:block,)+ }) => ({
+                    let len = inner.$vec.len();
+                    let mut done_fut_idxs = Vec::new();
+                    for i in 0..len {
+                        let result = inner.$vec.get_mut(i).unwrap().poll();
+                        match result {
+                            Ok(Ready(_)) | Err(_) => done_fut_idxs.push(i),
+                            _ => (),
+                        }
 
-        // Handle in-transaction connections
-        handle!(rollback {
-            Ok(Ready(conn)) => {
-                let closed = self.with_inner(|inner| inner.closed);
-                if closed {
-                    self.with_inner(|mut inner| inner.disconnecting.push(conn.disconnect()));
-                } else {
-                    self.return_conn(conn);
-                }
-                handled = true;
-                Ok(())
-            },
-            Err(_) => { Ok(()) },
-        });
+                        let out: Result<()> = match result {
+                            $($p => $b),+
+                            _ => {
+                                Ok(())
+                            }
+                        };
+
+                        match out {
+                            Err(err) => {
+                                // early return in case of error
+                                while let Some(i) = done_fut_idxs.pop() {
+                                    inner.$vec.swap_remove(i);
+                                }
+                                return Err(err)
+                            }
+                            _ => (),
+                        }
+                    }
+
+                    while let Some(i) = done_fut_idxs.pop() {
+                        inner.$vec.swap_remove(i);
+                    }
+                });
+            }
+
+            // Handle closing connections.
+            handle!(disconnecting {
+                Ok(Ready(_)) => {
+                    handled = true;
+                    Ok(())
+                },
+                Err(_) => { Ok(()) },
+            });
+
+            // Handle dirty connections.
+            handle!(dropping {
+                Ok(Ready(conn)) => {
+                    if inner.closed {
+                        inner.disconnecting.push(conn.disconnect());
+                    } else {
+                        returned_conns.push(conn);
+                    }
+                    handled = true;
+                    Ok(())
+                },
+                Err(_) => { Ok(()) },
+            });
+
+            // Handle in-transaction connections
+            handle!(rollback {
+                Ok(Ready(conn)) => {
+                    if inner.closed {
+                        inner.disconnecting.push(conn.disconnect());
+                    } else {
+                        returned_conns.push(conn);
+                    }
+                    handled = true;
+                    Ok(())
+                },
+                Err(_) => { Ok(()) },
+            });
 
         // Handle connecting connections.
-        handle!(new {
-            Ok(Ready(conn)) => {
-                let closed = self.with_inner(|inner| inner.closed);
-                if closed {
-                    self.with_inner(|mut inner| inner.disconnecting.push(conn.disconnect()));
-                } else {
-                    self.with_inner(|mut inner| inner.ongoing += 1);
-                    self.return_conn(conn);
-                }
-                handled = true;
-                Ok(())
-            },
-            Err(err) => {
-                if ! self.with_inner(|inner| inner.closed) {
-                    Err(err)
-                } else {
+            handle!(new {
+                Ok(Ready(conn)) => {
+                    if inner.closed {
+                        inner.disconnecting.push(conn.disconnect());
+                    } else {
+                        inner.ongoing += 1;
+                        returned_conns.push(conn);
+                    }
+                    handled = true;
                     Ok(())
-                }
-            },
-        });
+                },
+                Err(err) => {
+                    if !inner.closed {
+                        Err(err)
+                    } else {
+                        Ok(())
+                    }
+                },
+            });
+
+            Ok(())
+        })?;
+
+        for conn in returned_conns {
+            self.return_conn(conn);
+        }
 
         if handled {
             self.handle_futures()
