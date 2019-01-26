@@ -19,7 +19,13 @@ before_install:
   - sudo service mysql restart
   - sudo mysql -h127.0.0.1 -uroot -ppassword -e "SET GLOBAL max_allowed_packet=33554432;"
   - ls -la /etc/mysql/conf.d || true
+  - cat /etc/mysql/conf.d/innodb_flush_log_at_trx_commit.cnf
+  - cat /etc/mysql/conf.d/mysql.cnf
+  - cat /etc/mysql/conf.d/mysqldump.cnf
+  - cat /etc/mysql/conf.d/performance-schema.cnf
   - ls -la /etc/mysql/mysql.conf.d || true
+  - cat /etc/mysql/mysql.conf.d/mysqld.cnf
+  - cat /etc/mysql/mysql.conf.d/mysqld_safe_syslog.cnf
   - cat /etc/mysql/my.cnf || true
   - cat ~/.my.cnf || true
   - cat /usr/share/mysql/my-default.cnf || true
