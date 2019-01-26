@@ -17,6 +17,7 @@ before_install:
   - sudo mysql_upgrade --protocol=tcp -P 3306 -u root -ppassword
   - sudo service mysql restart
   - sudo mysql -h127.0.0.1 -uroot -ppassword -e "SET GLOBAL max_allowed_packet=33554432;"
+  - sudo mysql -h127.0.0.1 -uroot -ppassword -e "SHOW VARIABLES LIKE '%ssl%';"
 before_script:
   - export PATH="$PATH:$HOME/.cargo/bin"
   - rustup component add rustfmt
