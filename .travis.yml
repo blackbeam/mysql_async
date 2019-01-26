@@ -13,7 +13,7 @@ env:
 before_install:
   - sudo bash -c "echo '[mysqld]' >> /usr/share/mysql/my-default.cnf"
   - sudo bash -c "echo 'sql_mode=NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES' >> /usr/share/mysql/my-default.cnf"
-  - sudo mysql -e -h127.0.0.1 "use mysql; update user set authentication_string=PASSWORD('password') where User='root'; FLUSH PRIVILEGES;"
+  - sudo mysql -h127.0.0.1 -e "use mysql; update user set authentication_string=PASSWORD('password') where User='root'; FLUSH PRIVILEGES;"
   - sudo mysql_upgrade --protocol=tcp -P 3306 -u root -ppassword
   - sudo service mysql restart
 before_script:
