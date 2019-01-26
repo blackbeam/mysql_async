@@ -17,6 +17,7 @@ before_install:
   - sudo mysql_ssl_rsa_setup --verbose
   - sudo mysql_upgrade --protocol=tcp -P 3306 -u root -ppassword
   - sudo service mysql restart
+  - cat /usr/lib/systemd/system/*mysql*
   - sudo mysql -h127.0.0.1 -uroot -ppassword -e "SET GLOBAL max_allowed_packet=33554432;"
   - ls -la /etc/mysql/conf.d || true
   - cat /etc/mysql/conf.d/innodb_flush_log_at_trx_commit.cnf
