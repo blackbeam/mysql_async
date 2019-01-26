@@ -98,6 +98,7 @@ impl Endpoint {
                 builder.identity(identity);
             }
             builder.danger_accept_invalid_hostnames(ssl_opts.skip_domain_validation());
+            builder.danger_accept_invalid_certs(ssl_opts.accept_invalid_certs());
             builder.build().map_err(Error::from)
         })()
         .into_future()

@@ -591,14 +591,8 @@ mod test {
         #[cfg(feature = "ssl")]
         {
             let mut ssl_opts = SslOpts::new();
-            ssl_opts.set_pkcs12_path(Some(AsRef::<::std::path::Path>::as_ref(
-                "./test/client.p12",
-            )));
-            ssl_opts.set_root_cert_path(Some(AsRef::<::std::path::Path>::as_ref(
-                "./test/ca-cert.der",
-            )));
-            ssl_opts.set_password(Some("pass"));
             ssl_opts.set_danger_skip_domain_validation(true);
+            ssl_opts.set_danger_accept_invalid_certs(true);
             builder.ssl_opts(ssl_opts);
         }
         builder
