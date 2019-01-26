@@ -304,7 +304,7 @@ impl Pool {
                 Err(_) => { Ok(()) },
             });
 
-        // Handle connecting connections.
+            // Handle connecting connections.
             handle!(new {
                 Ok(Ready(conn)) => {
                     if inner.closed {
