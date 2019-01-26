@@ -17,9 +17,9 @@ before_install:
   - sudo mysql_upgrade --protocol=tcp -P 3306 -u root -ppassword
   - sudo service mysql restart
   - sudo mysql -h127.0.0.1 -uroot -ppassword -e "SET GLOBAL max_allowed_packet=33554432;"
-  - cat /etc/my.cnf
-  - cat /etc/mysql/my.cnf
-  - cat ~/.my.cnf
+  - cat /etc/mysql/my.cnf || true
+  - cat ~/.my.cnf || true
+  - cat /usr/share/mysql/my-default.cnf || true
   - mysqld --help --verbose
   - sudo mysql -h127.0.0.1 -uroot -ppassword -e "SHOW VARIABLES LIKE '%ssl%';"
 before_script:
