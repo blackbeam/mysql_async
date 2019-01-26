@@ -16,6 +16,7 @@ before_install:
   - sudo mysql -h127.0.0.1 -e "use mysql; update user set authentication_string=PASSWORD('password') where User='root'; FLUSH PRIVILEGES;"
   - sudo mysql_upgrade --protocol=tcp -P 3306 -u root -ppassword
   - sudo service mysql restart
+  - sudo mysql -h127.0.0.1 -uroot -ppassword -e "SET GLOBAL max_allowed_packet=33554432;"
 before_script:
   - export PATH="$PATH:$HOME/.cargo/bin"
   - rustup component add rustfmt
