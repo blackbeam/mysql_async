@@ -11,45 +11,16 @@ env:
   global:
     - DATABASE_URL=mysql://root:password@127.0.0.1:3306/mysql
 before_install:
-  - sudo bash -c "echo '[mysqld]' >> /usr/share/mysql/my-default.cnf"
-  - sudo bash -c "echo 'sql_mode=NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES' >> /usr/share/mysql/my-default.cnf"
-  - sudo mysql -h127.0.0.1 -e "use mysql; update user set authentication_string=PASSWORD('password') where User='root'; FLUSH PRIVILEGES;"
-  - sudo mysql_ssl_rsa_setup --verbose --datadir=/etc/mysql
-  - sudo ls -la /etc/mysql || true
-  - sudo bash -c "echo 'ssl-ca=/etc/mysql/ca.pem' >> /etc/mysql/mysql.conf.d/mysqld.cnf"
-  - sudo bash -c "echo 'ssl-cert=/etc/mysql/server-cert.pem' >> /etc/mysql/mysql.conf.d/mysqld.cnf"
-  - sudo bash -c "echo 'ssl-key=/etc/mysql/server-key.pem' >> /etc/mysql/mysql.conf.d/mysqld.cnf"
-  - sudo mysql_upgrade --protocol=tcp -P 3306 -u root -ppassword
-  - sudo sed -i 's/mysqld/mysqld --ssl/' /lib/systemd/system/mysql.service
-  - sudo service mysql restart
-  - sudo mysql --ssl --help
-  - sudo mysqld --ssl --help
-  - sudo mysqld --print-defaults
-  - sudo mysql -h127.0.0.1 -uroot -ppassword -e "SET GLOBAL max_allowed_packet=33554432;"
-  - ls -la /etc/mysql/conf.d || true
-  - sudo cat /etc/init.d/mysql || true
-  - sudo cat /etc/init/mysql.conf || true
-  - sudo cat /usr/share/mysql/mysql-systemd-start || true
-  - sudo cat /lib/systemd/system/mysql.service || true
-  - sudo cat /etc/apparmor.d/usr.sbin.mysqld || true
-  - cat /etc/mysql/conf.d/innodb_flush_log_at_trx_commit.cnf
-  - cat /etc/mysql/conf.d/mysql.cnf
-  - cat /etc/mysql/conf.d/mysqldump.cnf
-  - cat /etc/mysql/conf.d/performance-schema.cnf
-  - ls -la /etc/mysql/mysql.conf.d || true
-  - cat /etc/mysql/mysql.conf.d/mysqld.cnf
-  - cat /etc/mysql/mysql.conf.d/mysqld_safe_syslog.cnf
-  - cat /etc/mysql/my.cnf || true
-  - cat ~/.my.cnf || true
-  - cat /usr/share/mysql/my-default.cnf || true
-  - mysqld --help --verbose
-  - sudo mysql -h127.0.0.1 -uroot -ppassword -e "SHOW VARIABLES LIKE '%ssl%';"
+  - sudo service mysql stop
+  - mysql_ssl_rsa_setup --verbose --datadir=/tmp/
+  - mysqld --initialize-insecure --datadir=/tmp/db
+  - mysqld --sql_mode=NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES --datadir=/tmp/db --socket=/tmp/mysql.sock --max_allowed_packet=32M --ssl --ssl-ca=/tmp/ca.pem --ssl-cert=/tmp/server-cert.pem --ssl-key=/tmp/server-key.pem &
+  - mysql -h127.0.0.1 -e "use mysql; update user set authentication_string=PASSWORD('password') where User='root'; FLUSH PRIVILEGES;"
+  - mysql -h127.0.0.1 -uroot -ppassword -e "SHOW VARIABLES LIKE '%ssl%';"
 before_script:
   - export PATH="$PATH:$HOME/.cargo/bin"
   - rustup component add rustfmt
-  - sudo cat /var/log/mysql/error.log || true
 script:
   - cargo test
   - cargo test --features ssl
   - cargo fmt -- --check
-
