@@ -15,7 +15,8 @@ before_install:
   - sudo bash -c "echo 'sql_mode=NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES' >> /usr/share/mysql/my-default.cnf"
   - sudo mysql -h127.0.0.1 -e "use mysql; update user set authentication_string=PASSWORD('password') where User='root'; FLUSH PRIVILEGES;"
   - sudo mysql_ssl_rsa_setup --verbose --datadir=/etc/mysql
-  - sudo bash -c "echo 'ssl-ca=/etc/mysql/cacert.pem' >> /etc/mysql/mysql.conf.d/mysqld.cnf"
+  - sudo ls -la /etc/mysql || true
+  - sudo bash -c "echo 'ssl-ca=/etc/mysql/ca.pem' >> /etc/mysql/mysql.conf.d/mysqld.cnf"
   - sudo bash -c "echo 'ssl-cert=/etc/mysql/server-cert.pem' >> /etc/mysql/mysql.conf.d/mysqld.cnf"
   - sudo bash -c "echo 'ssl-key=/etc/mysql/server-key.pem' >> /etc/mysql/mysql.conf.d/mysqld.cnf"
   - sudo mysql_upgrade --protocol=tcp -P 3306 -u root -ppassword
