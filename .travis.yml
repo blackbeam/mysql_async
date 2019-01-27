@@ -11,6 +11,7 @@ env:
   global:
     - DATABASE_URL=mysql://root:password@127.0.0.1:3306/mysql
 before_install:
+  - sudo apt-get remove apparmor
   - sudo bash -c "echo '[mysqld]' >> /usr/share/mysql/my-default.cnf"
   - sudo bash -c "echo 'sql_mode=NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES' >> /usr/share/mysql/my-default.cnf"
   - sudo mysql -h127.0.0.1 -e "use mysql; update user set authentication_string=PASSWORD('password') where User='root'; FLUSH PRIVILEGES;"
@@ -20,6 +21,9 @@ before_install:
   - sudo mysqld --print-defaults
   - sudo mysql -h127.0.0.1 -uroot -ppassword -e "SET GLOBAL max_allowed_packet=33554432;"
   - ls -la /etc/mysql/conf.d || true
+  - sudo cat /etc/init.d/mysql || true
+  - sudo cat /etc/init/mysql.conf || true
+  - sudo cat /lib/systemd/system/mysql.service || true
   - cat /etc/mysql/conf.d/innodb_flush_log_at_trx_commit.cnf
   - cat /etc/mysql/conf.d/mysql.cnf
   - cat /etc/mysql/conf.d/mysqldump.cnf
@@ -35,6 +39,7 @@ before_install:
 before_script:
   - export PATH="$PATH:$HOME/.cargo/bin"
   - rustup component add rustfmt
+  - sudo cat /var/log/mysql/error.log || true
 script:
   - cargo test
   - cargo test --features ssl
