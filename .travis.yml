@@ -11,7 +11,6 @@ env:
   global:
     - DATABASE_URL=mysql://root:password@127.0.0.1:3306/mysql
 before_install:
-  - sudo apt-get remove apparmor
   - sudo bash -c "echo '[mysqld]' >> /usr/share/mysql/my-default.cnf"
   - sudo bash -c "echo 'sql_mode=NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES' >> /usr/share/mysql/my-default.cnf"
   - sudo mysql -h127.0.0.1 -e "use mysql; update user set authentication_string=PASSWORD('password') where User='root'; FLUSH PRIVILEGES;"
