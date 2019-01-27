@@ -15,6 +15,8 @@ before_install:
   - mysql_ssl_rsa_setup --verbose --datadir=/tmp/
   - mysqld --initialize-insecure --datadir=/tmp/db --log_error=/tmp/error.log
   - mysqld --sql_mode=NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES --datadir=/tmp/db --socket=/tmp/mysql.sock --max_allowed_packet=32M --ssl --ssl-ca=/tmp/ca.pem --ssl-cert=/tmp/server-cert.pem --ssl-key=/tmp/server-key.pem --log_error=/tmp/error.log &
+  - sleep 20
+  - cat /tmp/error.log || true
   - mysql -h127.0.0.1 -e "use mysql; update user set authentication_string=PASSWORD('password') where User='root'; FLUSH PRIVILEGES;"
   - mysql -h127.0.0.1 -uroot -ppassword -e "SHOW VARIABLES LIKE '%ssl%';"
 before_script:
