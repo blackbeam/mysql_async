@@ -21,6 +21,8 @@ before_install:
   - sudo bash -c "echo 'ssl-key=/etc/mysql/server-key.pem' >> /etc/mysql/mysql.conf.d/mysqld.cnf"
   - sudo mysql_upgrade --protocol=tcp -P 3306 -u root -ppassword
   - sudo service mysql restart
+  - sudo mysql --ssl --help
+  - sudo mysqld --ssl --help
   - sudo mysqld --print-defaults
   - sudo mysql -h127.0.0.1 -uroot -ppassword -e "SET GLOBAL max_allowed_packet=33554432;"
   - ls -la /etc/mysql/conf.d || true
