@@ -36,6 +36,7 @@ pub struct SslOpts {
     password: Option<Cow<'static, str>>,
     root_cert_path: Option<Cow<'static, Path>>,
     skip_domain_validation: bool,
+    accept_invalid_certs: bool,
 }
 
 impl SslOpts {
@@ -45,6 +46,7 @@ impl SslOpts {
             password: None,
             root_cert_path: None,
             skip_domain_validation: false,
+            accept_invalid_certs: false,
         }
     }
 
@@ -79,6 +81,13 @@ impl SslOpts {
         self
     }
 
+    /// If `true` then client will accept invalid certificate (expired, not trusted, ..)
+    /// (defaults to `false`).
+    pub fn set_danger_accept_invalid_certs(&mut self, value: bool) -> &mut Self {
+        self.accept_invalid_certs = value;
+        self
+    }
+
     pub fn pkcs12_path(&self) -> Option<&Path> {
         self.pkcs12_path.as_ref().map(|x| x.as_ref())
     }
@@ -93,6 +102,10 @@ impl SslOpts {
 
     pub fn skip_domain_validation(&self) -> bool {
         self.skip_domain_validation
+    }
+
+    pub fn accept_invalid_certs(&self) -> bool {
+        self.accept_invalid_certs
     }
 }
 
