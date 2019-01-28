@@ -18,7 +18,6 @@ before_install:
   - sleep 20
   - cat /tmp/error.log || true
   - mysql -h127.0.0.1 -e "use mysql; update user set authentication_string=PASSWORD('password') where User='root'; FLUSH PRIVILEGES;"
-  - mysql -h127.0.0.1 -uroot -ppassword -e "SHOW VARIABLES LIKE '%ssl%';"
 before_script:
   - export PATH="$PATH:$HOME/.cargo/bin"
   - rustup component add rustfmt
