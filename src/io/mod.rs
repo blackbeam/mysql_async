@@ -222,7 +222,7 @@ impl Stream {
         let FramedParts { io, codec, .. } = codec.into_parts();
         io.make_secure(domain, ssl_opts).map(move |endpoint| {
             let codec = Framed::new(endpoint, codec);
-            self.codec = Some(codec);
+            self.codec = Some(Box::new(codec));
             self
         })
     }
