@@ -177,7 +177,7 @@ impl AsyncWrite for Endpoint {
 /// Stream connected to MySql server.
 pub struct Stream {
     closed: bool,
-    codec: Option<Framed<Endpoint, packet_codec::PacketCodec>>,
+    codec: Option<Box<Framed<Endpoint, packet_codec::PacketCodec>>>,
 }
 
 impl fmt::Debug for Stream {

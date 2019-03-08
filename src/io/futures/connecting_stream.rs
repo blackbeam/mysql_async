@@ -75,7 +75,7 @@ impl Future for ConnectingStream {
         match try_ready!(self.either_poll()) {
             Out::WaitForStream((stream, _)) => Ok(Ready(Stream {
                 closed: false,
-                codec: Framed::new(stream.into(), PacketCodec::new()).into(),
+                codec: Box::new(Framed::new(stream.into(), PacketCodec::new())).into(),
             })),
             Out::Fail(_) => unreachable!(),
         }

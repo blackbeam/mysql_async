@@ -174,7 +174,7 @@ impl Pool {
                 if conn.expired() {
                     inner.disconnecting.push(conn.disconnect());
                 } else {
-                    conn.pool = Some(self.clone());
+                    conn.inner.pool = Some(self.clone());
                     inner.ongoing += 1;
                     return Some(conn);
                 }
@@ -192,9 +192,9 @@ impl Pool {
                 return;
             }
 
-            if conn.has_result.is_some() {
+            if conn.inner.has_result.is_some() {
                 inner.dropping.push(Box::new(conn.drop_result()));
-            } else if conn.in_transaction {
+            } else if conn.inner.in_transaction {
                 inner.rollback.push(Box::new(conn.rollback_transaction()));
             } else {
                 if inner.idle.len() >= min {
@@ -372,9 +372,9 @@ impl Pool {
 
 impl Drop for Conn {
     fn drop(&mut self) {
-        if let Some(mut pool) = self.pool.take() {
+        if let Some(mut pool) = self.inner.pool.take() {
             let conn = self.take();
-            if conn.stream.is_some() {
+            if conn.inner.stream.is_some() {
                 pool.return_conn(conn)
             } // drop incomplete connection
         }
@@ -453,9 +453,10 @@ mod test {
             .join(pool.get_conn())
             .and_then(move |(mut conn1, conn2)| {
                 let new_conn = pool_clone.get_conn();
-                conn1.pool.as_mut().unwrap().handle_futures().unwrap();
+                conn1.inner.pool.as_mut().unwrap().handle_futures().unwrap();
                 assert_eq!(
                     conn1
+                        .inner
                         .pool
                         .as_ref()
                         .unwrap()
@@ -464,6 +465,7 @@ mod test {
                 );
                 assert_eq!(
                     conn1
+                        .inner
                         .pool
                         .as_ref()
                         .unwrap()
@@ -472,6 +474,7 @@ mod test {
                 );
                 assert_eq!(
                     conn2
+                        .inner
                         .pool
                         .as_ref()
                         .unwrap()
@@ -480,6 +483,7 @@ mod test {
                 );
                 assert_eq!(
                     conn2
+                        .inner
                         .pool
                         .as_ref()
                         .unwrap()
@@ -491,6 +495,7 @@ mod test {
             .and_then(|conn1| {
                 assert_eq!(
                     conn1
+                        .inner
                         .pool
                         .as_ref()
                         .unwrap()
@@ -499,6 +504,7 @@ mod test {
                 );
                 assert_eq!(
                     conn1
+                        .inner
                         .pool
                         .as_ref()
                         .unwrap()
@@ -507,6 +513,7 @@ mod test {
                 );
                 assert_eq!(
                     conn1
+                        .inner
                         .pool
                         .as_ref()
                         .unwrap()
@@ -515,6 +522,7 @@ mod test {
                 );
                 assert_eq!(
                     conn1
+                        .inner
                         .pool
                         .as_ref()
                         .unwrap()

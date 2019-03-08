@@ -20,7 +20,7 @@ failure_derive = "0.1"
 fnv = "1"
 futures = "^0.1.18"
 mio = "0.6"
-mysql_common = "0.15"
+mysql_common = "0.16"
 native-tls = { version = "0.2", optional = true }
 regex = "1"
 serde = "1"
