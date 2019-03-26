@@ -192,15 +192,22 @@ impl Pool {
                 return;
             }
 
+            if conn.inner.stream.is_none() {
+                // drop incomplete connection
+                inner.ongoing -= 1;
+                return;
+            }
+
             if conn.inner.has_result.is_some() {
                 inner.dropping.push(Box::new(conn.drop_result()));
             } else if conn.inner.in_transaction {
                 inner.rollback.push(Box::new(conn.rollback_transaction()));
             } else {
+                inner.ongoing -= 1;
+
                 if inner.idle.len() >= min {
                     inner.disconnecting.push(conn.disconnect());
                 } else {
-                    inner.ongoing -= 1;
                     inner.idle.push(conn);
                 }
             }
@@ -373,10 +380,7 @@ impl Pool {
 impl Drop for Conn {
     fn drop(&mut self) {
         if let Some(mut pool) = self.inner.pool.take() {
-            let conn = self.take();
-            if conn.inner.stream.is_some() {
-                pool.return_conn(conn)
-            } // drop incomplete connection
+            pool.return_conn(self.take());
         }
     }
 }
