@@ -164,6 +164,7 @@ impl AsyncRead for Endpoint {
     }
 
     fn poll_read(&mut self, buf: &mut [u8]) -> Poll<usize, io::Error> {
+        println!("{:?} POLL READ", ::std::thread::current().id());
         use std::io::Read;
 
         match self.read(buf) {
