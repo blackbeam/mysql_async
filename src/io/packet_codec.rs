@@ -39,7 +39,12 @@ impl Decoder for PacketCodec {
             if self.chunk_len as usize <= buf.len() {
                 let chunk_len = self.chunk_len as usize;
                 let chunk = buf.split_to(chunk_len);
-                println!("{:?} GOT CHUNK {} {:02x?}", ::std::thread::current().id(), chunk_len, &chunk[..::std::cmp::min(chunk_len, 32)]);
+                println!(
+                    "{:?} GOT CHUNK {} {:02x?}",
+                    ::std::thread::current().id(),
+                    chunk_len,
+                    &chunk[..::std::cmp::min(chunk_len, 32)]
+                );
 
                 self.chunk_len = -1;
                 self.packet_data.extend_from_slice(&chunk[..]);
@@ -48,7 +53,12 @@ impl Decoder for PacketCodec {
                     Ok(None)
                 } else {
                     let packet_data: Vec<u8> = self.packet_data.as_ref().into();
-                    println!("{:?} GOT PACKET {} {:02x?}", ::std::thread::current().id(), packet_data.len(), &packet_data[..::std::cmp::min(packet_data.len(), 32)]);
+                    println!(
+                        "{:?} GOT PACKET {} {:02x?}",
+                        ::std::thread::current().id(),
+                        packet_data.len(),
+                        &packet_data[..::std::cmp::min(packet_data.len(), 32)]
+                    );
                     self.packet_data.clear();
                     Ok(Some((RawPacket(packet_data), self.seq_id)))
                 }
@@ -62,7 +72,12 @@ impl Decoder for PacketCodec {
                 let header = buf.split_to(4);
                 self.chunk_len = LittleEndian::read_uint(&header[..], 3) as isize;
                 self.seq_id = header[3];
-                println!("{:?} GOT CHUNK HEADER {} {}", ::std::thread::current().id(), self.chunk_len, self.seq_id);
+                println!(
+                    "{:?} GOT CHUNK HEADER {} {}",
+                    ::std::thread::current().id(),
+                    self.chunk_len,
+                    self.seq_id
+                );
                 self.decode(buf)
             }
         }
@@ -77,8 +92,16 @@ impl Decoder for PacketCodec {
                 } else {
                     let buf = &buf[..];
                     let buf_len = buf.len();
-                    Err(io::Error::new(io::ErrorKind::Other,
-                                       format!("{:?} bytes remaining on stream: {} {:02x?}", ::std::thread::current().id(), buf_len, &buf[..::std::cmp::min(32, buf_len)])).into())
+                    Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "{:?} bytes remaining on stream: {} {:02x?}",
+                            ::std::thread::current().id(),
+                            buf_len,
+                            &buf[..::std::cmp::min(32, buf_len)]
+                        ),
+                    )
+                    .into())
                 }
             }
         }

@@ -67,7 +67,7 @@ impl<S: AsyncRead + AsyncWrite> AsyncRead for TlsStream<S> {
                     println!("{:?} STREAM DONE", ::std::thread::current().id());
                 }
                 Ok(Async::Ready(t))
-            },
+            }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(Async::NotReady),
             Err(e) => return Err(e.into()),
         }

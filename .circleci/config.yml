@@ -28,6 +28,7 @@ jobs:
           key: deps-<< parameters.rust >>-{{ checksum "Cargo.lock" }}
       - run: cargo test
       - run: cargo test --features ssl
+      - run: rustup component add rustfmt
       - run: cargo fmt -- --check
 
 workflows:
