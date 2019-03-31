@@ -162,6 +162,21 @@ impl AsyncRead for Endpoint {
             Endpoint::Secure(ref stream) => stream.prepare_uninitialized_buffer(_buf),
         }
     }
+
+    fn poll_read(&mut self, buf: &mut [u8]) -> Poll<usize, io::Error> {
+        use std::io::Read;
+
+        match self.read(buf) {
+            Ok(t) => {
+                if t == 0 {
+                    println!("{:?} STREAM DONE", ::std::thread::current().id());
+                }
+                Ok(Async::Ready(t))
+            },
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(Async::NotReady),
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 impl AsyncWrite for Endpoint {
