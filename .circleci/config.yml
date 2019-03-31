@@ -1,0 +1,34 @@
+version: 2.1
+jobs:
+  linux:
+    parameters:
+      rust:
+        type: string
+      mysql:
+        type: string
+    docker:
+      - image: rust:<< parameters.rust >>
+      - image: mysql:<< parameters.mysql >>
+        command: mysqld --sql_mode=NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES --max_allowed_packet=32M --ssl
+        environment:
+          MYSQL_ROOT_PASSWORD: password
+
+    environment:
+      DATABASE_URL: mysql://root:password@127.0.0.1:3306/mysql
+      RUST_BACKTRACE: full
+    steps:
+      - run: cargo test
+      - run: cargo test --features ssl
+      - run: cargo fmt -- --check
+
+workflows:
+  test:
+    jobs:
+      - linux:
+          name: latest-5.7
+          rust: latest
+          mysql: 5.7
+      - linux:
+          name: latest-8.0
+          rust: latest
+          mysql: 8.0
