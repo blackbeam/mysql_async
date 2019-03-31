@@ -39,6 +39,7 @@ impl Decoder for PacketCodec {
             if self.chunk_len as usize <= buf.len() {
                 let chunk_len = self.chunk_len as usize;
                 let chunk = buf.split_to(chunk_len);
+                eprintln!("GOT CHUNK {} {:02x?}", chunk_len, &chunk[..::std::cmp::min(chunk_len, 32)]);
 
                 self.chunk_len = -1;
                 self.packet_data.extend_from_slice(&chunk[..]);
@@ -46,7 +47,8 @@ impl Decoder for PacketCodec {
                 if chunk_len == MAX_PAYLOAD_LEN {
                     Ok(None)
                 } else {
-                    let packet_data = self.packet_data.as_ref().into();
+                    let packet_data: Vec<u8> = self.packet_data.as_ref().into();
+                    eprintln!("GOT PACKET {} {:02x?}", packet_data.len(), &packet_data[..::std::cmp::min(packet_data.len(), 32)]);
                     self.packet_data.clear();
                     Ok(Some((RawPacket(packet_data), self.seq_id)))
                 }
@@ -60,6 +62,7 @@ impl Decoder for PacketCodec {
                 let header = buf.split_to(4);
                 self.chunk_len = LittleEndian::read_uint(&header[..], 3) as isize;
                 self.seq_id = header[3];
+                eprintln!("GOT CHUNK HEADER {} {}", self.chunk_len, self.seq_id);
                 self.decode(buf)
             }
         }
