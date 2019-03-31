@@ -38,7 +38,10 @@ impl<S> TlsStream<S> {
 impl<S: Read + Write> Read for TlsStream<S> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let result = self.inner.read(buf);
-        println!("{:?} READ {:?}", ::std::thread::current().id(), result);
+        match &result {
+            Ok(0) => panic!("{:?} READ {:?}", ::std::thread::current().id(), result),
+            _ => (),
+        }
         result
     }
 }
