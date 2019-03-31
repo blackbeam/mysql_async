@@ -18,7 +18,7 @@ jobs:
     steps:
       - restore_cache:
           key: registry
-      - run cargo generate-lockfile
+      - run: cargo generate-lockfile
       - save_cache:
           key: registry-{{ .BuildNum }}
           paths:
