@@ -16,6 +16,7 @@ jobs:
       DATABASE_URL: mysql://root:password@127.0.0.1:3306/mysql
       RUST_BACKTRACE: full
     steps:
+      - checkout
       - restore_cache:
           key: registry
       - run: cargo generate-lockfile
