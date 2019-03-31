@@ -236,7 +236,7 @@ where
             .and_then(|this| this.read_result_set(None)))
     }
 
-    /// See `Queriable::execute`
+    /// See `Queryable::execute`
     pub fn execute<P>(self, params: P) -> impl MyFuture<QueryResult<Self, BinaryProtocol>>
     where
         P: Into<Params>,
@@ -249,7 +249,7 @@ where
         }
     }
 
-    /// See `Queriable::first`
+    /// See `Queryable::first`
     pub fn first<P, R>(self, params: P) -> impl MyFuture<(Self, Option<R>)>
     where
         P: Into<Params> + 'static,
@@ -266,7 +266,7 @@ where
             })
     }
 
-    /// See `Queriable::batch`
+    /// See `Queryable::batch`
     pub fn batch<I, P>(self, params_iter: I) -> impl MyFuture<Self>
     where
         I: IntoIterator<Item = P>,
