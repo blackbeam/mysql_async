@@ -12,7 +12,6 @@ jobs:
         command: mysqld --sql_mode=NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES --max_allowed_packet=32M --ssl
         environment:
           MYSQL_ROOT_PASSWORD: password
-
     environment:
       DATABASE_URL: mysql://root:password@127.0.0.1:3306/mysql
       RUST_BACKTRACE: full
