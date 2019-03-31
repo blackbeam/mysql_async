@@ -35,8 +35,8 @@ workflows:
       - linux:
           name: latest-5.7
           rust: latest
-          mysql: 5.7
+          mysql: "5.7"
       - linux:
           name: latest-8.0
           rust: latest
-          mysql: 8.0
+          mysql: "8.0"
