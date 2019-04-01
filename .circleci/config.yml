@@ -27,7 +27,7 @@ jobs:
       - checkout
       - restore_cache:
           key: registry
-      - run: sudo apt install mysql-client
+      - run: apt install mysql-client
       - run: mysql -uroot -ppassword -e "SELECT @@max_allowed_packet;"
       - run: cargo generate-lockfile
       - save_cache:
