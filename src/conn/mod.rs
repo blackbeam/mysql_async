@@ -713,9 +713,7 @@ mod test {
         let long_string_clone = long_string.clone();
         let fut = Conn::new(get_opts())
             .and_then(move |conn| {
-                Queryable::query(
-                    conn,format!(r"SELECT '{}', 231", long_string_clone)
-                )
+                Queryable::query(conn, format!(r"SELECT '{}', 231", long_string_clone))
             })
             .and_then(move |result| {
                 result.reduce_and_drop(vec![], move |mut acc, row| {
@@ -959,7 +957,7 @@ mod test {
 
     #[test]
     fn should_execute_statement() {
-        let long_string = ::std::iter::repeat('A').take(8).collect::<String>();
+        let long_string = ::std::iter::repeat('A').take(18 * 1024 * 1024).collect::<String>();
         let fut = Conn::new(get_opts())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT ?"))
             .and_then({
