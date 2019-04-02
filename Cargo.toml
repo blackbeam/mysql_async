@@ -42,6 +42,3 @@ ssl = ['native-tls']
 name = "mysql_async"
 path = "src/lib.rs"
 
-[patch.crates-io]
-openssl = { git = "https://github.com/blackbeam/rust-openssl.git" }
-openssl-sys = { git = "https://github.com/blackbeam/rust-openssl.git" }
