@@ -37,12 +37,7 @@ impl<S> TlsStream<S> {
 
 impl<S: Read + Write> Read for TlsStream<S> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let result = self.inner.read(buf);
-        match &result {
-            Ok(0) => panic!("{:?} READ {:?}", ::std::thread::current().id(), result),
-            _ => (),
-        }
-        result
+        self.inner.read(buf)
     }
 }
 
@@ -56,23 +51,7 @@ impl<S: Read + Write> Write for TlsStream<S> {
     }
 }
 
-impl<S: AsyncRead + AsyncWrite> AsyncRead for TlsStream<S> {
-    fn poll_read(&mut self, buf: &mut [u8]) -> Poll<usize, io::Error> {
-        println!("{:?} POLL READ", ::std::thread::current().id());
-        use std::io::Read;
-
-        match self.read(buf) {
-            Ok(t) => {
-                if t == 0 {
-                    println!("{:?} STREAM DONE", ::std::thread::current().id());
-                }
-                Ok(Async::Ready(t))
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(Async::NotReady),
-            Err(e) => return Err(e.into()),
-        }
-    }
-}
+impl<S: AsyncRead + AsyncWrite> AsyncRead for TlsStream<S> {}
 
 impl<S: AsyncRead + AsyncWrite> AsyncWrite for TlsStream<S> {
     fn shutdown(&mut self) -> Poll<(), io::Error> {

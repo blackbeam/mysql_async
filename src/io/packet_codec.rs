@@ -64,30 +64,6 @@ impl Decoder for PacketCodec {
             }
         }
     }
-
-    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match self.decode(buf)? {
-            Some(frame) => Ok(Some(frame)),
-            None => {
-                if buf.is_empty() {
-                    Ok(None)
-                } else {
-                    let buf = &buf[..];
-                    let buf_len = buf.len();
-                    Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "{:?} bytes remaining on stream: {} {:02x?}",
-                            ::std::thread::current().id(),
-                            buf_len,
-                            &buf[..::std::cmp::min(32, buf_len)]
-                        ),
-                    )
-                    .into())
-                }
-            }
-        }
-    }
 }
 
 impl Encoder for PacketCodec {
