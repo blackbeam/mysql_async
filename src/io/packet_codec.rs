@@ -46,7 +46,7 @@ impl Decoder for PacketCodec {
                 if chunk_len == MAX_PAYLOAD_LEN {
                     Ok(None)
                 } else {
-                    let packet_data = self.packet_data.as_ref().into();
+                    let packet_data: Vec<u8> = self.packet_data.as_ref().into();
                     self.packet_data.clear();
                     Ok(Some((RawPacket(packet_data), self.seq_id)))
                 }

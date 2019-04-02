@@ -713,15 +713,7 @@ mod test {
         let long_string_clone = long_string.clone();
         let fut = Conn::new(get_opts())
             .and_then(move |conn| {
-                Queryable::query(
-                    conn,
-                    format!(
-                        r"SELECT 'hello', 123
-                        UNION ALL
-                        SELECT '{}', 231",
-                        long_string_clone
-                    ),
-                )
+                Queryable::query(conn, format!(r"SELECT '{}', 231", long_string_clone))
             })
             .and_then(move |result| {
                 result.reduce_and_drop(vec![], move |mut acc, row| {
@@ -731,8 +723,7 @@ mod test {
             })
             .and_then(move |(conn, out)| Queryable::disconnect(conn).map(|_| out))
             .map(move |result| {
-                assert_eq!((String::from("hello"), 123), result[0]);
-                assert_eq!((long_string, 231), result[1]);
+                assert_eq!((long_string, 231), result[0]);
             });
 
         run(fut).unwrap();
@@ -966,25 +957,24 @@ mod test {
 
     #[test]
     fn should_execute_statement() {
+        let long_string = ::std::iter::repeat('A')
+            .take(18 * 1024 * 1024)
+            .collect::<String>();
         let fut = Conn::new(get_opts())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT ?"))
-            .and_then(|stmt| stmt.execute((42,)))
-            .and_then(|result| result.collect_and_drop::<(u8,)>())
-            .and_then(|(stmt, collected)| {
-                assert_eq!(collected, vec![(42u8,)]);
-                stmt.execute((::std::iter::repeat('A')
-                    .take(18 * 1024 * 1024)
-                    .collect::<String>(),))
+            .and_then({
+                let long_string = long_string.clone();
+                move |stmt| stmt.execute((long_string,))
             })
             .and_then(|result| result.map_and_drop(|row| from_row::<(String,)>(row)))
             .and_then(|(stmt, mut mapped)| {
                 assert_eq!(mapped.len(), 1);
-                assert_eq!(
-                    mapped.pop(),
-                    Some((::std::iter::repeat('A')
-                        .take(18 * 1024 * 1024)
-                        .collect::<String>(),))
-                );
+                assert_eq!(mapped.pop(), Some((long_string,)));
+                stmt.execute((42,))
+            })
+            .and_then(|result| result.collect_and_drop::<(u8,)>())
+            .and_then(|(stmt, collected)| {
+                assert_eq!(collected, vec![(42u8,)]);
                 stmt.execute((8,))
             })
             .and_then(|result| {
@@ -1004,12 +994,7 @@ mod test {
 
         let fut = Conn::new(get_opts())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT :foo, :bar, :foo, 3"))
-            .and_then(|stmt| stmt.execute(params! { "foo" => 2, "bar" => 3 }))
-            .and_then(|result| result.collect_and_drop::<(u8, u8, u8, u8)>())
-            .and_then(|(stmt, collected)| {
-                assert_eq!(collected, vec![(2, 3, 2, 3)]);
-                stmt.execute(params! { "foo" => "quux", "bar" => "baz" })
-            })
+            .and_then(|stmt| stmt.execute(params! { "foo" => "quux", "bar" => "baz" }))
             .and_then(|result| {
                 result.map_and_drop(|row| from_row::<(String, String, String, u8)>(row))
             })
@@ -1019,6 +1004,11 @@ mod test {
                     mapped.pop(),
                     Some(("quux".into(), "baz".into(), "quux".into(), 3))
                 );
+                stmt.execute(params! { "foo" => 2, "bar" => 3 })
+            })
+            .and_then(|result| result.collect_and_drop::<(u8, u8, u8, u8)>())
+            .and_then(|(stmt, collected)| {
+                assert_eq!(collected, vec![(2, 3, 2, 3)]);
                 stmt.execute(params! { "foo" => 2, "bar" => 3 })
             })
             .and_then(|result| {

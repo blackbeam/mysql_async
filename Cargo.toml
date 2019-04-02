@@ -41,3 +41,4 @@ ssl = ['native-tls']
 [lib]
 name = "mysql_async"
 path = "src/lib.rs"
+
