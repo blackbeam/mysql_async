@@ -957,7 +957,9 @@ mod test {
 
     #[test]
     fn should_execute_statement() {
-        let long_string = ::std::iter::repeat('A').take(18 * 1024 * 1024).collect::<String>();
+        let long_string = ::std::iter::repeat('A')
+            .take(18 * 1024 * 1024)
+            .collect::<String>();
         let fut = Conn::new(get_opts())
             .and_then(|conn| Queryable::prepare(conn, r"SELECT ?"))
             .and_then({

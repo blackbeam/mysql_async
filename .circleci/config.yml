@@ -68,7 +68,6 @@ workflows:
           rust: latest
           flavor: mysql
           version: "5.6"
-          test-ssl: true
       - linux:
           name: stable-mysql-5.7
           rust: latest
