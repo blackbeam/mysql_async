@@ -2,6 +2,11 @@
 
 Tokio based asynchronous MySql client library for rust programming language.
 
+[![CircleCI](https://circleci.com/gh/blackbeam/mysql_async/tree/master.svg?style=shield)](https://circleci.com/gh/blackbeam/mysql_async/tree/master)
+[![](https://meritbadge.herokuapp.com/mysql_async)](https://crates.io/crates/mysql_async)
+[![](https://img.shields.io/crates/d/mysql_async.svg)](https://crates.io/crates/mysql_async)
+[![API Documentation on docs.rs](https://docs.rs/mysql_async/badge.svg)](https://docs.rs/mysql_async)
+
 ### Installation
 
 Library hosted on [crates.io](https://crates.io/crates/mysql_async/).
@@ -12,7 +17,7 @@ mysql_async = "<desired version>"
 
 ### Example
 
-See crate documentation on [docs.rs](https://docs.rs/crate/mysql_async).
+See crate documentation on [docs.rs](https://docs.rs/mysql_async).
 
 ### License
 
