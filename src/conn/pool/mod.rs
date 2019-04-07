@@ -43,10 +43,7 @@ pub struct Inner {
 
 impl Inner {
     fn conn_count(&self) -> usize {
-        self.new.len()
-            + self.idle.len()
-            + self.queue.len()
-            + self.ongoing
+        self.new.len() + self.idle.len() + self.queue.len() + self.ongoing
     }
 }
 
@@ -60,16 +57,15 @@ pub struct Pool {
 
 impl fmt::Debug for Pool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (new_len, idle_len, queue_len, ongoing, tasks_len) =
-            self.with_inner(|inner| {
-                (
-                    inner.new.len(),
-                    inner.idle.len(),
-                    inner.queue.len(),
-                    inner.ongoing,
-                    inner.tasks.len(),
-                )
-            });
+        let (new_len, idle_len, queue_len, ongoing, tasks_len) = self.with_inner(|inner| {
+            (
+                inner.new.len(),
+                inner.idle.len(),
+                inner.queue.len(),
+                inner.ongoing,
+                inner.tasks.len(),
+            )
+        });
         f.debug_struct("Pool")
             .field("pool_constraints", &self.pool_constraints)
             .field("new connections count", &new_len)
@@ -146,8 +142,7 @@ impl Pool {
     /// Returns true if futures is in queue.
     fn in_queue(&self) -> bool {
         self.with_inner(|inner| {
-            let count = inner.new.len()
-                + inner.queue.len();
+            let count = inner.new.len() + inner.queue.len();
             count > 0
         })
     }
@@ -342,7 +337,12 @@ impl Drop for Conn {
         if let Some(mut pool) = self.inner.pool.take() {
             pool.return_conn(self.take());
         } else if self.inner.stream.is_some() {
-            spawn(self.take().cleanup().and_then(Queryable::disconnect).map_err(drop));
+            spawn(
+                self.take()
+                    .cleanup()
+                    .and_then(Queryable::disconnect)
+                    .map_err(drop),
+            );
         }
     }
 }
