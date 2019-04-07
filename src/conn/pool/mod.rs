@@ -35,9 +35,8 @@ pub mod futures;
 pub struct Inner {
     closed: bool,
     new: Vec<BoxFuture<Conn>>,
+    queue: Vec<BoxFuture<Conn>>,
     idle: Vec<Conn>,
-    dropping: Vec<BoxFuture<Conn>>,
-    rollback: Vec<BoxFuture<Conn>>,
     ongoing: usize,
     tasks: Vec<Task>,
 }
@@ -46,8 +45,7 @@ impl Inner {
     fn conn_count(&self) -> usize {
         self.new.len()
             + self.idle.len()
-            + self.dropping.len()
-            + self.rollback.len()
+            + self.queue.len()
             + self.ongoing
     }
 }
@@ -62,13 +60,12 @@ pub struct Pool {
 
 impl fmt::Debug for Pool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (new_len, idle_len, dropping_len, rollback_len, ongoing, tasks_len) =
+        let (new_len, idle_len, queue_len, ongoing, tasks_len) =
             self.with_inner(|inner| {
                 (
                     inner.new.len(),
                     inner.idle.len(),
-                    inner.dropping.len(),
-                    inner.rollback.len(),
+                    inner.queue.len(),
                     inner.ongoing,
                     inner.tasks.len(),
                 )
@@ -77,8 +74,7 @@ impl fmt::Debug for Pool {
             .field("pool_constraints", &self.pool_constraints)
             .field("new connections count", &new_len)
             .field("idle connections count", &idle_len)
-            .field("dropping connections count", &dropping_len)
-            .field("rollback connections count", &rollback_len)
+            .field("queue length", &queue_len)
             .field("ongoing connections count", &ongoing)
             .field("tasks count", &tasks_len)
             .finish()
@@ -96,8 +92,7 @@ impl Pool {
                 closed: false,
                 new: Vec::with_capacity(pool_constraints.min()),
                 idle: Vec::new(),
-                dropping: Vec::new(),
-                rollback: Vec::new(),
+                queue: Vec::new(),
                 ongoing: 0,
                 tasks: Vec::new(),
             })),
@@ -152,8 +147,7 @@ impl Pool {
     fn in_queue(&self) -> bool {
         self.with_inner(|inner| {
             let count = inner.new.len()
-                + inner.dropping.len()
-                + inner.rollback.len();
+                + inner.queue.len();
             count > 0
         })
     }
@@ -189,10 +183,8 @@ impl Pool {
                 return;
             }
 
-            if conn.inner.has_result.is_some() {
-                inner.dropping.push(Box::new(conn.drop_result()));
-            } else if conn.inner.in_transaction {
-                inner.rollback.push(Box::new(conn.rollback_transaction()));
+            if conn.inner.in_transaction || conn.inner.has_result.is_some() {
+                inner.queue.push(conn.cleanup());
             } else {
                 inner.ongoing -= 1;
 
@@ -266,21 +258,7 @@ impl Pool {
             }
 
             // Handle dirty connections.
-            handle!(dropping {
-                Ok(Ready(conn)) => {
-                    if inner.closed {
-                        spawn(conn.disconnect().map_err(drop));
-                    } else {
-                        returned_conns.push(conn);
-                    }
-                    handled = true;
-                    Ok(())
-                },
-                Err(_) => { Ok(()) },
-            });
-
-            // Handle in-transaction connections
-            handle!(rollback {
+            handle!(queue {
                 Ok(Ready(conn)) => {
                     if inner.closed {
                         spawn(conn.disconnect().map_err(drop));
@@ -364,7 +342,7 @@ impl Drop for Conn {
         if let Some(mut pool) = self.inner.pool.take() {
             pool.return_conn(self.take());
         } else if self.inner.stream.is_some() {
-            spawn(self.take().disconnect().map_err(drop));
+            spawn(self.take().cleanup().and_then(Queryable::disconnect).map_err(drop));
         }
     }
 }
@@ -466,7 +444,7 @@ mod test {
                         .pool
                         .as_ref()
                         .unwrap()
-                        .with_inner(|inner| inner.dropping.len()),
+                        .with_inner(|inner| inner.queue.len()),
                     0
                 );
                 new_conn
@@ -496,7 +474,7 @@ mod test {
                         .pool
                         .as_ref()
                         .unwrap()
-                        .with_inner(|inner| inner.dropping.len()),
+                        .with_inner(|inner| inner.queue.len()),
                     0
                 );
                 Ok(())
@@ -504,7 +482,7 @@ mod test {
             .and_then(|_| {
                 assert_eq!(pool.with_inner(|inner| inner.new.len()), 0);
                 assert_eq!(pool.with_inner(|inner| inner.idle.len()), 1);
-                assert_eq!(pool.with_inner(|inner| inner.dropping.len()), 0);
+                assert_eq!(pool.with_inner(|inner| inner.queue.len()), 0);
                 pool.disconnect()
             });
 

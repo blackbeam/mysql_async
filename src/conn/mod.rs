@@ -456,6 +456,16 @@ impl Conn {
             None => B(ok(self)),
         }
     }
+
+    fn cleanup(self) -> BoxFuture<Conn> {
+        if self.inner.has_result.is_some() {
+            Box::new(self.drop_result().and_then(Self::cleanup))
+        } else if self.inner.in_transaction {
+            Box::new(self.rollback_transaction().and_then(Self::cleanup))
+        } else {
+            Box::new(ok(self))
+        }
+    }
 }
 
 impl ConnectionLike for Conn {
