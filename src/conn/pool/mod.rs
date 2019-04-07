@@ -160,10 +160,6 @@ impl Pool {
 
     /// A way to take connection from a pool.
     fn take_conn(&mut self) -> Option<Conn> {
-        if self.in_queue() {
-            // Do not return connection until queue is empty
-            return None;
-        }
         self.with_inner(|mut inner| {
             while let Some(mut conn) = inner.idle.pop() {
                 if conn.expired() {
