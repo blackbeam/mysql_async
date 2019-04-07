@@ -11,6 +11,7 @@ use ::futures::{
     Async::{self, NotReady, Ready},
     Future,
 };
+use tokio::executor::spawn;
 
 use std::{
     fmt,
@@ -35,7 +36,6 @@ pub struct Inner {
     closed: bool,
     new: Vec<BoxFuture<Conn>>,
     idle: Vec<Conn>,
-    disconnecting: Vec<BoxFuture<()>>,
     dropping: Vec<BoxFuture<Conn>>,
     rollback: Vec<BoxFuture<Conn>>,
     ongoing: usize,
@@ -46,7 +46,6 @@ impl Inner {
     fn conn_count(&self) -> usize {
         self.new.len()
             + self.idle.len()
-            + self.disconnecting.len()
             + self.dropping.len()
             + self.rollback.len()
             + self.ongoing
@@ -63,12 +62,11 @@ pub struct Pool {
 
 impl fmt::Debug for Pool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (new_len, idle_len, disconnecing_len, dropping_len, rollback_len, ongoing, tasks_len) =
+        let (new_len, idle_len, dropping_len, rollback_len, ongoing, tasks_len) =
             self.with_inner(|inner| {
                 (
                     inner.new.len(),
                     inner.idle.len(),
-                    inner.disconnecting.len(),
                     inner.dropping.len(),
                     inner.rollback.len(),
                     inner.ongoing,
@@ -79,7 +77,6 @@ impl fmt::Debug for Pool {
             .field("pool_constraints", &self.pool_constraints)
             .field("new connections count", &new_len)
             .field("idle connections count", &idle_len)
-            .field("disconnecting connections count", &disconnecing_len)
             .field("dropping connections count", &dropping_len)
             .field("rollback connections count", &rollback_len)
             .field("ongoing connections count", &ongoing)
@@ -99,7 +96,6 @@ impl Pool {
                 closed: false,
                 new: Vec::with_capacity(pool_constraints.min()),
                 idle: Vec::new(),
-                disconnecting: Vec::new(),
                 dropping: Vec::new(),
                 rollback: Vec::new(),
                 ongoing: 0,
@@ -146,7 +142,7 @@ impl Pool {
         });
         if become_closed {
             while let Some(conn) = self.take_conn() {
-                self.with_inner(move |mut inner| inner.disconnecting.push(conn.disconnect()));
+                spawn(conn.disconnect().map_err(drop));
             }
         }
         new_disconnect_pool(self)
@@ -156,7 +152,6 @@ impl Pool {
     fn in_queue(&self) -> bool {
         self.with_inner(|inner| {
             let count = inner.new.len()
-                + inner.disconnecting.len()
                 + inner.dropping.len()
                 + inner.rollback.len();
             count > 0
@@ -172,7 +167,7 @@ impl Pool {
         self.with_inner(|mut inner| {
             while let Some(mut conn) = inner.idle.pop() {
                 if conn.expired() {
-                    inner.disconnecting.push(conn.disconnect());
+                    spawn(conn.disconnect().map_err(drop));
                 } else {
                     conn.inner.pool = Some(self.clone());
                     inner.ongoing += 1;
@@ -206,7 +201,7 @@ impl Pool {
                 inner.ongoing -= 1;
 
                 if inner.idle.len() >= min {
-                    inner.disconnecting.push(conn.disconnect());
+                    spawn(conn.disconnect().map_err(drop));
                 } else {
                     inner.idle.push(conn);
                 }
@@ -274,20 +269,11 @@ impl Pool {
                 });
             }
 
-            // Handle closing connections.
-            handle!(disconnecting {
-                Ok(Ready(_)) => {
-                    handled = true;
-                    Ok(())
-                },
-                Err(_) => { Ok(()) },
-            });
-
             // Handle dirty connections.
             handle!(dropping {
                 Ok(Ready(conn)) => {
                     if inner.closed {
-                        inner.disconnecting.push(conn.disconnect());
+                        spawn(conn.disconnect().map_err(drop));
                     } else {
                         returned_conns.push(conn);
                     }
@@ -301,7 +287,7 @@ impl Pool {
             handle!(rollback {
                 Ok(Ready(conn)) => {
                     if inner.closed {
-                        inner.disconnecting.push(conn.disconnect());
+                        spawn(conn.disconnect().map_err(drop));
                     } else {
                         returned_conns.push(conn);
                     }
@@ -315,7 +301,7 @@ impl Pool {
             handle!(new {
                 Ok(Ready(conn)) => {
                     if inner.closed {
-                        inner.disconnecting.push(conn.disconnect());
+                        spawn(conn.disconnect().map_err(drop));
                     } else {
                         inner.ongoing += 1;
                         returned_conns.push(conn);
@@ -381,6 +367,8 @@ impl Drop for Conn {
     fn drop(&mut self) {
         if let Some(mut pool) = self.inner.pool.take() {
             pool.return_conn(self.take());
+        } else if self.inner.stream.is_some() {
+            spawn(self.take().disconnect().map_err(drop));
         }
     }
 }
@@ -482,15 +470,6 @@ mod test {
                         .pool
                         .as_ref()
                         .unwrap()
-                        .with_inner(|inner| inner.disconnecting.len()),
-                    0
-                );
-                assert_eq!(
-                    conn2
-                        .inner
-                        .pool
-                        .as_ref()
-                        .unwrap()
                         .with_inner(|inner| inner.dropping.len()),
                     0
                 );
@@ -521,15 +500,6 @@ mod test {
                         .pool
                         .as_ref()
                         .unwrap()
-                        .with_inner(|inner| inner.disconnecting.len()),
-                    0
-                );
-                assert_eq!(
-                    conn1
-                        .inner
-                        .pool
-                        .as_ref()
-                        .unwrap()
                         .with_inner(|inner| inner.dropping.len()),
                     0
                 );
@@ -538,7 +508,6 @@ mod test {
             .and_then(|_| {
                 assert_eq!(pool.with_inner(|inner| inner.new.len()), 0);
                 assert_eq!(pool.with_inner(|inner| inner.idle.len()), 1);
-                assert_eq!(pool.with_inner(|inner| inner.disconnecting.len()), 0);
                 assert_eq!(pool.with_inner(|inner| inner.dropping.len()), 0);
                 pool.disconnect()
             });
