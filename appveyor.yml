@@ -1,6 +1,7 @@
 version: 1.0.{build}
 clone_folder: c:\clone
 environment:
+  MYSQL_PWD: Password12!
   DATABASE_URL: 'mysql://root:Password12!@localhost/mysql'
   matrix:
     - TARGET: nightly-x86_64-pc-windows-msvc
@@ -19,13 +20,13 @@ environment:
       PATH: C:\msys64\mingw64\bin\;c:\rust\bin;%PATH%
     - TARGET: beta-i686-pc-windows-gnu
       PATH: C:\msys64\mingw32\bin\;c:\rust\bin;%PATH%
-    - TARGET: 1.31.0-x86_64-pc-windows-msvc
+    - TARGET: 1.34.0-x86_64-pc-windows-msvc
       PATH: C:\msys64\mingw64\bin\;c:\rust\bin;%PATH%
-    - TARGET: 1.31.0-i686-pc-windows-msvc
+    - TARGET: 1.34.0-i686-pc-windows-msvc
       PATH: C:\msys64\mingw32\bin\;c:\rust\bin;%PATH%
-    - TARGET: 1.31.0-x86_64-pc-windows-gnu
+    - TARGET: 1.34.0-x86_64-pc-windows-gnu
       PATH: C:\msys64\mingw64\bin\;c:\rust\bin;%PATH%
-    - TARGET: 1.31.0-i686-pc-windows-gnu
+    - TARGET: 1.34.0-i686-pc-windows-gnu
       PATH: C:\msys64\mingw32\bin\;c:\rust\bin;%PATH%
 services: mysql
 install:
