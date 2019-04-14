@@ -11,7 +11,6 @@ use ::futures::{
     Async::{self, NotReady, Ready},
     Future,
 };
-use tokio::executor::spawn;
 
 use std::{
     fmt,
@@ -133,7 +132,7 @@ impl Pool {
         });
         if become_closed {
             while let Some(conn) = self.take_conn() {
-                spawn(conn.disconnect().map_err(drop));
+                crate::conn::disconnect(conn);
             }
         }
         new_disconnect_pool(self)
@@ -152,7 +151,7 @@ impl Pool {
         self.with_inner(|mut inner| {
             while let Some(mut conn) = inner.idle.pop() {
                 if conn.expired() {
-                    spawn(conn.disconnect().map_err(drop));
+                    crate::conn::disconnect(conn);
                 } else {
                     conn.inner.pool = Some(self.clone());
                     inner.ongoing += 1;
@@ -184,7 +183,7 @@ impl Pool {
                 inner.ongoing -= 1;
 
                 if inner.idle.len() >= min {
-                    spawn(conn.disconnect().map_err(drop));
+                    crate::conn::disconnect(conn);
                 } else {
                     inner.idle.push(conn);
                 }
@@ -256,7 +255,7 @@ impl Pool {
             handle!(queue {
                 Ok(Ready(conn)) => {
                     if inner.closed {
-                        spawn(conn.disconnect().map_err(drop));
+                crate::conn::disconnect(conn);
                     } else {
                         returned_conns.push(conn);
                     }
@@ -270,7 +269,7 @@ impl Pool {
             handle!(new {
                 Ok(Ready(conn)) => {
                     if inner.closed {
-                        spawn(conn.disconnect().map_err(drop));
+                        crate::conn::disconnect(conn);
                     } else {
                         inner.ongoing += 1;
                         returned_conns.push(conn);
@@ -336,13 +335,8 @@ impl Drop for Conn {
     fn drop(&mut self) {
         if let Some(mut pool) = self.inner.pool.take() {
             pool.return_conn(self.take());
-        } else if self.inner.stream.is_some() {
-            spawn(
-                self.take()
-                    .cleanup()
-                    .and_then(Queryable::disconnect)
-                    .map_err(drop),
-            );
+        } else if self.inner.stream.is_some() && !self.inner.disconnected {
+            crate::conn::disconnect(self.take());
         }
     }
 }
@@ -492,17 +486,18 @@ mod test {
     #[cfg(feature = "nightly")]
     mod bench {
         use futures::Future;
+        use tokio::runtime::Runtime;
 
         use crate::{conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL};
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
-            let mut runtime = tokio::executor::current_thread::CurrentThread::new();
+            let mut runtime = Runtime::new().expect("3");
             let pool = Pool::new(&**DATABASE_URL);
 
             bencher.iter(|| {
                 let fut = pool.get_conn().and_then(|conn| conn.ping());
-                runtime.block_on(fut).unwrap();
+                runtime.block_on(fut).expect("1");
             });
 
             runtime.block_on(pool.disconnect()).unwrap();

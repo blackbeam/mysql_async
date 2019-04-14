@@ -24,18 +24,18 @@ use crate::{
 };
 
 steps! {
-    ConnectingStream {
+    ConnectingTcpStream {
         WaitForStream(SelectOk<ConnectFuture>),
         Fail(Failed<(), Error>),
     }
 }
 
 /// Future that resolves to a `Stream` connected to a MySql server.
-pub struct ConnectingStream {
+pub struct ConnectingTcpStream {
     step: Step,
 }
 
-pub fn new<S>(addr: S) -> ConnectingStream
+pub fn new<S>(addr: S) -> ConnectingTcpStream
 where
     S: ToSocketAddrs,
 {
@@ -48,7 +48,7 @@ where
             }
 
             if streams.len() > 0 {
-                ConnectingStream {
+                ConnectingTcpStream {
                     step: Step::WaitForStream(select_ok(streams)),
                 }
             } else {
@@ -56,18 +56,18 @@ where
                     io::ErrorKind::InvalidInput,
                     "could not resolve to any address",
                 );
-                ConnectingStream {
+                ConnectingTcpStream {
                     step: Step::Fail(failed(err.into())),
                 }
             }
         }
-        Err(err) => ConnectingStream {
+        Err(err) => ConnectingTcpStream {
             step: Step::Fail(failed(err.into())),
         },
     }
 }
 
-impl Future for ConnectingStream {
+impl Future for ConnectingTcpStream {
     type Item = Stream;
     type Error = Error;
 

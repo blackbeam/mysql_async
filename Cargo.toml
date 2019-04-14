@@ -28,6 +28,8 @@ serde_json = "1"
 tokio = "^0.1.9"
 tokio-codec = "0.1"
 tokio-io = "0.1"
+tokio-named-pipes = "0.1"
+tokio-uds = "0.2"
 twox-hash = "1"
 url = "1"
 
@@ -42,3 +44,5 @@ ssl = ['native-tls']
 name = "mysql_async"
 path = "src/lib.rs"
 
+[profile.bench]
+debug = true

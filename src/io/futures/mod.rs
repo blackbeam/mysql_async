@@ -7,9 +7,9 @@
 // modified, or distributed except according to those terms.
 
 pub use self::{
-    connecting_stream::{new as new_connecting_stream, ConnectingStream},
+    connecting_tcp_stream::{new as new_connecting_tcp_stream, ConnectingTcpStream},
     write_packet::{new as new_write_packet, WritePacket},
 };
 
-mod connecting_stream;
+mod connecting_tcp_stream;
 mod write_packet;

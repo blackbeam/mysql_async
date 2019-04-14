@@ -29,11 +29,29 @@ use crate::{
     opts::Opts,
     queryable::{query_result, BinaryProtocol, Queryable, TextProtocol},
     time::SteadyTime,
-    BoxFuture, Column, MyFuture,
+    BoxFuture, Column, MyFuture, OptsBuilder,
 };
 
 pub mod pool;
 pub mod stmt_cache;
+
+/// Helper function that asynchronously disconnects connection on the default tokio executor.
+fn disconnect(mut conn: Conn) {
+    use tokio::executor::{DefaultExecutor, Executor};
+    let mut executor = DefaultExecutor::current();
+
+    let disconnected = conn.inner.disconnected;
+
+    // Mark conn as disconnected.
+    conn.inner.disconnected = true;
+
+    if !disconnected {
+        // Server will report broken connection if spawn fails.
+        let _ = executor.spawn(Box::new(
+            conn.cleanup().and_then(Conn::disconnect).map_err(drop),
+        ));
+    }
+}
 
 /// Mysql connection
 struct ConnInner {
@@ -43,6 +61,7 @@ struct ConnInner {
     seq_id: u8,
     last_command: consts::Command,
     max_allowed_packet: u64,
+    socket: Option<String>,
     capabilities: consts::CapabilityFlags,
     status: consts::StatusFlags,
     last_insert_id: u64,
@@ -58,6 +77,8 @@ struct ConnInner {
     nonce: Vec<u8>,
     auth_plugin: AuthPlugin<'static>,
     auth_switched: bool,
+    /// Connection is already disconnected.
+    disconnected: bool,
 }
 
 impl fmt::Debug for ConnInner {
@@ -94,10 +115,12 @@ impl ConnInner {
             last_io: SteadyTime::now(),
             wait_timeout: 0,
             stmt_cache: StmtCache::new(opts.get_stmt_cache_size()),
+            socket: opts.get_socket().map(Into::into),
             opts: opts,
             nonce: Vec::default(),
             auth_plugin: AuthPlugin::MysqlNativePassword,
             auth_switched: false,
+            disconnected: false,
         }
     }
 }
@@ -357,24 +380,33 @@ impl Conn {
 
     /// Returns future that resolves to `Conn`.
     pub fn new<T: Into<Opts>>(opts: T) -> impl MyFuture<Conn> {
-        let mut conn = Conn::empty(opts.into());
+        let opts = opts.into();
+        let mut conn = Conn::empty(opts.clone());
 
-        Stream::connect((
-            conn.inner.opts.get_ip_or_hostname(),
-            conn.inner.opts.get_tcp_port(),
-        ))
-        .map(move |stream| {
-            conn.inner.stream = Some(stream);
-            conn
-        })
-        .and_then(Conn::setup_stream)
-        .and_then(Conn::handle_handshake)
-        .and_then(Conn::switch_to_ssl_if_needed)
-        .and_then(Conn::do_handshake_response)
-        .and_then(Conn::continue_auth)
-        .and_then(Conn::read_max_allowed_packet)
-        .and_then(Conn::read_wait_timeout)
-        .and_then(Conn::run_init_commands)
+        let stream = if let Some(path) = opts.get_socket() {
+            A(Stream::connect_socket(path.to_owned()))
+        } else {
+            B(Stream::connect_tcp((
+                opts.get_ip_or_hostname(),
+                opts.get_tcp_port(),
+            )))
+        };
+
+        stream
+            .map(move |stream| {
+                conn.inner.stream = Some(stream);
+                conn
+            })
+            .and_then(Conn::setup_stream)
+            .and_then(Conn::handle_handshake)
+            .and_then(Conn::switch_to_ssl_if_needed)
+            .and_then(Conn::do_handshake_response)
+            .and_then(Conn::continue_auth)
+            .and_then(Conn::read_socket)
+            .and_then(Conn::reconnect_via_socket_if_needed)
+            .and_then(Conn::read_max_allowed_packet)
+            .and_then(Conn::read_wait_timeout)
+            .and_then(Conn::run_init_commands)
     }
 
     /// Returns future that resolves to `Conn`.
@@ -383,6 +415,41 @@ impl Conn {
             .map_err(Error::from)
             .into_future()
             .and_then(Conn::new)
+    }
+
+    /// Will try to connect via socket using socket address in `self.inner.socket`.
+    ///
+    /// Returns new connection on success or self on error.
+    ///
+    /// Won't try to reconnect if socket connection is already enforced in `Opts`.
+    fn reconnect_via_socket_if_needed(self) -> Box<MyFuture<Conn>> {
+        if let Some(socket) = self.inner.socket.as_ref() {
+            let opts = self.inner.opts.clone();
+            if let None = opts.get_socket() {
+                let mut builder = OptsBuilder::from_opts(opts);
+                builder.socket(Some(&**socket));
+                let fut = Conn::new(builder).then(|result| match result {
+                    Ok(conn) => Ok(conn),
+                    Err(_) => Ok(self),
+                });
+                return Box::new(fut);
+            }
+        }
+        return Box::new(ok(self));
+    }
+
+    /// Returns future that resolves to `Conn` with socket address stored in it.
+    ///
+    /// Do nothing if socket address is already in `Opts` or if `prefer_socket` is `false`.
+    fn read_socket(self) -> impl MyFuture<Self> {
+        if self.inner.opts.get_prefer_socket() && self.inner.socket.is_none() {
+            A(self.first("SELECT @@socket").map(|(mut this, row_opt)| {
+                this.inner.socket = row_opt.unwrap_or((None,)).0;
+                this
+            }))
+        } else {
+            B(ok(self))
+        }
     }
 
     /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
