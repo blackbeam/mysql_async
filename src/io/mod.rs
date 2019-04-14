@@ -8,7 +8,10 @@
 
 #[cfg(feature = "ssl")]
 use ::futures::{future::Either::*, IntoFuture};
-use ::futures::{future::{ok, Future}, stream, Async, Poll};
+use ::futures::{
+    future::{ok, Future},
+    stream, Async, Poll,
+};
 use mysql_common::packets::RawPacket;
 #[cfg(feature = "ssl")]
 use native_tls::{Certificate, Identity, TlsConnector};
