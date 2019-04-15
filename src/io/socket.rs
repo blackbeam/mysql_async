@@ -34,6 +34,7 @@ impl Socket {
     /// Connects a new socket.
     #[cfg(windows)]
     pub fn new<P: AsRef<Path>>(path: P) -> impl Future<Item = Socket, Error = io::Error> {
+        use futures::future::IntoFuture;
         use tokio_named_pipes::NamedPipe;
 
         let handle = tokio::reactor::Handle::default();
