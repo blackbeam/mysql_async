@@ -211,6 +211,14 @@ pub mod prelude {
     pub use mysql_common::row::convert::FromRow;
     #[doc(inline)]
     pub use mysql_common::value::convert::{ConvIr, FromValue, ToValue};
+
+    /// Everything that is connection.
+    pub trait ConnectionLike: crate::connection_like::ConnectionLike {}
+    impl<T: crate::connection_like::ConnectionLike> ConnectionLike for T {}
+
+    /// Trait for protocol markers [`TextProtocol`] and [`BinaryProtocol`].
+    pub trait Protocol: crate::queryable::Protocol {}
+    impl<T: crate::queryable::Protocol> Protocol for T {}
 }
 
 #[cfg(test)]
