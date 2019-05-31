@@ -218,6 +218,7 @@ impl Pool {
                 ($vec:ident { $($p:pat => $b:block,)+ }) => ({
                     let len = inner.$vec.len();
                     let mut done_fut_idxs = Vec::new();
+
                     for i in 0..len {
                         let result = inner.$vec.get_mut(i).unwrap().poll();
                         match result {
@@ -226,6 +227,16 @@ impl Pool {
                         }
 
                         let out: Result<()> = match result {
+                            Ok(Ready(conn)) => {
+                                if inner.closed {
+                                    crate::conn::disconnect(conn);
+                                } else {
+                                    inner.ongoing += 1;
+                                    returned_conns.push(conn);
+                                }
+                                handled = true;
+                                Ok(())
+                            }
                             $($p => $b),+
                             _ => {
                                 Ok(())
@@ -252,31 +263,12 @@ impl Pool {
 
             // Handle dirty connections.
             handle!(queue {
-                Ok(Ready(conn)) => {
-                    if inner.closed {
-                crate::conn::disconnect(conn);
-                    } else {
-                        inner.ongoing += 1;
-                        returned_conns.push(conn);
-                    }
-                    handled = true;
-                    Ok(())
-                },
+                // Drop it in case of error.
                 Err(_) => { Ok(()) },
             });
 
             // Handle connecting connections.
             handle!(new {
-                Ok(Ready(conn)) => {
-                    if inner.closed {
-                        crate::conn::disconnect(conn);
-                    } else {
-                        inner.ongoing += 1;
-                        returned_conns.push(conn);
-                    }
-                    handled = true;
-                    Ok(())
-                },
                 Err(err) => {
                     if !inner.closed {
                         Err(err)
