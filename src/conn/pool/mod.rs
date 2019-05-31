@@ -335,8 +335,8 @@ impl Drop for Conn {
 
 #[cfg(test)]
 mod test {
-    use futures::Future;
     use futures::collect;
+    use futures::Future;
 
     use crate::{
         conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL, TransactionOptions,
@@ -404,7 +404,10 @@ mod test {
         const POOL_MIN: usize = 5;
         const POOL_MAX: usize = 10;
 
-        let url = format!("{}?pool_min={}&pool_max={}", &**DATABASE_URL, POOL_MIN, POOL_MAX);
+        let url = format!(
+            "{}?pool_min={}&pool_max={}",
+            &**DATABASE_URL, POOL_MIN, POOL_MAX
+        );
 
         // Clean
         let pool = Pool::new(url.clone());
@@ -418,7 +421,10 @@ mod test {
 
                 while let Some(_) = conns.pop().map(drop) {
                     popped += 1;
-                    assert_eq!(pool_clone.inner.lock().unwrap().conn_count(), POOL_MAX + POOL_MIN - max(popped, POOL_MIN));
+                    assert_eq!(
+                        pool_clone.inner.lock().unwrap().conn_count(),
+                        POOL_MAX + POOL_MIN - max(popped, POOL_MIN)
+                    );
                 }
 
                 pool_clone
@@ -431,19 +437,19 @@ mod test {
         let pool = Pool::new(url.clone());
         let pool_clone = pool.clone();
         let conns = (0..POOL_MAX)
-            .map(|_| pool
-                .get_conn()
-                .and_then(|conn| conn.start_transaction(TransactionOptions::new())))
+            .map(|_| {
+                pool.get_conn()
+                    .and_then(|conn| conn.start_transaction(TransactionOptions::new()))
+            })
             .collect::<Vec<_>>();
 
-        let fut = ::futures::future::join_all(conns)
-            .map(move |mut conns| {
-                assert_eq!(pool_clone.inner.lock().unwrap().conn_count(), POOL_MAX);
+        let fut = ::futures::future::join_all(conns).map(move |mut conns| {
+            assert_eq!(pool_clone.inner.lock().unwrap().conn_count(), POOL_MAX);
 
-                while let Some(_) = conns.pop().map(drop) {
-                    assert_eq!(pool_clone.inner.lock().unwrap().conn_count(), POOL_MAX);
-                }
-            });
+            while let Some(_) = conns.pop().map(drop) {
+                assert_eq!(pool_clone.inner.lock().unwrap().conn_count(), POOL_MAX);
+            }
+        });
 
         run(fut).unwrap();
     }
@@ -530,7 +536,10 @@ mod test {
     #[test]
     fn should_not_panic_if_dropped_without_tokio_runtime() {
         let pool = Pool::new(&**DATABASE_URL);
-        run(collect((0..10).map(|_| pool.get_conn()).collect::<Vec<_>>())).unwrap();
+        run(collect(
+            (0..10).map(|_| pool.get_conn()).collect::<Vec<_>>(),
+        ))
+        .unwrap();
         // pool will drop here
     }
 

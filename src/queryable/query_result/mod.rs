@@ -18,8 +18,8 @@ use mysql_common::row::convert::FromRowError;
 
 use std::marker::PhantomData;
 use std::mem;
-use std::sync::Arc;
 use std::result::Result as StdResult;
+use std::sync::Arc;
 
 use self::QueryResultInner::*;
 use crate::{
@@ -255,9 +255,9 @@ where
     /// It works the same way as [`QueryResult::collect`] but won't panic
     /// if row isn't convertible to `R`.
     pub fn try_collect<R>(self) -> impl MyFuture<(Self, Vec<StdResult<R, FromRowError>>)>
-        where
-            R: FromRow,
-            R: Send + 'static,
+    where
+        R: FromRow,
+        R: Send + 'static,
     {
         self.reduce(Vec::new(), |mut acc, row| {
             acc.push(FromRow::from_row_opt(row));
@@ -274,9 +274,9 @@ where
     /// * In case of programmer error see `FromRow` docs;
     /// * In case of unknown schema use [`QueryResult::try_collect`].
     pub fn collect_and_drop<R>(self) -> impl MyFuture<(T, Vec<R>)>
-        where
-            R: FromRow,
-            R: Send + 'static,
+    where
+        R: FromRow,
+        R: Send + 'static,
     {
         self.collect()
             .and_then(|(this, output)| (this.drop_result(), ok(output)))
@@ -288,9 +288,9 @@ where
     /// It works the same way as [`QueryResult::collect_and_drop`] but won't panic
     /// if row isn't convertible to `R`.
     pub fn try_collect_and_drop<R>(self) -> impl MyFuture<(T, Vec<StdResult<R, FromRowError>>)>
-        where
-            R: FromRow,
-            R: Send + 'static,
+    where
+        R: FromRow,
+        R: Send + 'static,
     {
         self.try_collect()
             .and_then(|(this, output)| (this.drop_result(), ok(output)))
