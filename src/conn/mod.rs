@@ -828,6 +828,58 @@ mod test {
     }
 
     #[test]
+    fn should_try_collect() {
+        let fut = Conn::new(get_opts())
+            .and_then(|conn| {
+                Queryable::query(
+                    conn,
+                    r"SELECT 'hello', 123
+                    UNION ALL
+                    SELECT 'world', 'bar'
+                    UNION ALL
+                    SELECT 'hello', 123
+                ",
+                )
+            })
+            .and_then(|result| result.try_collect::<(String, u8)>())
+            .and_then(|(result, mut rows)| {
+                assert!(rows.pop().unwrap().is_ok());
+                assert!(rows.pop().unwrap().is_err());
+                assert!(rows.pop().unwrap().is_ok());
+                result.drop_result()
+            })
+            .and_then(Conn::disconnect);
+
+        run(fut).unwrap()
+    }
+
+    #[test]
+    fn should_try_collect_and_drop() {
+        let fut = Conn::new(get_opts())
+            .and_then(|conn| {
+                Queryable::query(
+                    conn,
+                    r"SELECT 'hello', 123
+                    UNION ALL
+                    SELECT 'world', 'bar'
+                    UNION ALL
+                    SELECT 'hello', 123;
+                    SELECT 'foo', 255;
+                ",
+                )
+            })
+            .and_then(|result| result.try_collect_and_drop::<(String, u8)>())
+            .and_then(|(conn, mut rows)| {
+                assert!(rows.pop().unwrap().is_ok());
+                assert!(rows.pop().unwrap().is_err());
+                assert!(rows.pop().unwrap().is_ok());
+                conn.disconnect()
+            });
+
+        run(fut).unwrap()
+    }
+
+    #[test]
     fn should_handle_mutliresult_set() {
         let fut = Conn::new(get_opts())
             .and_then(|conn| {

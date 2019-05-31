@@ -14,8 +14,12 @@ use futures::future::{
     Future, FutureResult, Loop,
 };
 use mysql_common::packets::RawPacket;
+use mysql_common::row::convert::FromRowError;
 
-use std::{marker::PhantomData, mem, sync::Arc};
+use std::marker::PhantomData;
+use std::mem;
+use std::sync::Arc;
+use std::result::Result as StdResult;
 
 use self::QueryResultInner::*;
 use crate::{
@@ -229,6 +233,12 @@ where
     /// as many times as result sets in your query result. For example query
     /// `SELECT 'foo'; SELECT 'foo', 'bar';` will produce `QueryResult` with two result sets in it.
     /// One can use `QueryResult::is_empty` to make sure that there is no more result sets.
+    ///
+    /// # Panic
+    ///
+    /// It'll panic if any row isn't convertible to `R` (i.e. programmer error or unknown schema).
+    /// * In case of programmer error see `FromRow` docs;
+    /// * In case of unknown schema use [`QueryResult::try_collect`].
     pub fn collect<R>(self) -> impl MyFuture<(Self, Vec<R>)>
     where
         R: FromRow,
@@ -240,14 +250,49 @@ where
         })
     }
 
+    /// Returns future that collects result set of this query.
+    ///
+    /// It works the same way as [`QueryResult::collect`] but won't panic
+    /// if row isn't convertible to `R`.
+    pub fn try_collect<R>(self) -> impl MyFuture<(Self, Vec<StdResult<R, FromRowError>>)>
+        where
+            R: FromRow,
+            R: Send + 'static,
+    {
+        self.reduce(Vec::new(), |mut acc, row| {
+            acc.push(FromRow::from_row_opt(row));
+            acc
+        })
+    }
+
     /// Returns future that collects result set of a query result and drops everything else.
     /// It will resolve to a pair of wrapped `Queryable` and collected result set.
+    ///
+    /// # Panic
+    ///
+    /// It'll panic if any row isn't convertible to `R` (i.e. programmer error or unknown schema).
+    /// * In case of programmer error see `FromRow` docs;
+    /// * In case of unknown schema use [`QueryResult::try_collect`].
     pub fn collect_and_drop<R>(self) -> impl MyFuture<(T, Vec<R>)>
-    where
-        R: FromRow,
-        R: Send + 'static,
+        where
+            R: FromRow,
+            R: Send + 'static,
     {
         self.collect()
+            .and_then(|(this, output)| (this.drop_result(), ok(output)))
+    }
+
+    /// Returns future that collects result set of a query result and drops everything else.
+    /// It will resolve to a pair of wrapped `Queryable` and collected result set.
+    ///
+    /// It works the same way as [`QueryResult::collect_and_drop`] but won't panic
+    /// if row isn't convertible to `R`.
+    pub fn try_collect_and_drop<R>(self) -> impl MyFuture<(T, Vec<StdResult<R, FromRowError>>)>
+        where
+            R: FromRow,
+            R: Send + 'static,
+    {
+        self.try_collect()
             .and_then(|(this, output)| (this.drop_result(), ok(output)))
     }
 
