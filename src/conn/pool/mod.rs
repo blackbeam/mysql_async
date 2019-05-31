@@ -167,21 +167,20 @@ impl Pool {
         let min = self.pool_constraints.min();
 
         self.with_inner(|mut inner| {
+            inner.ongoing -= 1;
+
             if inner.closed {
                 return;
             }
 
             if conn.inner.stream.is_none() {
                 // drop incomplete connection
-                inner.ongoing -= 1;
                 return;
             }
 
             if conn.inner.in_transaction || conn.inner.has_result.is_some() {
                 inner.queue.push(conn.cleanup());
             } else {
-                inner.ongoing -= 1;
-
                 if inner.idle.len() >= min {
                     crate::conn::disconnect(conn);
                 } else {
@@ -257,6 +256,7 @@ impl Pool {
                     if inner.closed {
                 crate::conn::disconnect(conn);
                     } else {
+                        inner.ongoing += 1;
                         returned_conns.push(conn);
                     }
                     handled = true;
@@ -399,6 +399,57 @@ mod test {
                 pool.get_conn()
                     .and_then(|conn| conn.drop_query("DROP TABLE tmp"))
                     .and_then(move |_| pool.disconnect())
+            });
+
+        run(fut).unwrap();
+    }
+
+    #[test]
+    fn should_hold_bounds2() {
+        use std::cmp::max;
+
+        const POOL_MIN: usize = 5;
+        const POOL_MAX: usize = 10;
+
+        let url = format!("{}?pool_min={}&pool_max={}", &**DATABASE_URL, POOL_MIN, POOL_MAX);
+
+        // Clean
+        let pool = Pool::new(url.clone());
+        let pool_clone = pool.clone();
+        let conns = (0..POOL_MAX).map(|_| pool.get_conn()).collect::<Vec<_>>();
+
+        let fut = ::futures::future::join_all(conns)
+            .map(move |mut conns| {
+                let mut popped = 0;
+                assert_eq!(pool_clone.inner.lock().unwrap().conn_count(), POOL_MAX);
+
+                while let Some(_) = conns.pop().map(drop) {
+                    popped += 1;
+                    assert_eq!(pool_clone.inner.lock().unwrap().conn_count(), POOL_MAX + POOL_MIN - max(popped, POOL_MIN));
+                }
+
+                pool_clone
+            })
+            .and_then(|pool| pool.disconnect());
+
+        run(fut).unwrap();
+
+        // Dirty
+        let pool = Pool::new(url.clone());
+        let pool_clone = pool.clone();
+        let conns = (0..POOL_MAX)
+            .map(|_| pool
+                .get_conn()
+                .and_then(|conn| conn.start_transaction(TransactionOptions::new())))
+            .collect::<Vec<_>>();
+
+        let fut = ::futures::future::join_all(conns)
+            .map(move |mut conns| {
+                assert_eq!(pool_clone.inner.lock().unwrap().conn_count(), POOL_MAX);
+
+                while let Some(_) = conns.pop().map(drop) {
+                    assert_eq!(pool_clone.inner.lock().unwrap().conn_count(), POOL_MAX);
+                }
             });
 
         run(fut).unwrap();
