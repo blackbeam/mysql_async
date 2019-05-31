@@ -336,6 +336,7 @@ impl Drop for Conn {
 #[cfg(test)]
 mod test {
     use futures::Future;
+    use futures::collect;
 
     use crate::{
         conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL, TransactionOptions,
@@ -524,6 +525,13 @@ mod test {
             });
 
         run(fut).unwrap();
+    }
+
+    #[test]
+    fn should_not_panic_if_dropped_without_tokio_runtime() {
+        let pool = Pool::new(&**DATABASE_URL);
+        run(collect((0..10).map(|_| pool.get_conn()).collect::<Vec<_>>())).unwrap();
+        // pool will drop here
     }
 
     #[cfg(feature = "nightly")]

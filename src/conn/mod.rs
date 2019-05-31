@@ -700,6 +700,13 @@ mod test {
     }
 
     #[test]
+    fn should_not_panic_if_dropped_without_tokio_runtime() {
+        let fut = Conn::new(get_opts());
+        run(fut).unwrap();
+        // connection will drop here
+    }
+
+    #[test]
     fn should_execute_init_queries_on_new_connection() {
         let mut opts_builder = OptsBuilder::from_opts(get_opts());
         opts_builder.init(vec!["SET @a = 42", "SET @b = 'foo'"]);
