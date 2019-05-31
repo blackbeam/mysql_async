@@ -74,7 +74,8 @@ fn use_generic_code() {
     let fut = pool
         .get_conn()
         .and_then(move |conn| conn.query("SELECT 1, 2, 3"))
-        .and_then(get_single_result::<(u8, u8, u8), _, _>);
+        .and_then(get_single_result::<(u8, u8, u8), _, _>)
+        .and_then(|out| pool.disconnect().map(move |_| out));
 
     let result = run(fut).unwrap();
     assert_eq!(result, (1, 2, 3));
