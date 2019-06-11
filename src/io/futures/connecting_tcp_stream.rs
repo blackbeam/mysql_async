@@ -47,7 +47,7 @@ where
                 streams.push(TcpStream::connect(&address));
             }
 
-            if streams.len() > 0 {
+            if !streams.is_empty() {
                 ConnectingTcpStream {
                     step: Step::WaitForStream(select_ok(streams)),
                 }

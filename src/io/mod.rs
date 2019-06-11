@@ -65,7 +65,7 @@ impl Endpoint {
     }
 
     pub fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
-        let ms = ms.map(|val| Duration::from_millis(val as u64));
+        let ms = ms.map(|val| Duration::from_millis(u64::from(val)));
         match *self {
             Endpoint::Plain(ref stream) => stream.set_keepalive(ms)?,
             #[cfg(feature = "ssl")]

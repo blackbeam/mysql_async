@@ -30,7 +30,7 @@ const_assert!(
 const DEFAULT_STMT_CACHE_SIZE: usize = 10;
 
 /// Ssl Options.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub struct SslOpts {
     pkcs12_path: Option<Cow<'static, Path>>,
     password: Option<Cow<'static, str>>,
@@ -40,16 +40,6 @@ pub struct SslOpts {
 }
 
 impl SslOpts {
-    pub fn new() -> SslOpts {
-        SslOpts {
-            pkcs12_path: None,
-            password: None,
-            root_cert_path: None,
-            skip_domain_validation: false,
-            accept_invalid_certs: false,
-        }
-    }
-
     /// Sets path to the pkcs12 archive.
     pub fn set_pkcs12_path<T: Into<Cow<'static, Path>>>(
         &mut self,
@@ -193,10 +183,8 @@ impl Opts {
             addr.is_loopback()
         } else if let Some(addr) = v6addr {
             addr.is_loopback()
-        } else if self.inner.ip_or_hostname == "localhost" {
-            true
         } else {
-            false
+            self.inner.ip_or_hostname == "localhost"
         }
     }
 
@@ -238,7 +226,7 @@ impl Opts {
 
     /// TCP keep alive timeout in milliseconds (defaults to `None).
     pub fn get_tcp_keepalive(&self) -> Option<u32> {
-        self.inner.tcp_keepalive.clone()
+        self.inner.tcp_keepalive
     }
 
     /// Whether `TCP_NODELAY` will be set for mysql connection.
@@ -597,17 +585,17 @@ fn from_url_basic(
     let ip_or_hostname = url
         .host_str()
         .map(String::from)
-        .unwrap_or("127.0.0.1".into());
+        .unwrap_or_else(|| "127.0.0.1".into());
     let tcp_port = url.port().unwrap_or(3306);
     let db_name = get_opts_db_name_from_url(&url);
 
     let query_pairs = url.query_pairs().into_owned().collect();
     let opts = InnerOpts {
-        user: user,
-        pass: pass,
-        ip_or_hostname: ip_or_hostname,
-        tcp_port: tcp_port,
-        db_name: db_name,
+        user,
+        pass,
+        ip_or_hostname,
+        tcp_port,
+        db_name,
         ..InnerOpts::default()
     };
 

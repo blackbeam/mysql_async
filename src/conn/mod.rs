@@ -116,7 +116,7 @@ impl ConnInner {
             wait_timeout: 0,
             stmt_cache: StmtCache::new(opts.get_stmt_cache_size()),
             socket: opts.get_socket().map(Into::into),
-            opts: opts,
+            opts,
             nonce: Vec::default(),
             auth_plugin: AuthPlugin::MysqlNativePassword,
             auth_switched: false,
@@ -242,8 +242,8 @@ impl Conn {
         let handshake_response = HandshakeResponse::new(
             &auth_data,
             self.inner.version,
-            self.inner.opts.get_user().as_ref().map(|x| x.as_ref()),
-            self.inner.opts.get_db_name().as_ref().map(|x| x.as_ref()),
+            self.inner.opts.get_user(),
+            self.inner.opts.get_db_name(),
             self.inner.auth_plugin.clone(),
             self.get_capabilities(),
         );
@@ -289,7 +289,12 @@ impl Conn {
                         A(conn.drop_packet())
                     }
                     Some(0x04) => {
-                        let mut pass = conn.inner.opts.get_pass().map(Vec::from).unwrap_or(vec![]);
+                        let mut pass = conn
+                            .inner
+                            .opts
+                            .get_pass()
+                            .map(Vec::from)
+                            .unwrap_or_default();
                         pass.push(0);
                         let fut = if conn.is_secure() {
                             A(conn.write_packet(&*pass))
@@ -299,8 +304,8 @@ impl Conn {
                                 .and_then(Conn::read_packet)
                                 .and_then(move |(conn, packet)| {
                                     let key = &packet.as_ref()[1..];
-                                    for i in 0..pass.len() {
-                                        pass[i] ^= conn.inner.nonce[i % conn.inner.nonce.len()];
+                                    for (i, byte) in pass.iter_mut().enumerate() {
+                                        *byte ^= conn.inner.nonce[i % conn.inner.nonce.len()];
                                     }
                                     let encrypted_pass = crypto::encrypt(&*pass, key);
                                     conn.write_packet(&*encrypted_pass)
@@ -344,10 +349,9 @@ impl Conn {
                         });
                     B(A(fut))
                 }
-                _ => B(B(err(DriverError::UnexpectedPacket {
-                    payload: packet.0.into(),
-                }
-                .into()))),
+                _ => B(B(err(
+                    DriverError::UnexpectedPacket { payload: packet.0 }.into()
+                ))),
             })
     }
 
@@ -425,7 +429,7 @@ impl Conn {
     fn reconnect_via_socket_if_needed(self) -> Box<MyFuture<Conn>> {
         if let Some(socket) = self.inner.socket.as_ref() {
             let opts = self.inner.opts.clone();
-            if let None = opts.get_socket() {
+            if opts.get_socket().is_none() {
                 let mut builder = OptsBuilder::from_opts(opts);
                 builder.socket(Some(&**socket));
                 let fut = Conn::new(builder).then(|result| match result {
@@ -435,7 +439,7 @@ impl Conn {
                 return Box::new(fut);
             }
         }
-        return Box::new(ok(self));
+        Box::new(ok(self))
     }
 
     /// Returns future that resolves to `Conn` with socket address stored in it.
@@ -477,8 +481,8 @@ impl Conn {
             .inner
             .opts
             .get_conn_ttl()
-            .unwrap_or(self.inner.wait_timeout) as i64;
-        idle_duration.num_milliseconds() > ttl * 1000
+            .unwrap_or(self.inner.wait_timeout);
+        idle_duration.num_milliseconds() > i64::from(ttl) * 1000
     }
 
     /// Returns future that resolves to a `Conn` with `COM_RESET_CONNECTION` executed on it.
@@ -604,7 +608,7 @@ impl ConnectionLike for Conn {
         self.inner.status
     }
 
-    fn set_affected_rows(&mut self, affected_rows: u64) -> () {
+    fn set_affected_rows(&mut self, affected_rows: u64) {
         self.inner.affected_rows = affected_rows;
     }
 
@@ -616,7 +620,7 @@ impl ConnectionLike for Conn {
         self.inner.last_command = last_command;
     }
 
-    fn set_last_insert_id(&mut self, last_insert_id: u64) -> () {
+    fn set_last_insert_id(&mut self, last_insert_id: u64) {
         self.inner.last_insert_id = last_insert_id;
     }
 
@@ -624,19 +628,19 @@ impl ConnectionLike for Conn {
         self.inner.has_result = meta;
     }
 
-    fn set_status(&mut self, status: consts::StatusFlags) -> () {
+    fn set_status(&mut self, status: consts::StatusFlags) {
         self.inner.status = status;
     }
 
-    fn set_warnings(&mut self, warnings: u16) -> () {
+    fn set_warnings(&mut self, warnings: u16) {
         self.inner.warnings = warnings;
     }
 
-    fn set_seq_id(&mut self, seq_id: u8) -> () {
+    fn set_seq_id(&mut self, seq_id: u8) {
         self.inner.seq_id = seq_id;
     }
 
-    fn touch(&mut self) -> () {
+    fn touch(&mut self) {
         self.inner.last_io = SteadyTime::now();
     }
 

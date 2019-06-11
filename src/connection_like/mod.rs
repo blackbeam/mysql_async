@@ -82,7 +82,7 @@ where
         <Self as ConnectionLikeWrapper>::take_stream(self)
     }
 
-    fn return_stream(&mut self, stream: io::Stream) -> () {
+    fn return_stream(&mut self, stream: io::Stream) {
         <Self as ConnectionLikeWrapper>::return_stream(self, stream)
     }
 
@@ -150,11 +150,11 @@ where
         self.conn_like_mut().set_in_transaction(in_transaction);
     }
 
-    fn set_last_command(&mut self, last_command: Command) -> () {
+    fn set_last_command(&mut self, last_command: Command) {
         self.conn_like_mut().set_last_command(last_command);
     }
 
-    fn set_last_insert_id(&mut self, last_insert_id: u64) -> () {
+    fn set_last_insert_id(&mut self, last_insert_id: u64) {
         self.conn_like_mut().set_last_insert_id(last_insert_id);
     }
 
@@ -162,19 +162,19 @@ where
         self.conn_like_mut().set_pending_result(meta);
     }
 
-    fn set_status(&mut self, status: StatusFlags) -> () {
+    fn set_status(&mut self, status: StatusFlags) {
         self.conn_like_mut().set_status(status);
     }
 
-    fn set_warnings(&mut self, warnings: u16) -> () {
+    fn set_warnings(&mut self, warnings: u16) {
         self.conn_like_mut().set_warnings(warnings);
     }
 
-    fn set_seq_id(&mut self, seq_id: u8) -> () {
+    fn set_seq_id(&mut self, seq_id: u8) {
         self.conn_like_mut().set_seq_id(seq_id);
     }
 
-    fn touch(&mut self) -> () {
+    fn touch(&mut self) {
         self.conn_like_mut().touch();
     }
 
@@ -231,7 +231,7 @@ pub trait ConnectionLike: Send {
         Box::new(fut)
     }
 
-    fn get_cached_stmt(&mut self, query: &String) -> Option<&InnerStmt> {
+    fn get_cached_stmt(&mut self, query: &str) -> Option<&InnerStmt> {
         self.stmt_cache_mut().get(query)
     }
 
@@ -289,7 +289,7 @@ pub trait ConnectionLike: Send {
                         .and_then(|(this, mut inner_stmt)| {
                             this.read_packets(inner_stmt.num_params as usize)
                                 .and_then(|(this, packets)| {
-                                    let params = if packets.len() > 0 {
+                                    let params = if !packets.is_empty() {
                                         let params = packets
                                             .into_iter()
                                             .map(|packet| {
@@ -327,7 +327,7 @@ pub trait ConnectionLike: Send {
                         .and_then(|(this, mut inner_stmt)| {
                             this.read_packets(inner_stmt.num_columns as usize)
                                 .and_then(|(this, packets)| {
-                                    let columns = if packets.len() > 0 {
+                                    let columns = if !packets.is_empty() {
                                         let columns = packets
                                             .into_iter()
                                             .map(|packet| {

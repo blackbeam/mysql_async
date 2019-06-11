@@ -17,7 +17,6 @@ use mysql_common::packets::RawPacket;
 use mysql_common::row::convert::FromRowError;
 
 use std::marker::PhantomData;
-use std::mem;
 use std::result::Result as StdResult;
 use std::sync::Arc;
 
@@ -477,16 +476,13 @@ impl<T: ConnectionLike + 'static, P: Protocol> ConnectionLikeWrapper for QueryRe
     fn return_stream(&mut self, stream: io::Stream) {
         match *self {
             QueryResult(Empty(ref mut conn_like, ..))
-            | QueryResult(WithRows(ref mut conn_like, ..)) => {
-                let actual_conn_like = mem::replace(conn_like, None);
-                match actual_conn_like {
-                    Some(A(..)) => panic!("Logic error: stream exists"),
-                    Some(B(streamless)) => {
-                        *conn_like = Some(A(streamless.return_stream(stream)));
-                    }
-                    None => unreachable!(),
+            | QueryResult(WithRows(ref mut conn_like, ..)) => match conn_like.take() {
+                Some(A(..)) => panic!("Logic error: stream exists"),
+                Some(B(streamless)) => {
+                    *conn_like = Some(A(streamless.return_stream(stream)));
                 }
-            }
+                None => unreachable!(),
+            },
         }
     }
 

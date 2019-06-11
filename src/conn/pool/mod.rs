@@ -81,7 +81,7 @@ impl Pool {
     pub fn new<O: Into<Opts>>(opts: O) -> Pool {
         let opts = opts.into();
         let pool_constraints = opts.get_pool_constraints().clone();
-        let pool = Pool {
+        Pool {
             opts,
             inner: Arc::new(Mutex::new(Inner {
                 closed: false,
@@ -92,9 +92,7 @@ impl Pool {
                 tasks: Vec::new(),
             })),
             pool_constraints,
-        };
-
-        pool
+        }
     }
 
     /// Creates new pool of connections.
@@ -125,9 +123,9 @@ impl Pool {
         let become_closed = self.with_inner(|mut inner| {
             if !inner.closed {
                 inner.closed = true;
-                return true;
+                true
             } else {
-                return false;
+                false
             }
         });
         if become_closed {
@@ -180,12 +178,10 @@ impl Pool {
 
             if conn.inner.in_transaction || conn.inner.has_result.is_some() {
                 inner.queue.push(conn.cleanup());
+            } else if inner.idle.len() >= min {
+                crate::conn::disconnect(conn);
             } else {
-                if inner.idle.len() >= min {
-                    crate::conn::disconnect(conn);
-                } else {
-                    inner.idle.push(conn);
-                }
+                inner.idle.push(conn);
             }
 
             while let Some(task) = inner.tasks.pop() {
@@ -243,15 +239,12 @@ impl Pool {
                             }
                         };
 
-                        match out {
-                            Err(err) => {
-                                // early return in case of error
-                                while let Some(i) = done_fut_idxs.pop() {
-                                    inner.$vec.swap_remove(i);
-                                }
-                                return Err(err)
+                        if let Err(err) = out {
+                            // early return in case of error
+                            while let Some(i) = done_fut_idxs.pop() {
+                                inner.$vec.swap_remove(i);
                             }
-                            _ => (),
+                            return Err(err)
                         }
                     }
 
@@ -304,7 +297,7 @@ impl Pool {
             Some(conn) => Ok(Ready(conn)),
             None => {
                 let new_conn_created = self.with_inner(|mut inner| {
-                    if inner.new.len() == 0 && inner.conn_count() < self.pool_constraints.max() {
+                    if inner.new.is_empty() && inner.conn_count() < self.pool_constraints.max() {
                         let new_conn = Conn::new(self.opts.clone());
                         inner.new.push(Box::new(new_conn));
                         true

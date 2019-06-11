@@ -52,11 +52,11 @@ impl InnerStmt {
         let num_params = reader.read_u16::<LE>()?;
         let warning_count = reader.read_u16::<LE>()?;
         Ok(InnerStmt {
-            named_params: named_params,
-            statement_id: statement_id,
-            num_columns: num_columns,
-            num_params: num_params,
-            warning_count: warning_count,
+            named_params,
+            statement_id,
+            num_columns,
+            num_params,
+            warning_count,
             params: None,
             columns: None,
         })
@@ -243,9 +243,9 @@ where
     {
         let params = params.into();
         match params {
-            Params::Positional(params) => return A(self.execute_positional(params)),
-            Params::Named(_) => return B(A(self.execute_named(params))),
-            Params::Empty => return B(B(self.execute_empty())),
+            Params::Positional(params) => A(self.execute_positional(params)),
+            Params::Named(_) => B(A(self.execute_named(params))),
+            Params::Empty => B(B(self.execute_empty())),
         }
     }
 
@@ -367,7 +367,7 @@ fn write_data(
     stmt_id: u32,
     row_data: Vec<u8>,
     params: Vec<Value>,
-    params_def: &Vec<Column>,
+    params_def: &[Column],
     null_bitmap: BitVec<u8>,
 ) {
     let capacity = 9 + null_bitmap.storage().len() + 1 + params.len() * 2 + row_data.len();

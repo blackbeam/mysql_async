@@ -98,7 +98,7 @@ impl Read for File {
             Ok(Message::BufFilled(data_buf)) => match data_buf {
                 Ok(data_buf) => {
                     self.waiting_for_readiness = false;
-                    if data_buf.len() == 0 && !buf.len() == 0 {
+                    if data_buf.is_empty() && !buf.is_empty() {
                         let _ = self.to_thread.send(Message::Done);
                     }
                     (&data_buf[..]).read(buf)
@@ -194,7 +194,7 @@ impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
             Box::new(fut) as BoxFuture<Box<_>>
         } else {
             let err_msg = format!("Path `{}' is not in white list", path.display());
-            return Box::new(Err(err_msg.into()).into_future());
+            Box::new(Err(err_msg.into()).into_future())
         }
     }
 }

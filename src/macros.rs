@@ -8,7 +8,7 @@
 
 macro_rules! const_assert {
     ($name:ident, $($xs:expr),+ $(,)*) => {
-        #[allow(unknown_lints, eq_op)]
+        #[allow(unknown_lints, clippy::eq_op)]
         const $name: [(); 0 - !($($xs)&&+) as usize] = [];
     };
 }

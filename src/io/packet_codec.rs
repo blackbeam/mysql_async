@@ -53,15 +53,13 @@ impl Decoder for PacketCodec {
             } else {
                 Ok(None)
             }
+        } else if buf.len() < 4 {
+            Ok(None)
         } else {
-            if buf.len() < 4 {
-                Ok(None)
-            } else {
-                let header = buf.split_to(4);
-                self.chunk_len = LittleEndian::read_uint(&header[..], 3) as isize;
-                self.seq_id = header[3];
-                self.decode(buf)
-            }
+            let header = buf.split_to(4);
+            self.chunk_len = LittleEndian::read_uint(&header[..], 3) as isize;
+            self.seq_id = header[3];
+            self.decode(buf)
         }
     }
 }
@@ -85,13 +83,13 @@ impl Encoder for PacketCodec {
         );
 
         for chunk in packet.chunks(MAX_PAYLOAD_LEN) {
-            buf.put_u32_le(chunk.len() as u32 | ((seq_id as u32) << 24));
+            buf.put_u32_le(chunk.len() as u32 | (u32::from(seq_id) << 24));
             buf.put(chunk);
             seq_id = seq_id.wrapping_add(1);
         }
 
         if empty_chunk_required {
-            buf.put_u32_be(seq_id as u32);
+            buf.put_u32_be(u32::from(seq_id));
             seq_id = seq_id.wrapping_add(1);
         }
 

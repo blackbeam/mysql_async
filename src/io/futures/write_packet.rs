@@ -29,7 +29,7 @@ pub fn new(stream: Stream, data: Vec<u8>, seq_id: u8) -> WritePacket {
         resulting_seq_id.wrapping_add(((data.len() / MAX_PAYLOAD_LEN) % 256) as u8);
 
     // empty tail packet will also add to the resulting sequence id
-    if data.len() > 0 && data.len() % MAX_PAYLOAD_LEN == 0 {
+    if !data.is_empty() && data.len() % MAX_PAYLOAD_LEN == 0 {
         resulting_seq_id = resulting_seq_id.wrapping_add(1);
     }
 
@@ -46,23 +46,19 @@ impl Future for WritePacket {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match self.data.take() {
-            Some(data) => match self
+        if let Some(data) = self.data.take() {
+            let send_result = self
                 .stream
                 .as_mut()
                 .unwrap()
                 .codec
                 .as_mut()
                 .unwrap()
-                .start_send((data, self.seq_id))?
-            {
-                AsyncSink::Ready => (),
-                AsyncSink::NotReady(data) => {
-                    self.data = Some(data.0);
-                    return Ok(Async::NotReady);
-                }
-            },
-            None => (),
+                .start_send((data, self.seq_id))?;
+            if let AsyncSink::NotReady(data) = send_result {
+                self.data = Some(data.0);
+                return Ok(Async::NotReady);
+            }
         }
 
         try_ready!(self

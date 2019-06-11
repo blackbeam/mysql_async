@@ -59,7 +59,7 @@ impl<T: ConnectionLike> Future for ReadPacket<T> {
                 conn_like.set_seq_id(seq_id.wrapping_add(1));
                 Ok(Ready((conn_like, packet)))
             }
-            None => return Err(DriverError::ConnectionClosed.into()),
+            None => Err(DriverError::ConnectionClosed.into()),
         }
     }
 }

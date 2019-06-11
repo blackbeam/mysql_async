@@ -196,10 +196,10 @@ pub use self::queryable::stmt::Stmt;
 
 /// Futures used in this crate
 pub mod futures {
+    pub use crate::conn::pool::futures::{DisconnectPool, GetConn};
     pub use crate::queryable::query_result::{
         ForEach, ForEachAndDrop, Map, MapAndDrop, Reduce, ReduceAndDrop,
     };
-    pub use crate::conn::pool::futures::{GetConn, DisconnectPool};
 }
 
 /// Traits used in this crate
