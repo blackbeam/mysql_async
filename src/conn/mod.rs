@@ -680,7 +680,7 @@ mod test {
         builder.stmt_cache_size(None);
         #[cfg(feature = "ssl")]
         {
-            let mut ssl_opts = SslOpts::new();
+            let mut ssl_opts = SslOpts::default();
             ssl_opts.set_danger_skip_domain_validation(true);
             ssl_opts.set_danger_accept_invalid_certs(true);
             builder.ssl_opts(ssl_opts);
