@@ -10,11 +10,7 @@ use futures::{Future, IntoFuture};
 use tokio::fs::File;
 use tokio_io::AsyncRead;
 
-use std::{
-    collections::HashSet,
-    path::PathBuf,
-    str::from_utf8,
-};
+use std::{collections::HashSet, path::PathBuf, str::from_utf8};
 
 use crate::{local_infile_handler::LocalInfileHandler, BoxFuture};
 
