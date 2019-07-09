@@ -197,8 +197,10 @@ pub struct Pool {
 
 impl fmt::Debug for Pool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TODO
-        f.debug_struct("Pool").finish()
+        f.debug_struct("Pool")
+            .field("opts", &self.opts)
+            .field("pool_constraints", &self.pool_constraints)
+            .finish()
     }
 }
 
