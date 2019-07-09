@@ -336,6 +336,7 @@ impl Pool {
                     }
 
                     return Ok(Async::Ready(GetConn {
+                        pool: Some(self.clone()),
                         inner: GetConnInner::Done(Some(conn)),
                     }));
                 }
@@ -368,6 +369,7 @@ impl Pool {
             if exist < self.pool_constraints.max() {
                 // we're allowed to make a new connection
                 return Ok(Async::Ready(GetConn {
+                    pool: Some(self.clone()),
                     inner: GetConnInner::Connecting(Box::new(Conn::new(self.opts.clone()))),
                 }));
             }
