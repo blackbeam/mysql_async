@@ -176,6 +176,7 @@ struct Inner {
     idle: crossbeam::queue::ArrayQueue<Conn>,
     wake: crossbeam::queue::SegQueue<Task>,
     exist: atomic::AtomicUsize,
+    extra_wakeups: atomic::AtomicUsize,
 
     // only used to spawn the recycler the first time we're in async context
     maker: Mutex<Option<mpsc::UnboundedReceiver<Conn>>>,
@@ -194,8 +195,19 @@ impl Inner {
                 }
 
                 // no point in waking up more, since we don't have anything for them
-                // TODO
-                break;
+                // there _may_ be some tasks that weren't _really_ waiting though, and we need to
+                // make sure that those notifications go to someone who cares about them.
+                let extra = self.extra_wakeups.swap(0, atomic::Ordering::AcqRel);
+                if extra == 0 {
+                    break;
+                }
+
+                // one thing is worth noting here -- if there aren't enough waiting tasks in .wake
+                // to account for the value in extra, that is _okay_. those extra tasks we "would
+                // have" notified will instead see that they can proceed directly when they call
+                // .poll_new_conn(), or alternatively will be woken up directly by the place that
+                // increments .extra_wakeups in the first place
+                readied = extra;
             }
         }
     }
@@ -233,6 +245,7 @@ impl Pool {
                 idle: crossbeam::queue::ArrayQueue::new(pool_constraints.max()),
                 wake: crossbeam::queue::SegQueue::new(),
                 exist: 0.into(),
+                extra_wakeups: 0.into(),
                 maker: Mutex::new(Some(rx)),
             }),
             drop: tx,
@@ -385,7 +398,51 @@ impl Pool {
             // to be woken up, that notification _really_ should have gone to some _other_ task,
             // which now _won't_ be woken up.
             //
-            // TODO
+            // thew way we're going to fix that is to deal with both possible cases:
+            //
+            //  - someone _will_ try to wake us up
+            //  - someone has _already_ tried to wake us up
+            //
+            // we do this by requesting an "extra" wakeup next time someone is waking people up,
+            // and also waking someone up (perhaps spuriously) in case we have already been
+            // notified.
+            if let Ok(task) = self.inner.wake.pop() {
+                if task.will_notify_current() {
+                    // phew -- we got out of that one easy!
+                    return Ok(Async::Ready(conn));
+                }
+
+                // if we _haven't_ been notified yet, someone else may be deciding who to wake up
+                // _right now_. if they choose us, that's wasted. so, let's make sure they wake up
+                // at least one other task.
+                self.inner
+                    .extra_wakeups
+                    .fetch_add(1, atomic::Ordering::AcqRel);
+
+                // if someone has not yet notified us, the +1 above will make sure that they wake
+                // up at least one task that's not us. that candidate set has to include the task
+                // we just pulled off the queue.
+                self.inner.wake.push(task.clone());
+
+                // if someone _did_ already choose to notify us, we want to pass that on.
+                // but we also need to notify the task we took for a more subtle reason.
+                // consider this task0, and two other tasks, task1 and task2:
+                //
+                //  - task1 pushed to wake queue
+                //  - task0 pushed to wake queue
+                //  - task0 pops task1 from wake queue
+                //  - task0 increments extra_wakeups
+                //  - task2 tries to do a wakeup -- wakes only task0 (task1 not on the queue yet)
+                //  - task0 pushes task1 onto the queue
+                //
+                // in this case, task1 might never be awoken again, which is not okay.
+                // hence:
+                task.notify();
+            } else {
+                // someone tried to notify us, but also, no-one else is waiting,
+                // so there's no-one to "forward" that wake-up to.
+            }
+
             return Ok(Async::Ready(conn));
         }
 
