@@ -6,14 +6,11 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures::{try_ready, Async, Future, Poll};
+use futures::{task, Async, Future, Poll};
 
-use crate::{
-    conn::pool::{Inner, Pool},
-    error::*,
-};
+use crate::conn::pool::{Inner, Pool};
 
-use std::sync::Arc;
+use std::sync::{atomic, Arc};
 
 /// Future that disconnects this pool from server and resolves to `()`.
 ///
@@ -31,10 +28,15 @@ pub fn new(pool: Pool) -> DisconnectPool {
 
 impl Future for DisconnectPool {
     type Item = ();
-    type Error = Error;
+    type Error = ();
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        // we need to wait for the recycler to exit
-        unimplemented!()
+        self.pool_inner.wake.push(task::current());
+
+        if self.pool_inner.closed.load(atomic::Ordering::Acquire) {
+            Ok(Async::Ready(()))
+        } else {
+            Ok(Async::NotReady)
+        }
     }
 }

@@ -140,15 +140,29 @@ impl Future for Recycler {
             self.discarded = 0;
         }
 
-        self.inner.wake(readied);
-
         if self.exiting && self.cleaning.is_empty() && self.discard.is_empty() {
             // we know that all Pool handles have been dropped (self.dropped.poll returned None).
 
             // if this assertion fails, where are the remaining connections?
             assert_eq!(self.inner.exist.load(atomic::Ordering::Acquire), 0);
 
-            // since there are no more Pools, we also know that no-one is waiting anymore.
+            // NOTE: it is _necessary_ that we set this _before_ we call .wake
+            // otherwise, the following may happen to the DisconnectPool future:
+            //
+            //  - We wake all in .wake
+            //  - DisconnectPool::poll adds to .wake
+            //  - DisconnectPool::poll reads .closed == false
+            //  - We set .closed = true
+            //
+            // At this point, DisconnectPool::poll will never be notified again.
+            self.inner.closed.store(true, atomic::Ordering::AcqRel);
+        }
+
+        self.inner.wake(readied);
+
+        if self.inner.closed.load(atomic::Ordering::Acquire) {
+            // since there are no more Pools, we also know that no-one is waiting anymore,
+            // so we don't have to worry about calling wake more times
             Ok(Async::Ready(()))
         } else {
             Ok(Async::NotReady)
@@ -158,6 +172,7 @@ impl Future for Recycler {
 
 struct Inner {
     close: atomic::AtomicBool,
+    closed: atomic::AtomicBool,
     idle: crossbeam::queue::ArrayQueue<Conn>,
     wake: crossbeam::queue::SegQueue<Task>,
     exist: atomic::AtomicUsize,
@@ -214,6 +229,7 @@ impl Pool {
             opts,
             inner: Arc::new(Inner {
                 close: false.into(),
+                closed: false.into(),
                 idle: crossbeam::queue::ArrayQueue::new(pool_constraints.max()),
                 wake: crossbeam::queue::SegQueue::new(),
                 exist: 0.into(),
