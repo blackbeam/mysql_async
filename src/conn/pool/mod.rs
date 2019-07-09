@@ -198,6 +198,10 @@ struct Inner {
 
 impl Inner {
     fn wake(&self, mut readied: usize) {
+        if readied == 0 {
+            return;
+        }
+
         while let Ok(task) = self.wake.pop() {
             task.notify();
             readied -= 1;
