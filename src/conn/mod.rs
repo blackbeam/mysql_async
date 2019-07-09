@@ -144,6 +144,11 @@ impl Conn {
         self.get_affected_rows()
     }
 
+    fn close(mut self) -> impl MyFuture<()> {
+        self.inner.disconnected = true;
+        self.cleanup().and_then(Conn::disconnect)
+    }
+
     fn is_secure(&self) -> bool {
         if let Some(ref stream) = self.inner.stream {
             stream.is_secure()

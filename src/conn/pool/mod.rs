@@ -6,16 +6,18 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use ::futures::stream::futures_unordered::FuturesUnordered;
 use ::futures::{
     task::{self, Task},
-    Async::{self, NotReady, Ready},
-    Future,
+    try_ready, Async, Future, Stream,
 };
+
+use tokio_sync::mpsc;
 
 use std::{
     fmt,
     str::FromStr,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{atomic, Arc, Mutex},
 };
 
 use crate::{
@@ -29,20 +31,136 @@ use crate::{
     BoxFuture, MyFuture,
 };
 
+// this is a really unfortunate name for a module
 pub mod futures;
 
-pub struct Inner {
-    closed: bool,
-    new: Vec<BoxFuture<Conn>>,
-    queue: Vec<BoxFuture<Conn>>,
-    idle: Vec<Conn>,
-    ongoing: usize,
-    tasks: Vec<Task>,
+struct Recycler {
+    inner: Arc<Inner>,
+    discard: FuturesUnordered<BoxFuture<()>>,
+    discarded: usize,
+    cleaning: FuturesUnordered<BoxFuture<Conn>>,
+    dropped: mpsc::UnboundedReceiver<Conn>,
+    min: usize,
+    exiting: bool,
+}
+
+impl Future for Recycler {
+    type Item = ();
+    type Error = Error;
+
+    fn poll(&mut self) -> Result<Async<Self::Item>> {
+        let mut readied = 0;
+
+        macro_rules! conn_decision {
+            ($self:ident, $readied:ident, $conn:ident) => {
+                if $conn.inner.stream.is_none() || $conn.inner.disconnected {
+                    // drop unestablished connection
+                    $self.discard.push(Box::new(::futures::future::ok(())));
+                } else if $conn.inner.in_transaction || $conn.inner.has_result.is_some() {
+                    $self.cleaning.push($conn.cleanup());
+                } else if $conn.expired()
+                    || $self.inner.idle.len() >= $self.min
+                    || $self.inner.close.load(atomic::Ordering::Acquire)
+                {
+                    $self.discard.push(Box::new($conn.close()));
+                } else {
+                    $self
+                        .inner
+                        .idle
+                        .push($conn)
+                        .expect("more connections than max");
+                    $readied += 1;
+                }
+            };
+        }
+
+        while !self.exiting {
+            // see if there are more connections for us to recycle
+            match self.dropped.poll().unwrap() {
+                Async::Ready(Some(conn)) => {
+                    conn_decision!(self, readied, conn);
+                }
+                Async::Ready(None) => {
+                    // no more connections are coming -- time to exit!
+                    self.exiting = true;
+                }
+                Async::NotReady => {
+                    // nope -- but let's still make progress on the ones we have
+                    break;
+                }
+            }
+        }
+
+        // if we're exiting, reclaim any idle connections
+        if self.exiting {
+            while let Ok(conn) = self.inner.idle.pop() {
+                conn_decision!(self, readied, conn);
+            }
+        }
+
+        // are any dirty connections ready for us to reclaim?
+        while let Async::Ready(Some(conn)) = self.cleaning.poll()? {
+            conn_decision!(self, readied, conn);
+        }
+
+        // are there any torn-down connections for us to deal with?
+        while let Async::Ready(Some(())) = self.discard.poll()? {
+            // yes! count it.
+            self.discarded += 1;
+        }
+
+        if self.discarded != 0 {
+            // we need to open up slots for new connctions to be established!
+            self.inner
+                .exist
+                .fetch_sub(self.discarded, atomic::Ordering::AcqRel);
+            readied += self.discarded;
+            self.discarded = 0;
+        }
+
+        self.inner.wake(readied);
+
+        if self.exiting && self.cleaning.is_empty() && self.discard.is_empty() {
+            // we know that all Pool handles have been dropped (self.dropped.poll returned None).
+
+            // if this assertion fails, where are the remaining connections?
+            assert_eq!(self.inner.exist.load(atomic::Ordering::Acquire), 0);
+
+            // since there are no more Pools, we also know that no-one is waiting anymore.
+            Ok(Async::Ready(()))
+        } else {
+            Ok(Async::NotReady)
+        }
+    }
+}
+
+struct Inner {
+    close: atomic::AtomicBool,
+    idle: crossbeam::queue::ArrayQueue<Conn>,
+    wake: crossbeam::queue::SegQueue<Task>,
+    exist: atomic::AtomicUsize,
+
+    // only used to spawn the recycler the first time we're in async context
+    maker: Mutex<Option<mpsc::UnboundedReceiver<Conn>>>,
 }
 
 impl Inner {
-    fn conn_count(&self) -> usize {
-        self.new.len() + self.idle.len() + self.queue.len() + self.ongoing
+    fn wake(&self, mut readied: usize) {
+        while let Ok(task) = self.wake.pop() {
+            task.notify();
+            readied -= 1;
+            if readied == 0 {
+                if self.close.load(atomic::Ordering::Acquire) {
+                    // wake up as many as we can -- they should all error
+                    readied = usize::max_value();
+                    continue;
+                }
+
+                // no point in waking up more, since we don't have anything for them
+                // TODO
+                break;
+            }
+        }
     }
 }
 
@@ -50,29 +168,15 @@ impl Inner {
 /// Asynchronous pool of MySql connections.
 pub struct Pool {
     opts: Opts,
-    inner: Arc<Mutex<Inner>>,
+    inner: Arc<Inner>,
     pool_constraints: PoolConstraints,
+    drop: mpsc::UnboundedSender<Conn>,
 }
 
 impl fmt::Debug for Pool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (new_len, idle_len, queue_len, ongoing, tasks_len) = self.with_inner(|inner| {
-            (
-                inner.new.len(),
-                inner.idle.len(),
-                inner.queue.len(),
-                inner.ongoing,
-                inner.tasks.len(),
-            )
-        });
-        f.debug_struct("Pool")
-            .field("pool_constraints", &self.pool_constraints)
-            .field("new connections count", &new_len)
-            .field("idle connections count", &idle_len)
-            .field("queue length", &queue_len)
-            .field("ongoing connections count", &ongoing)
-            .field("tasks count", &tasks_len)
-            .finish()
+        // TODO
+        f.debug_struct("Pool").finish()
     }
 }
 
@@ -81,16 +185,17 @@ impl Pool {
     pub fn new<O: Into<Opts>>(opts: O) -> Pool {
         let opts = opts.into();
         let pool_constraints = opts.get_pool_constraints().clone();
+        let (tx, rx) = mpsc::unbounded_channel();
         Pool {
             opts,
-            inner: Arc::new(Mutex::new(Inner {
-                closed: false,
-                new: Vec::with_capacity(pool_constraints.min()),
-                idle: Vec::new(),
-                queue: Vec::new(),
-                ongoing: 0,
-                tasks: Vec::new(),
-            })),
+            inner: Arc::new(Inner {
+                close: false.into(),
+                idle: crossbeam::queue::ArrayQueue::new(pool_constraints.max()),
+                wake: crossbeam::queue::SegQueue::new(),
+                exist: 0.into(),
+                maker: Mutex::new(Some(rx)),
+            }),
+            drop: tx,
             pool_constraints,
         }
     }
@@ -120,199 +225,137 @@ impl Pool {
     /// Active connections taken from this pool should be disconnected manually.
     /// Also all pending and new `GetConn`'s will resolve to error.
     pub fn disconnect(mut self) -> DisconnectPool {
-        let become_closed = self.with_inner(|mut inner| {
-            if !inner.closed {
-                inner.closed = true;
-                true
-            } else {
-                false
-            }
-        });
-        if become_closed {
-            while let Some(conn) = self.take_conn() {
-                crate::conn::disconnect(conn);
+        let was_closed = self.inner.close.swap(true, atomic::Ordering::AcqRel);
+        if !was_closed {
+            // eagerly purge active connections
+            while let Ok(conn) = self.inner.idle.pop() {
+                self.drop
+                    .try_send(conn)
+                    .expect("recycler is active as long as any Pool is");
             }
         }
         new_disconnect_pool(self)
     }
 
-    /// Returns true if futures is in queue.
-    fn in_queue(&self) -> bool {
-        self.with_inner(|inner| {
-            let count = inner.new.len() + inner.queue.len();
-            count > 0
-        })
-    }
-
-    /// A way to take connection from a pool.
-    fn take_conn(&mut self) -> Option<Conn> {
-        self.with_inner(|mut inner| {
-            while let Some(mut conn) = inner.idle.pop() {
-                if conn.expired() {
-                    crate::conn::disconnect(conn);
-                } else {
-                    conn.inner.pool = Some(self.clone());
-                    inner.ongoing += 1;
-                    return Some(conn);
-                }
-            }
-            None
-        })
-    }
-
     /// A way to return connection taken from a pool.
     fn return_conn(&mut self, conn: Conn) {
-        let min = self.pool_constraints.min();
+        // NOTE: we're not in async context here, so we can't block or return NotReady
+        // any and all cleanup work _has_ to be done in the spawned recycler
 
-        self.with_inner(|mut inner| {
-            inner.ongoing -= 1;
-
-            if inner.closed {
-                return;
-            }
-
-            if conn.inner.stream.is_none() {
-                // drop incomplete connection
-                return;
-            }
-
-            if conn.inner.in_transaction || conn.inner.has_result.is_some() {
-                inner.queue.push(conn.cleanup());
-            } else if inner.idle.len() >= min {
-                crate::conn::disconnect(conn);
-            } else {
-                inner.idle.push(conn);
-            }
-
-            while let Some(task) = inner.tasks.pop() {
-                task.notify()
-            }
-        });
-    }
-
-    fn with_inner<F, T>(&self, fun: F) -> T
-    where
-        F: FnOnce(MutexGuard<'_, Inner>) -> T,
-        T: 'static,
-    {
-        fun(self.inner.lock().unwrap())
-    }
-
-    /// Will manage lifetime of futures stored in a pool.
-    fn handle_futures(&mut self) -> Result<()> {
-        if !self.in_queue() {
-            // There is no futures in queue
-            return Ok(());
-        }
-
-        let mut handled = false;
-
-        let mut returned_conns: Vec<Conn> = vec![];
-
-        self.with_inner(|mut inner| {
-            macro_rules! handle {
-                ($vec:ident { $($p:pat => $b:block,)+ }) => ({
-                    let len = inner.$vec.len();
-                    let mut done_fut_idxs = Vec::new();
-
-                    for i in 0..len {
-                        let result = inner.$vec.get_mut(i).unwrap().poll();
-                        match result {
-                            Ok(Ready(_)) | Err(_) => done_fut_idxs.push(i),
-                            _ => (),
-                        }
-
-                        let out: Result<()> = match result {
-                            Ok(Ready(conn)) => {
-                                if inner.closed {
-                                    crate::conn::disconnect(conn);
-                                } else {
-                                    inner.ongoing += 1;
-                                    returned_conns.push(conn);
-                                }
-                                handled = true;
-                                Ok(())
-                            }
-                            $($p => $b),+
-                            _ => {
-                                Ok(())
-                            }
-                        };
-
-                        if let Err(err) = out {
-                            // early return in case of error
-                            while let Some(i) = done_fut_idxs.pop() {
-                                inner.$vec.swap_remove(i);
-                            }
-                            return Err(err)
-                        }
-                    }
-
-                    while let Some(i) = done_fut_idxs.pop() {
-                        inner.$vec.swap_remove(i);
-                    }
-                });
-            }
-
-            // Handle dirty connections.
-            handle!(queue {
-                // Drop it in case of error.
-                Err(_) => { Ok(()) },
-            });
-
-            // Handle connecting connections.
-            handle!(new {
-                Err(err) => {
-                    if !inner.closed {
-                        Err(err)
-                    } else {
-                        Ok(())
-                    }
-                },
-            });
-
-            Ok(())
-        })?;
-
-        for conn in returned_conns {
-            self.return_conn(conn);
-        }
-
-        if handled {
-            self.handle_futures()
+        // fast-path for when the connection is immediately ready to be reused
+        if conn.inner.stream.is_some()
+            && !conn.inner.disconnected
+            && !conn.expired()
+            && !conn.inner.in_transaction
+            && conn.inner.has_result.is_none()
+            && !self.inner.close.load(atomic::Ordering::Acquire)
+            && self.inner.idle.len() < self.pool_constraints.min()
+        {
+            self.inner
+                .idle
+                .push(conn)
+                .expect("more connections than max");
+            self.inner.wake(1);
         } else {
-            Ok(())
+            self.drop
+                .try_send(conn)
+                .expect("recycler is active as long as any Pool is");
         }
     }
 
-    /// Will poll pool for connection.
-    fn poll(&mut self) -> Result<Async<Conn>> {
-        if self.with_inner(|inner| inner.closed) {
-            return Err(DriverError::PoolDisconnected.into());
+    /// Poll the pool for an available connection.
+    fn poll_new_conn(&mut self) -> Result<Async<GetConn>> {
+        self.poll_new_conn_inner(false)
+    }
+
+    fn poll_new_conn_inner(&mut self, retrying: bool) -> Result<Async<GetConn>> {
+        if self.inner.close.load(atomic::Ordering::AcqRel) {
+            return Err(Error::Driver(DriverError::PoolDisconnected));
         }
 
-        self.handle_futures()?;
-
-        match self.take_conn() {
-            Some(conn) => Ok(Ready(conn)),
-            None => {
-                let new_conn_created = self.with_inner(|mut inner| {
-                    if inner.new.is_empty() && inner.conn_count() < self.pool_constraints.max() {
-                        let new_conn = Conn::new(self.opts.clone());
-                        inner.new.push(Box::new(new_conn));
-                        true
-                    } else {
-                        inner.tasks.push(task::current());
-                        false
+        loop {
+            match self.inner.idle.pop() {
+                Err(crossbeam::queue::PopError) => break,
+                Ok(conn) => {
+                    if conn.expired() {
+                        self.return_conn(conn);
+                        continue;
                     }
-                });
-                if new_conn_created {
-                    self.poll()
-                } else {
-                    Ok(NotReady)
+
+                    return Ok(Async::Ready(GetConn {
+                        inner: GetConnInner::Done(Some(conn)),
+                    }));
                 }
             }
         }
+
+        // we didn't _immediately_ get one -- try to make one
+        // we first try to just do a load so we don't do an unnecessary add then sub
+        let exist = self.inner.exist.load(atomic::Ordering::Acquire);
+        if exist < self.pool_constraints.max() {
+            // we may be allowed to make a new one!
+            let exist = self.inner.exist.fetch_add(1, atomic::Ordering::AcqRel);
+            if exist == 0 {
+                // we may have to start the recycler.
+                let mut lock = self.inner.maker.lock().unwrap();
+                if let Some(dropped) = lock.take() {
+                    // we're the first connection!
+                    tokio::spawn(
+                        Recycler {
+                            inner: self.inner.clone(),
+                            discard: FuturesUnordered::new(),
+                            discarded: 0,
+                            cleaning: FuturesUnordered::new(),
+                            dropped,
+                            min: self.pool_constraints.min(),
+                            exiting: false,
+                        }
+                        .map_err(|e| {
+                            // TODO
+                            panic!("{:?}", e);
+                        }),
+                    );
+                }
+            }
+
+            if exist < self.pool_constraints.max() {
+                // we're allowed to make a new connection
+                return Ok(Async::Ready(GetConn {
+                    inner: GetConnInner::Connecting(Box::new(Conn::new(self.opts.clone()))),
+                }));
+            }
+
+            let exist = self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
+            if exist < self.pool_constraints.max() {
+                // we'd _now_ be allowed to make a connection
+                return self.poll_new_conn_inner(retrying);
+            }
+        }
+
+        if !retrying {
+            // no go -- we have to wait
+            self.inner.wake.push(task::current());
+
+            // there's a potential race here -- imagine another task releases a connection after we
+            // try to poll .idle or check .exist, but before we push our task onto .wake. In that
+            // case, we might never be woken up again! so, we need to make those checks again here
+            // after we've scheduled ourselves for wakeup.
+            //
+            // an alternative strategy would be to _always_ push to .wake and then do the checks,
+            // but that would lead to a large number of spurious notifications/wakeups, as well as
+            // needless contention on .wake.
+            let conn = try_ready!(self.poll_new_conn_inner(true));
+
+            // this is a tricky case. we already registered ourselves as wanting to be woken up,
+            // but we now have a connection, so we won't be waiting. this means that _if_ we were
+            // to be woken up, that notification _really_ should have gone to some _other_ task,
+            // which now _won't_ be woken up.
+            //
+            // TODO
+            return Ok(Async::Ready(conn));
+        }
+
+        Ok(Async::NotReady)
     }
 }
 
@@ -358,6 +401,30 @@ mod test {
             .and_then(|_| pool.disconnect());
 
         run(fut).unwrap();
+    }
+
+    #[test]
+    fn can_handle_the_pressure() {
+        let mut runtime = tokio::runtime::Runtime::new().unwrap();
+        let pool = Pool::new(&**DATABASE_URL);
+        for _ in 0..10 {
+            use futures::{Sink, Stream};
+            let (tx, rx) = futures::sync::mpsc::unbounded();
+            for i in 0..10_000 {
+                let pool = pool.clone();
+                let tx = tx.clone();
+                runtime.spawn(futures::future::lazy(move || {
+                    pool.get_conn()
+                        .map_err(|e| unreachable!("{:?}", e))
+                        .and_then(move |_| tx.send(i).map_err(|e| unreachable!("{:?}", e)))
+                        .map(|_| ())
+                }));
+            }
+            drop(tx);
+            runtime.block_on(rx.fold(0, |_, _i| Ok(0))).unwrap();
+        }
+        drop(pool);
+        runtime.shutdown_on_idle().wait().unwrap();
     }
 
     #[test]
