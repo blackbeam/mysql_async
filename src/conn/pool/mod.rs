@@ -464,6 +464,7 @@ impl Drop for Conn {
 mod test {
     use futures::collect;
     use futures::Future;
+    use std::sync::atomic;
 
     use crate::{
         conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL, TransactionOptions,
@@ -568,12 +569,15 @@ mod test {
         let fut = ::futures::future::join_all(conns)
             .map(move |mut conns| {
                 let mut popped = 0;
-                assert_eq!(pool_clone.inner.lock().unwrap().conn_count(), POOL_MAX);
+                assert_eq!(
+                    pool_clone.inner.exist.load(atomic::Ordering::SeqCst),
+                    POOL_MAX
+                );
 
                 while let Some(_) = conns.pop().map(drop) {
                     popped += 1;
                     assert_eq!(
-                        pool_clone.inner.lock().unwrap().conn_count(),
+                        pool_clone.inner.exist.load(atomic::Ordering::SeqCst),
                         POOL_MAX + POOL_MIN - max(popped, POOL_MIN)
                     );
                 }
@@ -595,10 +599,16 @@ mod test {
             .collect::<Vec<_>>();
 
         let fut = ::futures::future::join_all(conns).map(move |mut conns| {
-            assert_eq!(pool_clone.inner.lock().unwrap().conn_count(), POOL_MAX);
+            assert_eq!(
+                pool_clone.inner.exist.load(atomic::Ordering::SeqCst),
+                POOL_MAX
+            );
 
             while let Some(_) = conns.pop().map(drop) {
-                assert_eq!(pool_clone.inner.lock().unwrap().conn_count(), POOL_MAX);
+                assert_eq!(
+                    pool_clone.inner.exist.load(atomic::Ordering::SeqCst),
+                    POOL_MAX
+                );
             }
         });
 
@@ -612,72 +622,34 @@ mod test {
         let fut = pool
             .get_conn()
             .join(pool.get_conn())
-            .and_then(move |(mut conn1, conn2)| {
+            .and_then(move |(conn1, _conn2)| {
                 let new_conn = pool_clone.get_conn();
-                conn1.inner.pool.as_mut().unwrap().handle_futures().unwrap();
                 assert_eq!(
                     conn1
                         .inner
                         .pool
                         .as_ref()
                         .unwrap()
-                        .with_inner(|inner| inner.new.len()),
-                    0
-                );
-                assert_eq!(
-                    conn1
                         .inner
-                        .pool
-                        .as_ref()
-                        .unwrap()
-                        .with_inner(|inner| inner.idle.len()),
-                    0
+                        .exist
+                        .load(atomic::Ordering::SeqCst),
+                    2
                 );
-                assert_eq!(
-                    conn2
-                        .inner
-                        .pool
-                        .as_ref()
-                        .unwrap()
-                        .with_inner(|inner| inner.queue.len()),
-                    0
-                );
+                assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
+                // NOTE: conn1 and conn2 are both dropped here
                 new_conn
             })
             .and_then(|conn1| {
-                assert_eq!(
-                    conn1
-                        .inner
-                        .pool
-                        .as_ref()
-                        .unwrap()
-                        .with_inner(|inner| inner.new.len()),
-                    0
-                );
-                assert_eq!(
-                    conn1
-                        .inner
-                        .pool
-                        .as_ref()
-                        .unwrap()
-                        .with_inner(|inner| inner.idle.len()),
-                    0
-                );
-                assert_eq!(
-                    conn1
-                        .inner
-                        .pool
-                        .as_ref()
-                        .unwrap()
-                        .with_inner(|inner| inner.queue.len()),
-                    0
-                );
+                // only one of conn1 and conn2 should have gone to idle,
+                // and should have immediately been picked up by new_conn (now conn1)
+                assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
+                // NOTE: new_conn (now conn1) is dropped here
                 Ok(())
             })
             .and_then(|_| {
-                assert_eq!(pool.with_inner(|inner| inner.new.len()), 0);
-                assert_eq!(pool.with_inner(|inner| inner.idle.len()), 1);
-                assert_eq!(pool.with_inner(|inner| inner.queue.len()), 0);
+                // the connection should be returned to idle
+                // (but may not have been returned _yet_)
+                assert!(pool.inner.idle.len() <= 1);
                 pool.disconnect()
             });
 

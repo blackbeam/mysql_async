@@ -8,7 +8,10 @@
 
 use futures::{task, Async, Future, Poll};
 
-use crate::conn::pool::{Inner, Pool};
+use crate::{
+    conn::pool::{Inner, Pool},
+    error::Error,
+};
 
 use std::sync::{atomic, Arc};
 
@@ -28,7 +31,7 @@ pub fn new(pool: Pool) -> DisconnectPool {
 
 impl Future for DisconnectPool {
     type Item = ();
-    type Error = ();
+    type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         self.pool_inner.wake.push(task::current());
