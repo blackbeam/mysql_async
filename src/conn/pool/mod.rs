@@ -9,7 +9,7 @@
 use ::futures::stream::futures_unordered::FuturesUnordered;
 use ::futures::{
     task::{self, Task},
-    try_ready, Async, Future, Stream,
+    try_ready, Async, Future, Poll, Stream,
 };
 
 use tokio_sync::mpsc;
@@ -46,9 +46,9 @@ struct Recycler {
 
 impl Future for Recycler {
     type Item = ();
-    type Error = Error;
+    type Error = ();
 
-    fn poll(&mut self) -> Result<Async<Self::Item>> {
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let mut readied = 0;
 
         macro_rules! conn_decision {
@@ -99,14 +99,36 @@ impl Future for Recycler {
         }
 
         // are any dirty connections ready for us to reclaim?
-        while let Async::Ready(Some(conn)) = self.cleaning.poll()? {
-            conn_decision!(self, readied, conn);
+        loop {
+            match self.cleaning.poll() {
+                Ok(Async::NotReady) | Ok(Async::Ready(None)) => break,
+                Ok(Async::Ready(Some(conn))) => conn_decision!(self, readied, conn),
+                Err(e) => {
+                    // an error occurred while cleaning a connection.
+                    // what do we do? replace it with a new connection?
+                    self.discarded += 1;
+                    // NOTE: we're discarding the error here
+                    let _ = e;
+                }
+            }
         }
 
         // are there any torn-down connections for us to deal with?
-        while let Async::Ready(Some(())) = self.discard.poll()? {
-            // yes! count it.
-            self.discarded += 1;
+        loop {
+            match self.discard.poll() {
+                Ok(Async::NotReady) | Ok(Async::Ready(None)) => break,
+                Ok(Async::Ready(Some(()))) => {
+                    // yes! count it.
+                    self.discarded += 1
+                }
+                Err(e) => {
+                    // an error occurred while closing a connection.
+                    // what do we do? we still replace it with a new connection..
+                    self.discarded += 1;
+                    // NOTE: we're discarding the error here
+                    let _ = e;
+                }
+            }
         }
 
         if self.discarded != 0 {
@@ -300,21 +322,15 @@ impl Pool {
                 let mut lock = self.inner.maker.lock().unwrap();
                 if let Some(dropped) = lock.take() {
                     // we're the first connection!
-                    tokio::spawn(
-                        Recycler {
-                            inner: self.inner.clone(),
-                            discard: FuturesUnordered::new(),
-                            discarded: 0,
-                            cleaning: FuturesUnordered::new(),
-                            dropped,
-                            min: self.pool_constraints.min(),
-                            exiting: false,
-                        }
-                        .map_err(|e| {
-                            // TODO
-                            panic!("{:?}", e);
-                        }),
-                    );
+                    tokio::spawn(Recycler {
+                        inner: self.inner.clone(),
+                        discard: FuturesUnordered::new(),
+                        discarded: 0,
+                        cleaning: FuturesUnordered::new(),
+                        dropped,
+                        min: self.pool_constraints.min(),
+                        exiting: false,
+                    });
                 }
             }
 
