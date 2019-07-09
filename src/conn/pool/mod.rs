@@ -39,9 +39,11 @@ struct Recycler {
     discard: FuturesUnordered<BoxFuture<()>>,
     discarded: usize,
     cleaning: FuturesUnordered<BoxFuture<Conn>>,
-    dropped: mpsc::UnboundedReceiver<Conn>,
+
+    // Option<Conn> so that we have a way to send a "I didn't make a Conn after all" signal
+    dropped: mpsc::UnboundedReceiver<Option<Conn>>,
     min: usize,
-    exiting: bool,
+    eof: bool,
 }
 
 impl Future for Recycler {
@@ -50,6 +52,7 @@ impl Future for Recycler {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let mut readied = 0;
+        let mut close = self.inner.close.load(atomic::Ordering::Acquire);
 
         macro_rules! conn_decision {
             ($self:ident, $readied:ident, $conn:ident) => {
@@ -58,10 +61,7 @@ impl Future for Recycler {
                     $self.discard.push(Box::new(::futures::future::ok(())));
                 } else if $conn.inner.in_transaction || $conn.inner.has_result.is_some() {
                     $self.cleaning.push($conn.cleanup());
-                } else if $conn.expired()
-                    || $self.inner.idle.len() >= $self.min
-                    || $self.inner.close.load(atomic::Ordering::Acquire)
-                {
+                } else if $conn.expired() || $self.inner.idle.len() >= $self.min || close {
                     $self.discard.push(Box::new($conn.close()));
                 } else {
                     $self
@@ -74,15 +74,23 @@ impl Future for Recycler {
             };
         }
 
-        while !self.exiting {
+        while !self.eof {
             // see if there are more connections for us to recycle
             match self.dropped.poll().unwrap() {
-                Async::Ready(Some(conn)) => {
+                Async::Ready(Some(Some(conn))) => {
                     conn_decision!(self, readied, conn);
+                }
+                Async::Ready(Some(None)) => {
+                    // someone signaled us that it's exit time
+                    close = self.inner.close.load(atomic::Ordering::Acquire);
+                    assert!(close);
+                    continue;
                 }
                 Async::Ready(None) => {
                     // no more connections are coming -- time to exit!
-                    self.exiting = true;
+                    self.inner.close.store(true, atomic::Ordering::Release);
+                    self.eof = true;
+                    close = true;
                 }
                 Async::NotReady => {
                     // nope -- but let's still make progress on the ones we have
@@ -91,8 +99,8 @@ impl Future for Recycler {
             }
         }
 
-        // if we're exiting, reclaim any idle connections
-        if self.exiting {
+        // if we've been asked to close, reclaim any idle connections
+        if close {
             while let Ok(conn) = self.inner.idle.pop() {
                 conn_decision!(self, readied, conn);
             }
@@ -140,10 +148,16 @@ impl Future for Recycler {
             self.discarded = 0;
         }
 
-        if self.exiting && self.cleaning.is_empty() && self.discard.is_empty() {
+        // NOTE: we are asserting here that no more connections will ever be returned to
+        // us. see the explanation in Pool::poll_new_conn for why this is okay, even during
+        // races on .exist
+        let effectively_eof = close && self.inner.exist.load(atomic::Ordering::Acquire) == 0;
+
+        if (self.eof || effectively_eof) && self.cleaning.is_empty() && self.discard.is_empty() {
             // we know that all Pool handles have been dropped (self.dropped.poll returned None).
 
             // if this assertion fails, where are the remaining connections?
+            assert_eq!(self.inner.idle.len(), 0);
             assert_eq!(self.inner.exist.load(atomic::Ordering::Acquire), 0);
 
             // NOTE: it is _necessary_ that we set this _before_ we call .wake
@@ -179,7 +193,7 @@ struct Inner {
     extra_wakeups: atomic::AtomicUsize,
 
     // only used to spawn the recycler the first time we're in async context
-    maker: Mutex<Option<mpsc::UnboundedReceiver<Conn>>>,
+    maker: Mutex<Option<mpsc::UnboundedReceiver<Option<Conn>>>>,
 }
 
 impl Inner {
@@ -219,7 +233,7 @@ pub struct Pool {
     opts: Opts,
     inner: Arc<Inner>,
     pool_constraints: PoolConstraints,
-    drop: mpsc::UnboundedSender<Conn>,
+    drop: mpsc::UnboundedSender<Option<Conn>>,
 }
 
 impl fmt::Debug for Pool {
@@ -280,12 +294,11 @@ impl Pool {
     pub fn disconnect(mut self) -> DisconnectPool {
         let was_closed = self.inner.close.swap(true, atomic::Ordering::AcqRel);
         if !was_closed {
-            // eagerly purge active connections
-            while let Ok(conn) = self.inner.idle.pop() {
-                self.drop
-                    .try_send(conn)
-                    .expect("recycler is active as long as any Pool is");
-            }
+            // make sure we wake up the Recycler.
+            //
+            // note the lack of an .expect() here, because the Recycler may decide that there are
+            // no connections to wait for and exit quickly!
+            let _ = self.drop.try_send(None).is_ok();
         }
         new_disconnect_pool(self)
     }
@@ -311,7 +324,7 @@ impl Pool {
             self.inner.wake(1);
         } else {
             self.drop
-                .try_send(conn)
+                .try_send(Some(conn))
                 .expect("recycler is active as long as any Pool is");
         }
     }
@@ -361,13 +374,33 @@ impl Pool {
                         cleaning: FuturesUnordered::new(),
                         dropped,
                         min: self.pool_constraints.min(),
-                        exiting: false,
+                        eof: false,
                     });
                 }
             }
 
             if exist < self.pool_constraints.max() {
                 // we're allowed to make a new connection
+
+                // note, however, that there is a race here:
+                // imagine that Pool::disconnect was _just_ called. that is, after we checked at
+                // the start of this method. the Recycler checks .exist right _before_ we increment
+                // it, and notices that it is 0, and thus believes it is allowed to exit. if we
+                // continue to make a new connection here, that connection would not have a way to
+                // be dropped as part of the pool.
+                //
+                // so, we check .close again here (after the increment). if it is now true, we know
+                // that the Recycler may have exited, and we give up. if it is false, we _know_
+                // that the Recyler _must_ see our +1 before it decides to exit.
+                if self.inner.close.load(atomic::Ordering::Acquire) {
+                    self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
+                    // make sure we notify the Recycler in case it was waiting for our +1
+                    self.drop
+                        .try_send(None)
+                        .expect("recycler is active as long as any Pool is");
+                    return Err(Error::Driver(DriverError::PoolDisconnected));
+                }
+
                 return Ok(Async::Ready(GetConn {
                     pool: Some(self.clone()),
                     inner: GetConnInner::Connecting(Box::new(Conn::new(self.opts.clone()))),
