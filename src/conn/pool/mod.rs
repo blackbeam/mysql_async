@@ -169,7 +169,7 @@ impl Future for Recycler {
             //  - We set .closed = true
             //
             // At this point, DisconnectPool::poll will never be notified again.
-            self.inner.closed.store(true, atomic::Ordering::AcqRel);
+            self.inner.closed.store(true, atomic::Ordering::Release);
         }
 
         self.inner.wake(readied);
@@ -335,7 +335,7 @@ impl Pool {
     }
 
     fn poll_new_conn_inner(&mut self, retrying: bool) -> Result<Async<GetConn>> {
-        if self.inner.close.load(atomic::Ordering::AcqRel) {
+        if self.inner.close.load(atomic::Ordering::Acquire) {
             return Err(Error::Driver(DriverError::PoolDisconnected));
         }
 
