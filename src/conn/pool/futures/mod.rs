@@ -6,6 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+pub(super) use self::get_conn::GetConnInner;
 pub use self::{
     disconnect_pool::{new as new_disconnect_pool, DisconnectPool},
     get_conn::{new as new_get_conn, GetConn},

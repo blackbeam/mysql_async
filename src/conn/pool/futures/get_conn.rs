@@ -6,20 +6,33 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures::{Future, Poll};
+use futures::{try_ready, Async, Future, Poll};
 
 use crate::{
     conn::{pool::Pool, Conn},
     error::*,
+    MyFuture,
 };
+
+pub(crate) enum GetConnInner {
+    New,
+    Done(Option<Conn>),
+    // TODO: one day this should be an existential
+    // TODO: impl Drop?
+    Connecting(Box<dyn MyFuture<Conn>>),
+}
 
 /// This future will take connection from a pool and resolve to `Conn`.
 pub struct GetConn {
-    pool: Pool,
+    pub(crate) pool: Option<Pool>,
+    pub(crate) inner: GetConnInner,
 }
 
 pub fn new(pool: &Pool) -> GetConn {
-    GetConn { pool: pool.clone() }
+    GetConn {
+        pool: Some(pool.clone()),
+        inner: GetConnInner::New,
+    }
 }
 
 impl Future for GetConn {
@@ -27,6 +40,50 @@ impl Future for GetConn {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        self.pool.poll()
+        loop {
+            match self.inner {
+                GetConnInner::New => match try_ready!(self
+                    .pool
+                    .as_mut()
+                    .expect("GetConn::poll polled after returning Async::Ready")
+                    .poll_new_conn())
+                .inner
+                {
+                    GetConnInner::Done(Some(conn)) => {
+                        self.inner = GetConnInner::Done(Some(conn));
+                    }
+                    GetConnInner::Connecting(conn_fut) => {
+                        self.inner = GetConnInner::Connecting(conn_fut);
+                    }
+                    GetConnInner::Done(None) => unreachable!(
+                        "Pool::poll_new_conn never gives out already-consumed GetConns"
+                    ),
+                    GetConnInner::New => {
+                        unreachable!("Pool::poll_new_conn never gives out GetConnInner::New")
+                    }
+                },
+                GetConnInner::Done(ref mut c @ Some(_)) => {
+                    let mut c = c.take().unwrap();
+                    c.inner.pool = Some(
+                        self.pool
+                            .take()
+                            .expect("GetConn::poll polled after returning Async::Ready"),
+                    );
+                    return Ok(Async::Ready(c));
+                }
+                GetConnInner::Done(None) => {
+                    unreachable!("GetConn::poll polled after returning Async::Ready");
+                }
+                GetConnInner::Connecting(ref mut f) => {
+                    let mut c = try_ready!(f.poll());
+                    c.inner.pool = Some(
+                        self.pool
+                            .take()
+                            .expect("GetConn::poll polled after returning Async::Ready"),
+                    );
+                    return Ok(Async::Ready(c));
+                }
+            }
+        }
     }
 }

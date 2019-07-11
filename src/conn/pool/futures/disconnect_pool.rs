@@ -6,23 +6,27 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures::{
-    Async::{NotReady, Ready},
-    Future, Poll,
+use futures::{task, Async, Future, Poll};
+
+use crate::{
+    conn::pool::{Inner, Pool},
+    error::Error,
 };
 
-use crate::{conn::pool::Pool, error::*};
+use std::sync::{atomic, Arc};
 
 /// Future that disconnects this pool from server and resolves to `()`.
 ///
 /// Active connections taken from this pool should be disconnected manually.
 /// Also all pending and new `GetConn`'s will resolve to error.
 pub struct DisconnectPool {
-    pool: Pool,
+    pool_inner: Arc<Inner>,
 }
 
 pub fn new(pool: Pool) -> DisconnectPool {
-    DisconnectPool { pool }
+    DisconnectPool {
+        pool_inner: pool.inner,
+    }
 }
 
 impl Future for DisconnectPool {
@@ -30,16 +34,12 @@ impl Future for DisconnectPool {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        self.pool.handle_futures()?;
+        self.pool_inner.wake.push(task::current());
 
-        let (new_len, queue_len) = self
-            .pool
-            .with_inner(|inner| (inner.new.len(), inner.queue.len()));
-
-        if (new_len, queue_len) == (0, 0) {
-            Ok(Ready(()))
+        if self.pool_inner.closed.load(atomic::Ordering::Acquire) {
+            Ok(Async::Ready(()))
         } else {
-            Ok(NotReady)
+            Ok(Async::NotReady)
         }
     }
 }
