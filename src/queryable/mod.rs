@@ -208,5 +208,5 @@ where
     }
 }
 
-impl Queryable for Conn {}
+impl<E: crate::MyExecutor> Queryable for Conn<E> {}
 impl<T: Queryable + ConnectionLike> Queryable for Transaction<T> {}

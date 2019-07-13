@@ -7,11 +7,8 @@
 // modified, or distributed except according to those terms.
 
 use ::futures::stream::futures_unordered::FuturesUnordered;
-use ::futures::{
-    task::{self, Task},
-    try_ready, Async, Future, Poll, Stream,
-};
-
+use ::futures::task::{self, Task};
+use ::futures::{try_ready, Async, Future, Poll, Stream};
 use tokio_sync::mpsc;
 
 use std::{
@@ -34,19 +31,19 @@ use crate::{
 // this is a really unfortunate name for a module
 pub mod futures;
 
-struct Recycler {
-    inner: Arc<Inner>,
+pub struct Recycler<T: crate::MyExecutor> {
+    inner: Arc<Inner<T>>,
     discard: FuturesUnordered<BoxFuture<()>>,
     discarded: usize,
-    cleaning: FuturesUnordered<BoxFuture<Conn>>,
+    cleaning: FuturesUnordered<BoxFuture<Conn<T>>>,
 
     // Option<Conn> so that we have a way to send a "I didn't make a Conn after all" signal
-    dropped: mpsc::UnboundedReceiver<Option<Conn>>,
+    dropped: mpsc::UnboundedReceiver<Option<Conn<T>>>,
     min: usize,
     eof: bool,
 }
 
-impl Future for Recycler {
+impl<T: crate::MyExecutor> Future for Recycler<T> {
     type Item = ();
     type Error = ();
 
@@ -184,19 +181,19 @@ impl Future for Recycler {
     }
 }
 
-struct Inner {
+struct Inner<E: crate::MyExecutor> {
     close: atomic::AtomicBool,
     closed: atomic::AtomicBool,
-    idle: crossbeam::queue::ArrayQueue<Conn>,
+    idle: crossbeam::queue::ArrayQueue<Conn<E>>,
     wake: crossbeam::queue::SegQueue<Task>,
     exist: atomic::AtomicUsize,
     extra_wakeups: atomic::AtomicUsize,
 
     // only used to spawn the recycler the first time we're in async context
-    maker: Mutex<Option<mpsc::UnboundedReceiver<Option<Conn>>>>,
+    maker: Mutex<Option<mpsc::UnboundedReceiver<Option<Conn<E>>>>>,
 }
 
-impl Inner {
+impl<E: crate::MyExecutor> Inner<E> {
     fn wake(&self, mut readied: usize) {
         if readied == 0 {
             return;
@@ -233,14 +230,15 @@ impl Inner {
 
 #[derive(Clone)]
 /// Asynchronous pool of MySql connections.
-pub struct Pool {
+pub struct Pool<T: crate::MyExecutor = ::tokio::executor::DefaultExecutor> {
     opts: Opts,
-    inner: Arc<Inner>,
+    inner: Arc<Inner<T>>,
+    executor: T,
     pool_constraints: PoolConstraints,
-    drop: mpsc::UnboundedSender<Option<Conn>>,
+    drop: mpsc::UnboundedSender<Option<Conn<T>>>,
 }
 
-impl fmt::Debug for Pool {
+impl<T: crate::MyExecutor> fmt::Debug for Pool<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Pool")
             .field("opts", &self.opts)
@@ -252,23 +250,7 @@ impl fmt::Debug for Pool {
 impl Pool {
     /// Creates new pool of connections.
     pub fn new<O: Into<Opts>>(opts: O) -> Pool {
-        let opts = opts.into();
-        let pool_constraints = opts.get_pool_constraints().clone();
-        let (tx, rx) = mpsc::unbounded_channel();
-        Pool {
-            opts,
-            inner: Arc::new(Inner {
-                close: false.into(),
-                closed: false.into(),
-                idle: crossbeam::queue::ArrayQueue::new(pool_constraints.max()),
-                wake: crossbeam::queue::SegQueue::new(),
-                exist: 0.into(),
-                extra_wakeups: 0.into(),
-                maker: Mutex::new(Some(rx)),
-            }),
-            drop: tx,
-            pool_constraints,
-        }
+        Pool::with_executor(::tokio::executor::DefaultExecutor::current(), opts)
     }
 
     /// Creates new pool of connections.
@@ -276,39 +258,11 @@ impl Pool {
         let opts = Opts::from_str(url.as_ref())?;
         Ok(Pool::new(opts))
     }
+}
 
-    /// Returns future that resolves to `Conn`.
-    pub fn get_conn(&self) -> GetConn {
-        new_get_conn(self)
-    }
-
-    /// Shortcut for `get_conn` followed by `start_transaction`.
-    pub fn start_transaction(
-        &self,
-        options: TransactionOptions,
-    ) -> impl MyFuture<Transaction<Conn>> {
-        self.get_conn()
-            .and_then(|conn| Queryable::start_transaction(conn, options))
-    }
-
-    /// Returns future that disconnects this pool from server and resolves to `()`.
-    ///
-    /// Active connections taken from this pool should be disconnected manually.
-    /// Also all pending and new `GetConn`'s will resolve to error.
-    pub fn disconnect(mut self) -> DisconnectPool {
-        let was_closed = self.inner.close.swap(true, atomic::Ordering::AcqRel);
-        if !was_closed {
-            // make sure we wake up the Recycler.
-            //
-            // note the lack of an .expect() here, because the Recycler may decide that there are
-            // no connections to wait for and exit quickly!
-            let _ = self.drop.try_send(None).is_ok();
-        }
-        new_disconnect_pool(self)
-    }
-
+impl<E: crate::MyExecutor> Pool<E> {
     /// A way to return connection taken from a pool.
-    fn return_conn(&mut self, conn: Conn) {
+    fn return_conn(&mut self, conn: Conn<E>) {
         // NOTE: we're not in async context here, so we can't block or return NotReady
         // any and all cleanup work _has_ to be done in the spawned recycler
 
@@ -333,12 +287,70 @@ impl Pool {
         }
     }
 
+    /// Creates new pool of connections.
+    pub fn with_executor<O: Into<Opts>>(executor: E, opts: O) -> Pool<E> {
+        let opts = opts.into();
+        let pool_constraints = opts.get_pool_constraints().clone();
+        let (tx, rx) = mpsc::unbounded_channel();
+        Pool {
+            opts,
+            executor,
+            inner: Arc::new(Inner {
+                close: false.into(),
+                closed: false.into(),
+                idle: crossbeam::queue::ArrayQueue::new(pool_constraints.max()),
+                wake: crossbeam::queue::SegQueue::new(),
+                exist: 0.into(),
+                extra_wakeups: 0.into(),
+                maker: Mutex::new(Some(rx)),
+            }),
+            drop: tx,
+            pool_constraints,
+        }
+    }
+
+    /// Creates new pool of connections.
+    pub fn from_url_with_executor<T: AsRef<str>>(executor: E, url: T) -> Result<Pool<E>> {
+        let opts = Opts::from_str(url.as_ref())?;
+        Ok(Pool::with_executor(executor, opts))
+    }
+
+    /// Returns future that resolves to `Conn`.
+    pub fn get_conn(&self) -> GetConn<E> {
+        new_get_conn(self)
+    }
+
+    /// Shortcut for `get_conn` followed by `start_transaction`.
+    pub fn start_transaction(
+        &self,
+        options: TransactionOptions,
+    ) -> impl MyFuture<Transaction<Conn<E>>> {
+        self.get_conn()
+            .and_then(|conn| Queryable::start_transaction(conn, options))
+    }
+
+    /// Returns future that disconnects this pool from server and resolves to `()`.
+    ///
+    /// Active connections taken from this pool should be disconnected manually.
+    /// Also all pending and new `GetConn`'s will resolve to error.
+    pub fn disconnect(mut self) -> DisconnectPool<E> {
+        let was_closed = self.inner.close.swap(true, atomic::Ordering::AcqRel);
+        if !was_closed {
+            // make sure we wake up the Recycler.
+            //
+            // note the lack of an .expect() here, because the Recycler may decide that there are
+            // no connections to wait for and exit quickly!
+            let _ = self.drop.try_send(None).is_ok();
+        }
+        new_disconnect_pool(self)
+    }
+
     /// Poll the pool for an available connection.
-    fn poll_new_conn(&mut self) -> Result<Async<GetConn>> {
+    fn poll_new_conn(&mut self) -> Result<Async<GetConn<E>>> {
         self.poll_new_conn_inner(false)
     }
 
-    fn poll_new_conn_inner(&mut self, retrying: bool) -> Result<Async<GetConn>> {
+    fn poll_new_conn_inner(&mut self, retrying: bool) -> Result<Async<GetConn<E>>> {
         if self.inner.close.load(atomic::Ordering::Acquire) {
             return Err(Error::Driver(DriverError::PoolDisconnected));
         }
@@ -354,7 +366,7 @@ impl Pool {
 
                     return Ok(Async::Ready(GetConn {
                         pool: Some(self.clone()),
-                        inner: GetConnInner::Done(Some(conn)),
+                        inner: GetConnInner::<E>::Done(Some(conn)),
                     }));
                 }
             }
@@ -371,7 +383,7 @@ impl Pool {
                 let mut lock = self.inner.maker.lock().unwrap();
                 if let Some(dropped) = lock.take() {
                     // we're the first connection!
-                    tokio::spawn(Recycler {
+                    self.executor.execute(Box::new(Recycler {
                         inner: self.inner.clone(),
                         discard: FuturesUnordered::new(),
                         discarded: 0,
@@ -379,7 +391,7 @@ impl Pool {
                         dropped,
                         min: self.pool_constraints.min(),
                         eof: false,
-                    });
+                    }))?;
                 }
             }
 
@@ -407,7 +419,10 @@ impl Pool {
 
                 return Ok(Async::Ready(GetConn {
                     pool: Some(self.clone()),
-                    inner: GetConnInner::Connecting(Box::new(Conn::new(self.opts.clone()))),
+                    inner: GetConnInner::<E>::Connecting(Box::new(Conn::with_executor(
+                        self.executor.clone(),
+                        self.opts.clone(),
+                    ))),
                 }));
             }
 
@@ -489,7 +504,7 @@ impl Pool {
     }
 }
 
-impl Drop for Conn {
+impl<E: crate::MyExecutor> Drop for Conn<E> {
     fn drop(&mut self) {
         if let Some(mut pool) = self.inner.pool.take() {
             pool.return_conn(self.take());
@@ -501,6 +516,7 @@ impl Drop for Conn {
 
 #[cfg(test)]
 mod test {
+    use futures::future::Executor;
     use futures::{collect, future, Future};
     use std::sync::atomic;
 
@@ -704,6 +720,57 @@ mod test {
             }),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn should_run_on_current_thread_runtime() {
+        let mut runtime = tokio::runtime::current_thread::Runtime::new().unwrap();
+        let pool = Pool::new(&**DATABASE_URL);
+        for _ in 0..10 {
+            use futures::{Sink, Stream};
+            let (tx, rx) = futures::sync::mpsc::unbounded();
+            for i in 0..10_000 {
+                let pool = pool.clone();
+                let tx = tx.clone();
+                runtime.spawn(futures::future::lazy(move || {
+                    pool.get_conn()
+                        .map_err(|e| unreachable!("{:?}", e))
+                        .and_then(move |_| tx.send(i).map_err(|e| unreachable!("{:?}", e)))
+                        .map(|_| ())
+                }));
+            }
+            drop(tx);
+            runtime.block_on(rx.fold(0, |_, _i| Ok(0))).unwrap();
+        }
+        drop(pool);
+        runtime.run().unwrap();
+    }
+
+    #[test]
+    fn should_run_on_current_thread_executor() {
+        let mut runtime = tokio::runtime::current_thread::Runtime::new().unwrap();
+        let handle = runtime.handle();
+        let pool = Pool::with_executor(handle.clone(), &**DATABASE_URL);
+        for _ in 0..10 {
+            use futures::{Sink, Stream};
+            let (tx, rx) = futures::sync::mpsc::unbounded();
+            for i in 0..10 {
+                let pool = pool.clone();
+                let tx = tx.clone();
+                handle
+                    .execute(futures::future::lazy(move || {
+                        pool.get_conn()
+                            .map_err(|e| unreachable!("{:?}", e))
+                            .and_then(move |_| tx.send(i).map_err(|e| unreachable!("{:?}", e)))
+                            .map(|_| ())
+                    }))
+                    .unwrap();
+            }
+            drop(tx);
+            runtime.block_on(rx.fold(0, |_, _i| Ok(0))).unwrap();
+        }
+        drop(pool);
+        runtime.run().unwrap();
     }
 
     #[test]

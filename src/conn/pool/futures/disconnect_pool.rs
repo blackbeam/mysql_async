@@ -19,17 +19,17 @@ use std::sync::{atomic, Arc};
 ///
 /// Active connections taken from this pool should be disconnected manually.
 /// Also all pending and new `GetConn`'s will resolve to error.
-pub struct DisconnectPool {
-    pool_inner: Arc<Inner>,
+pub struct DisconnectPool<T: crate::MyExecutor> {
+    pool_inner: Arc<Inner<T>>,
 }
 
-pub fn new(pool: Pool) -> DisconnectPool {
+pub fn new<T: crate::MyExecutor>(pool: Pool<T>) -> DisconnectPool<T> {
     DisconnectPool {
         pool_inner: pool.inner,
     }
 }
 
-impl Future for DisconnectPool {
+impl<T: crate::MyExecutor> Future for DisconnectPool<T> {
     type Item = ();
     type Error = Error;
 
