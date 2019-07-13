@@ -36,7 +36,7 @@ pub mod pool;
 pub mod stmt_cache;
 
 /// Helper function that asynchronously disconnects connection on the default tokio executor.
-fn disconnect(mut conn: Conn) {
+fn disconnect<E: crate::MyExecutor>(mut conn: Conn<E>) {
     use tokio::executor::{DefaultExecutor, Executor};
     let mut executor = DefaultExecutor::current();
 
@@ -48,13 +48,13 @@ fn disconnect(mut conn: Conn) {
     if !disconnected {
         // Server will report broken connection if spawn fails.
         let _ = executor.spawn(Box::new(
-            conn.cleanup().and_then(Conn::disconnect).map_err(drop),
+            conn.cleanup().and_then(Conn::<E>::disconnect).map_err(drop),
         ));
     }
 }
 
 /// Mysql connection
-struct ConnInner {
+struct ConnInner<T: crate::MyExecutor> {
     stream: Option<Stream>,
     id: u32,
     version: (u16, u16, u16),
@@ -67,7 +67,7 @@ struct ConnInner {
     last_insert_id: u64,
     affected_rows: u64,
     warnings: u16,
-    pool: Option<Pool>,
+    pool: Option<Pool<T>>,
     has_result: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>,
     in_transaction: bool,
     opts: Opts,
@@ -81,7 +81,7 @@ struct ConnInner {
     disconnected: bool,
 }
 
-impl fmt::Debug for ConnInner {
+impl<T: crate::MyExecutor> fmt::Debug for ConnInner<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Conn")
             .field("connection id", &self.id)
@@ -94,9 +94,9 @@ impl fmt::Debug for ConnInner {
     }
 }
 
-impl ConnInner {
+impl<T: crate::MyExecutor> ConnInner<T> {
     /// Constructs an empty connection.
-    fn empty(opts: Opts) -> ConnInner {
+    fn empty(opts: Opts) -> ConnInner<T> {
         ConnInner {
             last_command: consts::Command::COM_PING,
             capabilities: opts.get_capabilities(),
@@ -125,12 +125,120 @@ impl ConnInner {
     }
 }
 
-#[derive(Debug)]
-pub struct Conn {
-    inner: Box<ConnInner>,
+pub struct Conn<T: crate::MyExecutor = ::tokio::executor::DefaultExecutor> {
+    executor: T,
+    inner: Box<ConnInner<T>>,
+}
+
+impl<T: crate::MyExecutor> fmt::Debug for Conn<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.inner)
+    }
 }
 
 impl Conn {
+    /// Returns future that resolves to `Conn`.
+    pub fn new<T: Into<Opts>>(opts: T) -> impl MyFuture<Self> {
+        let executor = ::tokio::executor::DefaultExecutor::current();
+        Conn::with_executor(executor, opts)
+    }
+
+    /// Returns future that resolves to `Conn`.
+    pub fn from_url<T: AsRef<str>>(url: T) -> impl MyFuture<Self> {
+        Opts::from_str(url.as_ref())
+            .map_err(Error::from)
+            .into_future()
+            .and_then(Conn::new)
+    }
+}
+
+impl<E: crate::MyExecutor> Conn<E> {
+    /// Returns future that resolves to `Conn`.
+    pub fn from_url_with_executor<T: AsRef<str>>(executor: E, url: T) -> impl MyFuture<Self> {
+        Opts::from_str(url.as_ref())
+            .map_err(Error::from)
+            .into_future()
+            .and_then(|opts| Conn::with_executor(executor, opts))
+    }
+
+    /// Returns future that resolves to `Conn`.
+    pub fn with_executor<T: Into<Opts>>(executor: E, opts: T) -> impl MyFuture<Self> {
+        let opts = opts.into();
+        let mut conn = Conn::empty(executor, opts.clone());
+
+        let stream = if let Some(path) = opts.get_socket() {
+            A(Stream::connect_socket(path.to_owned()))
+        } else {
+            B(Stream::connect_tcp((
+                opts.get_ip_or_hostname(),
+                opts.get_tcp_port(),
+            )))
+        };
+
+        stream
+            .map(move |stream| {
+                conn.inner.stream = Some(stream);
+                conn
+            })
+            .and_then(Conn::setup_stream)
+            .and_then(Conn::handle_handshake)
+            .and_then(Conn::switch_to_ssl_if_needed)
+            .and_then(Conn::do_handshake_response)
+            .and_then(Conn::continue_auth)
+            .and_then(Conn::read_socket)
+            .and_then(Conn::reconnect_via_socket_if_needed)
+            .and_then(Conn::read_max_allowed_packet)
+            .and_then(Conn::read_wait_timeout)
+            .and_then(Conn::run_init_commands)
+    }
+
+    /// Hacky way to move connection through &mut. `self` becomes unusable.
+    fn take(&mut self) -> Self {
+        let executor = self.executor.clone();
+        let inner = mem::replace(&mut *self.inner, ConnInner::<E>::empty(Default::default()));
+        Conn {
+            executor,
+            inner: Box::new(inner),
+        }
+    }
+
+    /// Returns true if time since last io exceeds wait_timeout (or conn_ttl if specified in opts).
+    fn expired(&self) -> bool {
+        let idle_duration = SteadyTime::now() - self.inner.last_io;
+        let ttl = self
+            .inner
+            .opts
+            .get_conn_ttl()
+            .unwrap_or(self.inner.wait_timeout);
+        idle_duration.num_milliseconds() > i64::from(ttl) * 1000
+    }
+
+    fn is_secure(&self) -> bool {
+        if let Some(ref stream) = self.inner.stream {
+            stream.is_secure()
+        } else {
+            false
+        }
+    }
+
+    fn empty(executor: E, opts: Opts) -> Self {
+        Self {
+            executor,
+            inner: Box::new(ConnInner::empty(opts)),
+        }
+    }
+
+    fn setup_stream(mut self) -> Result<Self> {
+        if let Some(stream) = self.inner.stream.take() {
+            stream.set_keepalive_ms(self.inner.opts.get_tcp_keepalive())?;
+            stream.set_tcp_nodelay(self.inner.opts.get_tcp_nodelay())?;
+            self.inner.stream = Some(stream);
+            Ok(self)
+        } else {
+            unreachable!();
+        }
+    }
+
     /// Returns the ID generated by a query (usually `INSERT`) on a table with a column having the
     /// `AUTO_INCREMENT` attribute. Returns `None` if there was no previous query on the connection
     /// or if the query did not update an AUTO_INCREMENT value.
@@ -149,40 +257,7 @@ impl Conn {
         self.cleanup().and_then(Conn::disconnect)
     }
 
-    fn is_secure(&self) -> bool {
-        if let Some(ref stream) = self.inner.stream {
-            stream.is_secure()
-        } else {
-            false
-        }
-    }
-
-    /// Hacky way to move connection through &mut. `self` becomes unusable.
-    fn take(&mut self) -> Conn {
-        let inner = mem::replace(&mut *self.inner, ConnInner::empty(Default::default()));
-        Conn {
-            inner: Box::new(inner),
-        }
-    }
-
-    fn empty(opts: Opts) -> Self {
-        Self {
-            inner: Box::new(ConnInner::empty(opts)),
-        }
-    }
-
-    fn setup_stream(mut self) -> Result<Conn> {
-        if let Some(stream) = self.inner.stream.take() {
-            stream.set_keepalive_ms(self.inner.opts.get_tcp_keepalive())?;
-            stream.set_tcp_nodelay(self.inner.opts.get_tcp_nodelay())?;
-            self.inner.stream = Some(stream);
-            Ok(self)
-        } else {
-            unreachable!();
-        }
-    }
-
-    fn handle_handshake(self) -> impl MyFuture<Conn> {
+    fn handle_handshake(self) -> impl MyFuture<Self> {
         self.read_packet().and_then(move |(mut conn, packet)| {
             parse_handshake_packet(&*packet.0)
                 .map_err(Error::from)
@@ -212,7 +287,7 @@ impl Conn {
         })
     }
 
-    fn switch_to_ssl_if_needed(self) -> impl MyFuture<Conn> {
+    fn switch_to_ssl_if_needed(self) -> impl MyFuture<Self> {
         if self
             .inner
             .opts
@@ -238,7 +313,7 @@ impl Conn {
         }
     }
 
-    fn do_handshake_response(self) -> impl MyFuture<Conn> {
+    fn do_handshake_response(self) -> impl MyFuture<Self> {
         let auth_data = self
             .inner
             .auth_plugin
@@ -259,7 +334,7 @@ impl Conn {
     fn perform_auth_switch(
         mut self,
         auth_switch_request: AuthSwitchRequest<'_>,
-    ) -> BoxFuture<Conn> {
+    ) -> BoxFuture<Self> {
         if !self.inner.auth_switched {
             self.inner.auth_switched = true;
             self.inner.nonce = auth_switch_request.plugin_data().into();
@@ -277,7 +352,7 @@ impl Conn {
         }
     }
 
-    fn continue_auth(self) -> impl MyFuture<Conn> {
+    fn continue_auth(self) -> impl MyFuture<Self> {
         match self.inner.auth_plugin {
             AuthPlugin::MysqlNativePassword => A(self.continue_mysql_native_password_auth()),
             AuthPlugin::CachingSha2Password => B(self.continue_caching_sha2_password_auth()),
@@ -285,7 +360,7 @@ impl Conn {
         }
     }
 
-    fn continue_caching_sha2_password_auth(self) -> impl MyFuture<Conn> {
+    fn continue_caching_sha2_password_auth(self) -> impl MyFuture<Self> {
         self.read_packet()
             .and_then(|(conn, packet)| match packet.as_ref().get(0) {
                 Some(0x01) => match packet.as_ref().get(1) {
@@ -340,7 +415,7 @@ impl Conn {
             })
     }
 
-    fn continue_mysql_native_password_auth(self) -> impl MyFuture<Conn> {
+    fn continue_mysql_native_password_auth(self) -> impl MyFuture<Self> {
         self.read_packet()
             .and_then(|(this, packet)| match packet.0.get(0) {
                 Some(0x00) => A(ok(this)),
@@ -360,11 +435,11 @@ impl Conn {
             })
     }
 
-    fn drop_packet(self) -> impl MyFuture<Conn> {
+    fn drop_packet(self) -> impl MyFuture<Self> {
         self.read_packet().map(|(conn, _)| conn)
     }
 
-    fn run_init_commands(self) -> impl MyFuture<Conn> {
+    fn run_init_commands(self) -> impl MyFuture<Self> {
         let init = self
             .inner
             .opts
@@ -375,7 +450,7 @@ impl Conn {
 
         loop_fn(
             (init, self),
-            |(mut init, conn): (Vec<String>, Conn)| match init.pop() {
+            |(mut init, conn): (Vec<String>, Conn<E>)| match init.pop() {
                 None => A(ok(Loop::Break(conn))),
                 Some(query) => {
                     let fut = conn
@@ -387,60 +462,24 @@ impl Conn {
         )
     }
 
-    /// Returns future that resolves to `Conn`.
-    pub fn new<T: Into<Opts>>(opts: T) -> impl MyFuture<Conn> {
-        let opts = opts.into();
-        let mut conn = Conn::empty(opts.clone());
-
-        let stream = if let Some(path) = opts.get_socket() {
-            A(Stream::connect_socket(path.to_owned()))
-        } else {
-            B(Stream::connect_tcp((
-                opts.get_ip_or_hostname(),
-                opts.get_tcp_port(),
-            )))
-        };
-
-        stream
-            .map(move |stream| {
-                conn.inner.stream = Some(stream);
-                conn
-            })
-            .and_then(Conn::setup_stream)
-            .and_then(Conn::handle_handshake)
-            .and_then(Conn::switch_to_ssl_if_needed)
-            .and_then(Conn::do_handshake_response)
-            .and_then(Conn::continue_auth)
-            .and_then(Conn::read_socket)
-            .and_then(Conn::reconnect_via_socket_if_needed)
-            .and_then(Conn::read_max_allowed_packet)
-            .and_then(Conn::read_wait_timeout)
-            .and_then(Conn::run_init_commands)
-    }
-
-    /// Returns future that resolves to `Conn`.
-    pub fn from_url<T: AsRef<str>>(url: T) -> impl MyFuture<Conn> {
-        Opts::from_str(url.as_ref())
-            .map_err(Error::from)
-            .into_future()
-            .and_then(Conn::new)
-    }
-
     /// Will try to connect via socket using socket address in `self.inner.socket`.
     ///
     /// Returns new connection on success or self on error.
     ///
     /// Won't try to reconnect if socket connection is already enforced in `Opts`.
-    fn reconnect_via_socket_if_needed(self) -> Box<MyFuture<Conn>> {
+    fn reconnect_via_socket_if_needed(self) -> Box<MyFuture<Self>> {
         if let Some(socket) = self.inner.socket.as_ref() {
             let opts = self.inner.opts.clone();
             if opts.get_socket().is_none() {
                 let mut builder = OptsBuilder::from_opts(opts);
                 builder.socket(Some(&**socket));
-                let fut = Conn::new(builder).then(|result| match result {
-                    Ok(conn) => Ok(conn),
-                    Err(_) => Ok(self),
-                });
+                let fut =
+                    Conn::with_executor(self.executor.clone(), builder).then(
+                        |result| match result {
+                            Ok(conn) => Ok(conn),
+                            Err(_) => Ok(self),
+                        },
+                    );
                 return Box::new(fut);
             }
         }
@@ -479,19 +518,8 @@ impl Conn {
             })
     }
 
-    /// Returns true if time since last io exceeds wait_timeout (or conn_ttl if specified in opts).
-    fn expired(&self) -> bool {
-        let idle_duration = SteadyTime::now() - self.inner.last_io;
-        let ttl = self
-            .inner
-            .opts
-            .get_conn_ttl()
-            .unwrap_or(self.inner.wait_timeout);
-        idle_duration.num_milliseconds() > i64::from(ttl) * 1000
-    }
-
     /// Returns future that resolves to a `Conn` with `COM_RESET_CONNECTION` executed on it.
-    pub fn reset(self) -> impl MyFuture<Conn> {
+    pub fn reset(self) -> impl MyFuture<Self> {
         let pool = self.inner.pool.clone();
         let fut = if self.inner.version > (5, 7, 2) {
             let fut = self
@@ -500,7 +528,13 @@ impl Conn {
                 .map(|(conn, _)| conn);
             (ok(pool), A(fut))
         } else {
-            (ok(pool), B(Conn::new(self.inner.opts.clone())))
+            (
+                ok(pool),
+                B(Conn::with_executor(
+                    self.executor.clone(),
+                    self.inner.opts.clone(),
+                )),
+            )
         };
         fut.into_future().map(|(pool, mut conn)| {
             conn.inner.stmt_cache.clear();
@@ -515,7 +549,7 @@ impl Conn {
         self.drop_query("ROLLBACK")
     }
 
-    fn drop_result(mut self) -> impl MyFuture<Conn> {
+    fn drop_result(mut self) -> impl MyFuture<Self> {
         match self.inner.has_result.take() {
             Some((columns, None)) => A(B(query_result::assemble::<_, TextProtocol>(
                 self,
@@ -533,7 +567,7 @@ impl Conn {
         }
     }
 
-    fn cleanup(self) -> BoxFuture<Conn> {
+    fn cleanup(self) -> BoxFuture<Self> {
         if self.inner.has_result.is_some() {
             Box::new(self.drop_result().and_then(Self::cleanup))
         } else if self.inner.in_transaction {
@@ -544,7 +578,7 @@ impl Conn {
     }
 }
 
-impl ConnectionLike for Conn {
+impl<E: crate::MyExecutor> ConnectionLike for Conn<E> {
     fn take_stream(mut self) -> (Streamless<Self>, Stream) {
         let stream = self.inner.stream.take().expect("Logic error: stream taken");
         (Streamless::new(self), stream)

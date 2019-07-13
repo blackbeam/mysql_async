@@ -9,6 +9,7 @@
 pub use url::ParseError;
 
 use failure::Fail;
+use futures::future::ExecuteError;
 use mysql_common::{
     named_params::MixedParamsError, packets::ErrPacket, params::MissingNamedParameterError,
     row::Row, value::Value,
@@ -40,6 +41,9 @@ pub enum Error {
 
     #[fail(display = "URL error: `{}'", _0)]
     Url(#[cause] UrlError),
+
+    #[fail(display = "Connection pool error: `{}'", _0)]
+    Pool(#[cause] PoolError),
 }
 
 /// This type represents MySql server error.
@@ -49,6 +53,13 @@ pub struct ServerError {
     pub code: u16,
     pub message: String,
     pub state: String,
+}
+
+/// This type enumerates connection pool errors.
+#[derive(Debug, Fail)]
+pub enum PoolError {
+    #[fail(display = "Can't spawn Future on current executor")]
+    SpawnError,
 }
 
 /// This type enumerates connection URL errors.
@@ -241,5 +252,11 @@ impl From<ParseError> for UrlError {
 impl From<ParseError> for Error {
     fn from(err: ParseError) -> Self {
         Error::Url(err.into())
+    }
+}
+
+impl<T> From<ExecuteError<T>> for Error {
+    fn from(_err: ExecuteError<T>) -> Self {
+        Error::Pool(PoolError::SpawnError)
     }
 }

@@ -146,6 +146,23 @@ impl<T, U> MyFuture<T> for U where
 {
 }
 
+/// Alias for supported executor.
+pub trait MyExecutor:
+    ::futures::future::Executor<Box<dyn ::futures::Future<Item = (), Error = ()> + Send + 'static>>
+    + Send
+    + Clone
+    + 'static
+{
+}
+impl<T> MyExecutor for T
+where
+    T: ::futures::future::Executor<
+        Box<dyn ::futures::Future<Item = (), Error = ()> + Send + 'static>,
+    >,
+    T: Send + Clone + 'static,
+{
+}
+
 #[doc(inline)]
 pub use self::conn::Conn;
 

@@ -14,29 +14,29 @@ use crate::{
     MyFuture,
 };
 
-pub(crate) enum GetConnInner {
+pub(crate) enum GetConnInner<T: crate::MyExecutor> {
     New,
-    Done(Option<Conn>),
+    Done(Option<Conn<T>>),
     // TODO: one day this should be an existential
     // TODO: impl Drop?
-    Connecting(Box<dyn MyFuture<Conn>>),
+    Connecting(Box<dyn MyFuture<Conn<T>>>),
 }
 
 /// This future will take connection from a pool and resolve to `Conn`.
-pub struct GetConn {
-    pub(crate) pool: Option<Pool>,
-    pub(crate) inner: GetConnInner,
+pub struct GetConn<T: crate::MyExecutor> {
+    pub(crate) pool: Option<Pool<T>>,
+    pub(crate) inner: GetConnInner<T>,
 }
 
-pub fn new(pool: &Pool) -> GetConn {
+pub fn new<T: crate::MyExecutor>(pool: &Pool<T>) -> GetConn<T> {
     GetConn {
         pool: Some(pool.clone()),
         inner: GetConnInner::New,
     }
 }
 
-impl Future for GetConn {
-    type Item = Conn;
+impl<T: crate::MyExecutor> Future for GetConn<T> {
+    type Item = Conn<T>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
