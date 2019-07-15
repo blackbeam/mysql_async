@@ -338,6 +338,75 @@ impl Pool {
         self.poll_new_conn_inner(false)
     }
 
+    /// Try to acquire a new connection under a spinlock checking that we don't
+    /// violate `exist < self.pool_constraints.max()`.
+    fn spin_acquire_conn(&mut self) -> Option<Result<Async<GetConn>>> {
+        let mut exist = self.inner.exist.load(atomic::Ordering::Acquire);
+
+        // Try to atomically swap the exist value while checking our condition.
+        loop {
+            if exist >= self.pool_constraints.max() {
+                return None;
+            }
+
+            let swapped =
+                self.inner
+                    .exist
+                    .compare_and_swap(exist, exist + 1, atomic::Ordering::AcqRel);
+
+            if exist == swapped {
+                break;
+            }
+
+            exist = swapped;
+        }
+
+        // we're allowed to make a new connection
+
+        // note, however, that there is a race here:
+        // imagine that Pool::disconnect was _just_ called. that is, after we checked at
+        // the start of this method. the Recycler checks .exist right _before_ we increment
+        // it, and notices that it is 0, and thus believes it is allowed to exit. if we
+        // continue to make a new connection here, that connection would not have a way to
+        // be dropped as part of the pool.
+        //
+        // so, we check .close again here (after the increment). if it is now true, we know
+        // that the Recycler may have exited, and we give up. if it is false, we _know_
+        // that the Recyler _must_ see our +1 before it decides to exit.
+        if self.inner.close.load(atomic::Ordering::Acquire) {
+            self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
+            // make sure we notify the Recycler in case it was waiting for our +1
+            self.drop
+                .try_send(None)
+                .expect("recycler is active as long as any Pool is");
+            return Some(Err(Error::Driver(DriverError::PoolDisconnected)));
+        }
+
+        // We may be allowed to create a new recycler!
+        if exist == 0 {
+            // NB: Hold the lock for as little as possible.
+            let dropped = self.inner.maker.lock().unwrap().take();
+
+            if let Some(dropped) = dropped {
+                // We're the first connection!
+                tokio::spawn(Recycler {
+                    inner: self.inner.clone(),
+                    discard: FuturesUnordered::new(),
+                    discarded: 0,
+                    cleaning: FuturesUnordered::new(),
+                    dropped,
+                    min: self.pool_constraints.min(),
+                    eof: false,
+                });
+            }
+        }
+
+        Some(Ok(Async::Ready(GetConn {
+            pool: Some(self.clone()),
+            inner: GetConnInner::Connecting(Box::new(Conn::new(self.opts.clone()))),
+        })))
+    }
+
     fn poll_new_conn_inner(&mut self, retrying: bool) -> Result<Async<GetConn>> {
         if self.inner.close.load(atomic::Ordering::Acquire) {
             return Err(Error::Driver(DriverError::PoolDisconnected));
@@ -360,62 +429,8 @@ impl Pool {
             }
         }
 
-        // we didn't _immediately_ get one -- try to make one
-        // we first try to just do a load so we don't do an unnecessary add then sub
-        let exist = self.inner.exist.load(atomic::Ordering::Acquire);
-        if exist < self.pool_constraints.max() {
-            // we may be allowed to make a new one!
-            let exist = self.inner.exist.fetch_add(1, atomic::Ordering::AcqRel);
-            if exist == 0 {
-                // we may have to start the recycler.
-                let mut lock = self.inner.maker.lock().unwrap();
-                if let Some(dropped) = lock.take() {
-                    // we're the first connection!
-                    tokio::spawn(Recycler {
-                        inner: self.inner.clone(),
-                        discard: FuturesUnordered::new(),
-                        discarded: 0,
-                        cleaning: FuturesUnordered::new(),
-                        dropped,
-                        min: self.pool_constraints.min(),
-                        eof: false,
-                    });
-                }
-            }
-
-            if exist < self.pool_constraints.max() {
-                // we're allowed to make a new connection
-
-                // note, however, that there is a race here:
-                // imagine that Pool::disconnect was _just_ called. that is, after we checked at
-                // the start of this method. the Recycler checks .exist right _before_ we increment
-                // it, and notices that it is 0, and thus believes it is allowed to exit. if we
-                // continue to make a new connection here, that connection would not have a way to
-                // be dropped as part of the pool.
-                //
-                // so, we check .close again here (after the increment). if it is now true, we know
-                // that the Recycler may have exited, and we give up. if it is false, we _know_
-                // that the Recyler _must_ see our +1 before it decides to exit.
-                if self.inner.close.load(atomic::Ordering::Acquire) {
-                    self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
-                    // make sure we notify the Recycler in case it was waiting for our +1
-                    self.drop
-                        .try_send(None)
-                        .expect("recycler is active as long as any Pool is");
-                    return Err(Error::Driver(DriverError::PoolDisconnected));
-                }
-
-                return Ok(Async::Ready(GetConn {
-                    pool: Some(self.clone()),
-                    inner: GetConnInner::Connecting(Box::new(Conn::new(self.opts.clone()))),
-                }));
-            }
-
-            let exist = self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
-            if exist < self.pool_constraints.max() {
-                // we'd _now_ be allowed to make a connection
-                return self.poll_new_conn_inner(retrying);
-            }
+        if let Some(result) = self.spin_acquire_conn() {
+            return result;
         }
 
         if !retrying {
