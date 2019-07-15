@@ -18,8 +18,14 @@ pub(crate) enum GetConnInner {
     New,
     Done(Option<Conn>),
     // TODO: one day this should be an existential
-    // TODO: impl Drop?
     Connecting(Box<dyn MyFuture<Conn>>),
+}
+
+impl GetConnInner {
+    /// Take the value of the inner connection, resetting it to `New`.
+    pub fn take(&mut self) -> GetConnInner {
+        std::mem::replace(self, GetConnInner::New)
+    }
 }
 
 /// This future will take connection from a pool and resolve to `Conn`.
@@ -48,6 +54,7 @@ impl Future for GetConn {
                     .expect("GetConn::poll polled after returning Async::Ready")
                     .poll_new_conn())
                 .inner
+                .take()
                 {
                     GetConnInner::Done(Some(conn)) => {
                         self.inner = GetConnInner::Done(Some(conn));
@@ -75,14 +82,40 @@ impl Future for GetConn {
                     unreachable!("GetConn::poll polled after returning Async::Ready");
                 }
                 GetConnInner::Connecting(ref mut f) => {
-                    let mut c = try_ready!(f.poll());
-                    c.inner.pool = Some(
-                        self.pool
-                            .take()
-                            .expect("GetConn::poll polled after returning Async::Ready"),
-                    );
-                    return Ok(Async::Ready(c));
+                    let result = match f.poll() {
+                        Ok(Async::NotReady) => return Ok(Async::NotReady),
+                        Ok(Async::Ready(c)) => Ok(c),
+                        Err(e) => Err(e),
+                    };
+
+                    let pool = self
+                        .pool
+                        .take()
+                        .expect("GetConn::poll polled after returning Async::Ready");
+
+                    return match result {
+                        Ok(mut c) => {
+                            c.inner.pool = Some(pool);
+                            Ok(Async::Ready(c))
+                        }
+                        Err(e) => {
+                            pool.cancel_connection();
+                            Err(e)
+                        }
+                    };
                 }
+            }
+        }
+    }
+}
+
+impl Drop for GetConn {
+    fn drop(&mut self) {
+        // We drop a connection before it can be resolved, a.k.a. cancelling it.
+        // Make sure we maintain the necessary invariants towards the pool.
+        if let Some(pool) = self.pool.take() {
+            if let GetConnInner::Connecting(..) = self.inner.take() {
+                pool.cancel_connection();
             }
         }
     }

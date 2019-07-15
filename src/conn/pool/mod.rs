@@ -333,6 +333,16 @@ impl Pool {
         }
     }
 
+    /// Indicate that a connection failed to be created and release it.
+    ///
+    /// Decreases the exist counter since a broken or dropped connection should not count towards
+    /// the total.
+    fn cancel_connection(&self) {
+        let prev = self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
+        // NB: Wrapping around here would only be due to a programming error.
+        assert!(prev > 0, "exist must not wrap around");
+    }
+
     /// Poll the pool for an available connection.
     fn poll_new_conn(&mut self) -> Result<Async<GetConn>> {
         self.poll_new_conn_inner(false)
@@ -654,7 +664,7 @@ mod test {
     }
 
     #[test]
-    fn should_hold_bounds() {
+    fn should_hold_bounds1() {
         let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL));
         let pool_clone = pool.clone();
         let fut = pool
@@ -692,6 +702,48 @@ mod test {
             });
 
         run(fut).unwrap();
+    }
+
+    #[test]
+    fn should_hold_bounds_on_error() {
+        // Test that connections which err do not count towards the connection count in the pool.
+
+        let mut runtime = tokio::runtime::Runtime::new().unwrap();
+
+        // Should not be possible to connect to broadcast address.
+        let pool = Pool::new(String::from("mysql://255.255.255.255"));
+
+        let result = runtime.block_on(pool.get_conn().join(pool.get_conn()));
+
+        assert!(result.is_err());
+        assert_eq!(pool.inner.exist.load(atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn should_hold_bounds_on_get_conn_drop() {
+        let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL));
+        let mut runtime = tokio::runtime::Runtime::new().unwrap();
+
+        // This test is a bit more intricate: we need to poll the connection future once to get the
+        // pool to set it up, then drop it and make sure that the `exist` count is updated.
+        //
+        // We wrap all of it in a lazy future to get us into the tokio context that deals with
+        // setting up tasks. There might be a better way to do this but I don't remember right
+        // now. Besides, std::future is just around the corner making this obsolete.
+        //
+        // It depends on implementation details of GetConn, but that should be fine.
+        runtime
+            .block_on(future::lazy(move || {
+                let mut conn = pool.get_conn();
+                assert_eq!(pool.inner.exist.load(atomic::Ordering::SeqCst), 0);
+                let result = conn.poll().expect("successful first poll");
+                assert!(result.is_not_ready(), "not ready after first poll");
+                assert_eq!(pool.inner.exist.load(atomic::Ordering::SeqCst), 1);
+                drop(conn);
+                assert_eq!(pool.inner.exist.load(atomic::Ordering::SeqCst), 0);
+                Ok::<(), ()>(())
+            }))
+            .unwrap();
     }
 
     #[test]
