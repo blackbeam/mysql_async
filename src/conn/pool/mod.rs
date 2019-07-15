@@ -333,6 +333,14 @@ impl Pool {
         }
     }
 
+    /// Indicate that a connection failed to be created and release it.
+    ///
+    /// Decreases the exist counter since a broken or dropped connection should not count towards
+    /// the total.
+    fn release_conn(&self) {
+        self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
+    }
+
     /// Poll the pool for an available connection.
     fn poll_new_conn(&mut self) -> Result<Async<GetConn>> {
         self.poll_new_conn_inner(false)
@@ -654,7 +662,7 @@ mod test {
     }
 
     #[test]
-    fn should_hold_bounds() {
+    fn should_hold_bounds1() {
         let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL));
         let pool_clone = pool.clone();
         let fut = pool
