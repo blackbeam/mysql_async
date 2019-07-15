@@ -337,7 +337,7 @@ impl Pool {
     ///
     /// Decreases the exist counter since a broken or dropped connection should not count towards
     /// the total.
-    fn release_conn(&self) {
+    fn cancel_connection(&self) {
         self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
     }
 

@@ -99,7 +99,7 @@ impl Future for GetConn {
                             Ok(Async::Ready(c))
                         }
                         Err(e) => {
-                            pool.release_conn();
+                            pool.cancel_connection();
                             Err(e)
                         }
                     };
@@ -115,7 +115,7 @@ impl Drop for GetConn {
         // Make sure we maintain the necessary invariants towards the pool.
         if let Some(pool) = self.pool.take() {
             if let GetConnInner::Connecting(..) = self.inner.take() {
-                pool.release_conn();
+                pool.cancel_connection();
             }
         }
     }
