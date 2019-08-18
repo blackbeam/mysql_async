@@ -6,7 +6,8 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use url::{percent_encoding::percent_decode, Url};
+use percent_encoding::percent_decode;
+use url::Url;
 
 use std::{
     borrow::Cow,

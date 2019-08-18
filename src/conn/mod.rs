@@ -431,7 +431,7 @@ impl Conn {
     /// Returns new connection on success or self on error.
     ///
     /// Won't try to reconnect if socket connection is already enforced in `Opts`.
-    fn reconnect_via_socket_if_needed(self) -> Box<MyFuture<Conn>> {
+    fn reconnect_via_socket_if_needed(self) -> Box<dyn MyFuture<Conn>> {
         if let Some(socket) = self.inner.socket.as_ref() {
             let opts = self.inner.opts.clone();
             if opts.get_socket().is_none() {
