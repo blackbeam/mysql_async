@@ -146,8 +146,6 @@ pub struct InnerOpts {
     stmt_cache_size: usize,
 
     /// Driver will require SSL connection if this option isn't `None` (default to `None`).
-    ///
-    /// This option requires `ssl` feature to work.
     ssl_opts: Option<SslOpts>,
 
     /// Prefer socket connection (defaults to `true`).
@@ -260,8 +258,6 @@ impl Opts {
     }
 
     /// Driver will require SSL connection if this option isn't `None` (default to `None`).
-    ///
-    /// This option requires `ssl` feature to work.
     pub fn get_ssl_opts(&self) -> Option<&SslOpts> {
         self.inner.ssl_opts.as_ref()
     }
@@ -494,8 +490,6 @@ impl OptsBuilder {
     }
 
     /// Driver will require SSL connection if this option isn't `None` (default to `None`).
-    ///
-    /// This option requires `ssl` feature to work.
     pub fn ssl_opts<T: Into<Option<SslOpts>>>(&mut self, ssl_opts: T) -> &mut Self {
         self.opts.ssl_opts = ssl_opts.into();
         self

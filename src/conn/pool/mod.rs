@@ -513,95 +513,80 @@ impl Drop for Conn {
 
 #[cfg(test)]
 mod test {
-    use futures::{collect, future, Future};
+    use futures_util::stream::StreamExt;
     use std::sync::atomic;
 
     use crate::{
         conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL, TransactionOptions,
     };
 
-    /// Same as `tokio::run`, but will panic if future panics and will return the result
-    /// of future execution.
-    fn run<F, T, U>(future: F) -> Result<T, U>
-    where
-        F: Future<Item = T, Error = U> + Send + 'static,
-        T: Send + 'static,
-        U: Send + 'static,
-    {
-        let mut runtime = tokio::runtime::Runtime::new().unwrap();
-        let result = runtime.block_on(future);
-        runtime.shutdown_on_idle().wait().unwrap();
-        result
-    }
-
-    #[test]
-    fn should_connect() {
+    #[tokio::test]
+    async fn should_connect() {
         let pool = Pool::new(&**DATABASE_URL);
-        let fut = pool
-            .get_conn()
-            .and_then(|conn| conn.ping().map(|_| ()))
-            .and_then(|_| pool.disconnect());
-
-        run(fut).unwrap();
+        pool.get_conn().await.unwrap().ping().await.unwrap();
+        pool.disconnect().await.unwrap();
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn can_handle_the_pressure() {
-        let mut runtime = tokio::runtime::Runtime::new().unwrap();
+    async fn can_handle_the_pressure() {
         let pool = Pool::new(&**DATABASE_URL);
-        for _ in 0..10 {
-            use futures::{Sink, Stream};
-            let (tx, rx) = futures::sync::mpsc::unbounded();
+        for _ in 0..10i32 {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             for i in 0..10_000 {
                 let pool = pool.clone();
-                let tx = tx.clone();
-                runtime.spawn(futures::future::lazy(move || {
-                    pool.get_conn()
-                        .map_err(|e| unreachable!("{:?}", e))
-                        .and_then(move |_| tx.send(i).map_err(|e| unreachable!("{:?}", e)))
-                        .map(|_| ())
-                }));
+                let mut tx = tx.clone();
+                tokio::spawn(async move {
+                    let _ = pool.get_conn().await.unwrap();
+                    tx.try_send(i).unwrap();
+                });
             }
             drop(tx);
-            runtime.block_on(rx.fold(0, |_, _i| Ok(0))).unwrap();
+            // see that all the tx's eventually complete
+            while let Some(_) = rx.next().await {}
         }
         drop(pool);
-        runtime.shutdown_on_idle().wait().unwrap();
     }
 
-    #[test]
-    fn should_start_transaction() {
+    #[tokio::test]
+    async fn should_start_transaction() {
         let pool = Pool::new(format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL));
-        let fut = pool
+        pool.get_conn()
+            .await
+            .unwrap()
+            .drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)")
+            .await
+            .unwrap();
+        let _ = pool
+            .start_transaction(TransactionOptions::default())
+            .await
+            .unwrap()
+            .batch_exec("INSERT INTO tmp (id) VALUES (?)", vec![(1,), (2,)])
+            .await
+            .unwrap()
+            .prep_exec("SELECT * FROM tmp", ())
+            .await
+            .unwrap();
+        let row_opt = pool
             .get_conn()
-            .and_then(|conn| conn.drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)"))
-            .and_then({
-                let pool = pool.clone();
-                move |_| pool.start_transaction(TransactionOptions::default())
-            })
-            .and_then(|transaction| {
-                transaction.batch_exec("INSERT INTO tmp (id) VALUES (?)", vec![(1,), (2,)])
-            })
-            .and_then(|transaction| transaction.prep_exec("SELECT * FROM tmp", ()))
-            .map(|_| ())
-            .and_then({
-                let pool = pool.clone();
-                move |_| pool.get_conn()
-            })
-            .and_then(|conn| conn.first("SELECT COUNT(*) FROM tmp"))
-            .and_then(|(_, row_opt)| {
-                assert_eq!(row_opt, Some((0u8,)));
-                pool.get_conn()
-                    .and_then(|conn| conn.drop_query("DROP TABLE tmp"))
-                    .and_then(move |_| pool.disconnect())
-            });
-
-        run(fut).unwrap();
+            .await
+            .unwrap()
+            .first("SELECT COUNT(*) FROM tmp")
+            .await
+            .unwrap()
+            .1;
+        assert_eq!(row_opt, Some((0u8,)));
+        pool.get_conn()
+            .await
+            .unwrap()
+            .drop_query("DROP TABLE tmp")
+            .await
+            .unwrap();
+        pool.disconnect().await.unwrap();
     }
 
-    #[test]
-    fn should_hold_bounds2() {
+    #[tokio::test]
+    async fn should_hold_bounds2() {
         use std::cmp::min;
 
         const POOL_MIN: usize = 5;
@@ -617,110 +602,95 @@ mod test {
         let pool_clone = pool.clone();
         let conns = (0..POOL_MAX).map(|_| pool.get_conn()).collect::<Vec<_>>();
 
-        let fut = ::futures::future::join_all(conns)
-            .and_then(|conns| {
-                // we want to continuously drop connections
-                // and check that they are _actually_ dropped until we reach POOL_MIN
-                assert_eq!(
-                    pool_clone.inner.exist.load(atomic::Ordering::SeqCst),
-                    POOL_MAX
-                );
+        let mut conns = futures_util::try_future::try_join_all(conns).await.unwrap();
 
-                future::loop_fn((pool_clone, conns), move |(pool_clone, mut conns)| {
-                    // first, drop a connection
-                    let _ = conns.pop();
+        // we want to continuously drop connections
+        // and check that they are _actually_ dropped until we reach POOL_MIN
+        assert_eq!(
+            pool_clone.inner.exist.load(atomic::Ordering::SeqCst),
+            POOL_MAX
+        );
 
-                    // then, wait for a bit to let the connection be reclaimed
-                    tokio::timer::Delay::new(
-                        std::time::Instant::now() + std::time::Duration::from_millis(100),
-                    )
-                    .map_err(|e| unimplemented!("{:?}", e))
-                    .map(|_| {
-                        // now check that we have the expected # of connections
-                        // this may look a little funky, but think of it this way:
-                        //
-                        //  - if we hold all 10 connections, we expect 10
-                        //  - if we drop one,  we still expect 10, because POOL_MIN limits
-                        //    the number of _idle_ connections (of which there is only 1)
-                        //  - once we've dropped 5, there are now 5 idle connections. thus,
-                        //    if we drop one more, we _now_ expect there to be only 9
-                        //    connections total (no more connections should be pushed to
-                        //    idle).
-                        let dropped = POOL_MAX - conns.len();
-                        let idle = min(dropped, POOL_MIN);
-                        let expected = conns.len() + idle;
-                        let have = pool_clone.inner.exist.load(atomic::Ordering::SeqCst);
-                        assert_eq!(have, expected);
+        while !conns.is_empty() {
+            // first, drop a connection
+            let _ = conns.pop();
 
-                        if conns.is_empty() {
-                            future::Loop::Break(pool_clone)
-                        } else {
-                            future::Loop::Continue((pool_clone, conns))
-                        }
-                    })
-                })
-            })
-            .and_then(|pool| pool.disconnect());
+            // then, wait for a bit to let the connection be reclaimed
+            tokio::timer::delay(std::time::Instant::now() + std::time::Duration::from_millis(100))
+                .await;
 
-        run(fut).unwrap();
+            // now check that we have the expected # of connections
+            // this may look a little funky, but think of it this way:
+            //
+            //  - if we hold all 10 connections, we expect 10
+            //  - if we drop one,  we still expect 10, because POOL_MIN limits
+            //    the number of _idle_ connections (of which there is only 1)
+            //  - once we've dropped 5, there are now 5 idle connections. thus,
+            //    if we drop one more, we _now_ expect there to be only 9
+            //    connections total (no more connections should be pushed to
+            //    idle).
+            let dropped = POOL_MAX - conns.len();
+            let idle = min(dropped, POOL_MIN);
+            let expected = conns.len() + idle;
+            let have = pool_clone.inner.exist.load(atomic::Ordering::SeqCst);
+            assert_eq!(have, expected);
+        }
+
+        pool.disconnect().await.unwrap();
     }
 
-    #[test]
-    fn should_hold_bounds1() {
+    #[tokio::test]
+    async fn should_hold_bounds1() {
         let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL));
         let pool_clone = pool.clone();
-        let fut = pool
-            .get_conn()
-            .join(pool.get_conn())
-            .and_then(move |(conn1, _conn2)| {
-                let new_conn = pool_clone.get_conn();
-                assert_eq!(
-                    conn1
-                        .inner
-                        .pool
-                        .as_ref()
-                        .unwrap()
-                        .inner
-                        .exist
-                        .load(atomic::Ordering::SeqCst),
-                    2
-                );
-                assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
-                // NOTE: conn1 and conn2 are both dropped here
-                new_conn
-            })
-            .and_then(|conn1| {
-                // only one of conn1 and conn2 should have gone to idle,
-                // and should have immediately been picked up by new_conn (now conn1)
-                assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
-                // NOTE: new_conn (now conn1) is dropped here
-                Ok(())
-            })
-            .and_then(|_| {
-                // the connection should be returned to idle
-                // (but may not have been returned _yet_)
-                assert!(pool.inner.idle.len() <= 1);
-                pool.disconnect()
-            });
 
-        run(fut).unwrap();
+        let (conn1, conn2) = futures_util::try_future::try_join(pool.get_conn(), pool.get_conn())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            conn1
+                .inner
+                .pool
+                .as_ref()
+                .unwrap()
+                .inner
+                .exist
+                .load(atomic::Ordering::SeqCst),
+            2
+        );
+        assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
+
+        drop(conn1);
+        drop(conn2);
+        // only one of conn1 and conn2 should have gone to idle,
+        // and should have immediately been picked up by new_conn (now conn1)
+        let conn1 = pool_clone.get_conn().await.unwrap();
+        assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
+
+        drop(conn1);
+
+        // the connection should be returned to idle
+        // (but may not have been returned _yet_)
+        assert!(pool.inner.idle.len() <= 1);
+        pool.disconnect().await.unwrap();
     }
 
-    #[test]
-    fn should_hold_bounds_on_error() {
-        // Test that connections which err do not count towards the connection count in the pool.
-
-        let mut runtime = tokio::runtime::Runtime::new().unwrap();
-
+    // Test that connections which err do not count towards the connection count in the pool.
+    #[tokio::test]
+    async fn should_hold_bounds_on_error() {
         // Should not be possible to connect to broadcast address.
         let pool = Pool::new(String::from("mysql://255.255.255.255"));
 
-        let result = runtime.block_on(pool.get_conn().join(pool.get_conn()));
-
-        assert!(result.is_err());
+        assert!(
+            futures_util::try_future::try_join(pool.get_conn(), pool.get_conn())
+                .await
+                .is_err()
+        );
         assert_eq!(pool.inner.exist.load(atomic::Ordering::SeqCst), 0);
     }
 
+    /*
     #[test]
     fn should_hold_bounds_on_get_conn_drop() {
         let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL));
@@ -747,19 +717,19 @@ mod test {
             }))
             .unwrap();
     }
+    */
 
-    #[test]
-    fn droptest() {
+    #[tokio::test]
+    async fn droptest() {
         let pool = Pool::new(&**DATABASE_URL);
-        run(
-            collect((0..10).map(|_| pool.get_conn()).collect::<Vec<_>>()).map(move |conns| {
-                drop(conns);
-                drop(pool);
-            }),
-        )
-        .unwrap();
+        let conns = futures_util::try_future::try_join_all((0..10).map(|_| pool.get_conn()))
+            .await
+            .unwrap();
+        drop(conns);
+        drop(pool);
     }
 
+    /*
     #[test]
     #[ignore]
     fn should_not_panic_if_dropped_without_tokio_runtime() {
@@ -777,6 +747,7 @@ mod test {
         .unwrap();
         // pool will drop here
     }
+    */
 
     #[cfg(feature = "nightly")]
     mod bench {

@@ -10,6 +10,7 @@ use ::futures::Future;
 use mysql_async::error::Error;
 use mysql_async::prelude::*;
 use mysql_async::{MyFuture, Opts, Pool, QueryResult};
+use tokio::prelude::*;
 
 use std::env;
 use std::io;
@@ -68,15 +69,12 @@ where
     })
 }
 
-#[test]
-fn use_generic_code() {
+#[tokio::test]
+async fn use_generic_code() {
     let pool = Pool::new(Opts::from_url(&*get_url()).unwrap());
-    let fut = pool
-        .get_conn()
-        .and_then(move |conn| conn.query("SELECT 1, 2, 3"))
-        .and_then(get_single_result::<(u8, u8, u8), _, _>)
-        .and_then(|out| pool.disconnect().map(move |_| out));
-
-    let result = run(fut).unwrap();
+    let conn = pool.get_conn().await.unwrap();
+    let result = conn.query("SELECT 1, 2, 3").await.unwrap();
+    let result = result.get_single_result::<(u8, u8, u8), _, _>().unwrap();
+    pool.disconnect().await.unwrap();
     assert_eq!(result, (1, 2, 3));
 }
