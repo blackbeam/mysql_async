@@ -9,11 +9,14 @@
 //! This module implements async TLS streams and source
 //! of this module is mostly copyed from tokio_tls crate.
 
-use futures::{Async, Future, Poll};
-use native_tls::{self, Error, HandshakeError, TlsConnector};
-use tokio_io::{AsyncRead, AsyncWrite};
-
-use std::io::{self, Read, Write};
+use bytes::buf::BufMut;
+use native_tls::{Error, TlsConnector};
+use pin_project::pin_project;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::io::Error as IoError;
+use tokio::prelude::*;
+use tokio_tls::{self};
 
 /// A wrapper around an underlying raw stream which implements the TLS or SSL
 /// protocol.
@@ -22,84 +25,65 @@ use std::io::{self, Read, Write};
 /// and both the server and the client are ready for receiving and sending
 /// data. Bytes read from a `TlsStream` are decrypted from `S` and bytes written
 /// to a `TlsStream` are encrypted when passing through to `S`.
+#[pin_project]
 #[derive(Debug)]
 pub struct TlsStream<S> {
-    inner: native_tls::TlsStream<S>,
+    #[pin]
+    inner: tokio_tls::TlsStream<S>,
 }
 
 impl<S> TlsStream<S> {
-    /// Get access to the internal `native_tls::TlsStream` stream which also
+    /// Get access to the internal `tokio_tls::TlsStream` stream which also
     /// transitively allows access to `S`.
-    pub fn get_ref(&self) -> &native_tls::TlsStream<S> {
+    pub fn get_ref(&self) -> &tokio_tls::TlsStream<S> {
         &self.inner
     }
 }
 
-impl<S: Read + Write> Read for TlsStream<S> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.inner.read(buf)
+impl<S> AsyncRead for TlsStream<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, IoError>> {
+        self.project().inner.poll_read(cx, buf)
+    }
+
+    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [u8]) -> bool {
+        self.inner.prepare_uninitialized_buffer(buf)
+    }
+
+    fn poll_read_buf<B>(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &mut B,
+    ) -> Poll<Result<usize, IoError>>
+    where
+        B: BufMut,
+    {
+        self.project().inner.poll_read_buf(cx, buf)
     }
 }
 
-impl<S: Read + Write> Write for TlsStream<S> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.write(buf)
+impl<S> AsyncWrite for TlsStream<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &[u8],
+    ) -> Poll<Result<usize, IoError>> {
+        self.project().inner.poll_write(cx, buf)
     }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), IoError>> {
+        self.project().inner.poll_flush(cx)
     }
-}
-
-impl<S: AsyncRead + AsyncWrite> AsyncRead for TlsStream<S> {}
-
-impl<S: AsyncRead + AsyncWrite> AsyncWrite for TlsStream<S> {
-    fn shutdown(&mut self) -> Poll<(), io::Error> {
-        match self.inner.shutdown() {
-            Ok(t) => t,
-            Err(ref e) if e.kind() == ::std::io::ErrorKind::WouldBlock => {
-                return Ok(futures::Async::NotReady);
-            }
-            Err(e) => return Err(e.into()),
-        }
-        self.inner.get_mut().shutdown()
-    }
-}
-
-pub struct ConnectAsync<S> {
-    inner: MidHandshake<S>,
-}
-
-impl<S: Read + Write> Future for ConnectAsync<S> {
-    type Item = TlsStream<S>;
-    type Error = Error;
-
-    fn poll(&mut self) -> Poll<TlsStream<S>, Error> {
-        self.inner.poll()
-    }
-}
-
-struct MidHandshake<S> {
-    inner: Option<Result<native_tls::TlsStream<S>, HandshakeError<S>>>,
-}
-
-impl<S: Read + Write> Future for MidHandshake<S> {
-    type Item = TlsStream<S>;
-    type Error = Error;
-
-    fn poll(&mut self) -> Poll<TlsStream<S>, Error> {
-        match self.inner.take().expect("cannot poll MidHandshake twice") {
-            Ok(stream) => Ok(TlsStream { inner: stream }.into()),
-            Err(HandshakeError::Failure(e)) => Err(e),
-            Err(HandshakeError::WouldBlock(s)) => match s.handshake() {
-                Ok(stream) => Ok(TlsStream { inner: stream }.into()),
-                Err(HandshakeError::Failure(e)) => Err(e),
-                Err(HandshakeError::WouldBlock(s)) => {
-                    self.inner = Some(Err(HandshakeError::WouldBlock(s)));
-                    Ok(Async::NotReady)
-                }
-            },
-        }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), IoError>> {
+        self.project().inner.poll_shutdown(cx)
     }
 }
 
@@ -115,20 +99,16 @@ impl<S: Read + Write> Future for MidHandshake<S> {
 /// example, a TCP connection to a remote server. That stream is then
 /// provided here to perform the client half of a connection to a
 /// TLS-powered server.
-///
-/// # Compatibility notes
-///
-/// Note that this method currently requires `S: Read + Write` but it's
-/// highly recommended to ensure that the object implements the `AsyncRead`
-/// and `AsyncWrite` traits as well, otherwise this function will not work
-/// properly.
-pub fn connect_async<S>(connector: &TlsConnector, domain: &str, stream: S) -> ConnectAsync<S>
+pub async fn connect_async<S>(
+    connector: &TlsConnector,
+    domain: &str,
+    stream: S,
+) -> Result<TlsStream<S>, Error>
 where
-    S: Read + Write,
+    S: AsyncRead + AsyncWrite + Unpin,
 {
-    ConnectAsync {
-        inner: MidHandshake {
-            inner: Some(connector.connect(domain, stream)),
-        },
-    }
+    let connector = tokio_tls::TlsConnector::from(connector.clone());
+    Ok(TlsStream {
+        inner: connector.connect(domain, stream).await?,
+    })
 }

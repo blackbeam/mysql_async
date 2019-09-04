@@ -137,12 +137,17 @@ mod local_infile_handler;
 mod opts;
 mod queryable;
 
-pub type BoxFuture<T> = Box<dyn ::futures::Future<Item = T, Error = error::Error> + Send + 'static>;
+pub type BoxFuture<T> = ::std::pin::Pin<
+    Box<dyn ::std::future::Future<Output = Result<T, error::Error>> + Send + 'static>,
+>;
 
 /// Alias for `Future` with library error as `Future::Error`.
-pub trait MyFuture<T>: ::futures::Future<Item = T, Error = error::Error> + Send + 'static {}
+pub trait MyFuture<T>:
+    ::std::future::Future<Output = Result<T, error::Error>> + Send + 'static
+{
+}
 impl<T, U> MyFuture<T> for U where
-    U: ::futures::Future<Item = T, Error = error::Error> + Send + 'static
+    U: ::std::future::Future<Output = Result<T, error::Error>> + Send + 'static
 {
 }
 
@@ -197,9 +202,6 @@ pub use self::queryable::stmt::Stmt;
 /// Futures used in this crate
 pub mod futures {
     pub use crate::conn::pool::futures::{DisconnectPool, GetConn};
-    pub use crate::queryable::query_result::{
-        ForEach, ForEachAndDrop, Map, MapAndDrop, Reduce, ReduceAndDrop,
-    };
 }
 
 /// Traits used in this crate

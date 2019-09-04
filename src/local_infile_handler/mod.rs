@@ -6,8 +6,9 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use tokio_io::AsyncRead;
+use tokio::prelude::*;
 
+use std::marker::Unpin;
 use std::{fmt, sync::Arc};
 
 use crate::BoxFuture;
@@ -93,7 +94,7 @@ pub mod builtin;
 pub trait LocalInfileHandler: Sync + Send {
     /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
     /// query.
-    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<dyn AsyncRead + Send + 'static>>;
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<dyn AsyncRead + Send + Unpin + 'static>>;
 }
 
 /// Object used to wrap `T: LocalInfileHandler` inside of Opts.

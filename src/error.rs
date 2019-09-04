@@ -19,6 +19,8 @@ use std::{io, result};
 /// Result type alias for this library.
 pub type Result<T> = result::Result<T, Error>;
 
+pub(crate) type StdResult<T, E> = result::Result<T, E>;
+
 /// This type enumerates library errors.
 #[derive(Debug, Fail)]
 pub enum Error {
@@ -34,7 +36,6 @@ pub enum Error {
     #[fail(display = "Server error: `{}'", _0)]
     Server(#[cause] ServerError),
 
-    #[cfg(feature = "ssl")]
     #[fail(display = "TLS error: `{}'", _0)]
     Tls(#[cause] native_tls::Error),
 
@@ -166,7 +167,6 @@ impl From<UrlError> for Error {
     }
 }
 
-#[cfg(feature = "ssl")]
 impl From<native_tls::Error> for Error {
     fn from(err: native_tls::Error) -> Self {
         Error::Tls(err)

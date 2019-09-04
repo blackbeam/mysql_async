@@ -6,13 +6,13 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use ::futures::stream::futures_unordered::FuturesUnordered;
-use ::futures::{
-    task::{self, Task},
-    try_ready, Async, Future, Poll, Stream,
-};
+use futures_core::{ready, stream::Stream};
+use futures_util::stream::futures_unordered::FuturesUnordered;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
 
-use tokio_sync::mpsc;
+use tokio::sync::mpsc;
 
 use std::{
     fmt,
@@ -28,7 +28,7 @@ use crate::{
         transaction::{Transaction, TransactionOptions},
         Queryable,
     },
-    BoxFuture, MyFuture,
+    BoxFuture,
 };
 
 // this is a really unfortunate name for a module
@@ -47,10 +47,9 @@ struct Recycler {
 }
 
 impl Future for Recycler {
-    type Item = ();
-    type Error = ();
+    type Output = ();
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut readied = 0;
         let mut close = self.inner.close.load(atomic::Ordering::Acquire);
 
@@ -58,11 +57,11 @@ impl Future for Recycler {
             ($self:ident, $readied:ident, $conn:ident) => {
                 if $conn.inner.stream.is_none() || $conn.inner.disconnected {
                     // drop unestablished connection
-                    $self.discard.push(Box::new(::futures::future::ok(())));
+                    $self.discard.push(Box::pin(::futures_util::future::ok(())));
                 } else if $conn.inner.in_transaction || $conn.inner.has_result.is_some() {
-                    $self.cleaning.push($conn.cleanup());
+                    $self.cleaning.push(Box::pin($conn.cleanup()));
                 } else if $conn.expired() || $self.inner.idle.len() >= $self.min || close {
-                    $self.discard.push(Box::new($conn.close()));
+                    $self.discard.push(Box::pin($conn.close()));
                 } else {
                     $self
                         .inner
@@ -76,23 +75,23 @@ impl Future for Recycler {
 
         while !self.eof {
             // see if there are more connections for us to recycle
-            match self.dropped.poll().unwrap() {
-                Async::Ready(Some(Some(conn))) => {
+            match Pin::new(&mut self.dropped).poll_next(cx) {
+                Poll::Ready(Some(Some(conn))) => {
                     conn_decision!(self, readied, conn);
                 }
-                Async::Ready(Some(None)) => {
+                Poll::Ready(Some(None)) => {
                     // someone signaled us that it's exit time
                     close = self.inner.close.load(atomic::Ordering::Acquire);
                     assert!(close);
                     continue;
                 }
-                Async::Ready(None) => {
+                Poll::Ready(None) => {
                     // no more connections are coming -- time to exit!
                     self.inner.close.store(true, atomic::Ordering::Release);
                     self.eof = true;
                     close = true;
                 }
-                Async::NotReady => {
+                Poll::Pending => {
                     // nope -- but let's still make progress on the ones we have
                     break;
                 }
@@ -108,10 +107,10 @@ impl Future for Recycler {
 
         // are any dirty connections ready for us to reclaim?
         loop {
-            match self.cleaning.poll() {
-                Ok(Async::NotReady) | Ok(Async::Ready(None)) => break,
-                Ok(Async::Ready(Some(conn))) => conn_decision!(self, readied, conn),
-                Err(e) => {
+            match Pin::new(&mut self.cleaning).poll_next(cx) {
+                Poll::Pending | Poll::Ready(None) => break,
+                Poll::Ready(Some(Ok(conn))) => conn_decision!(self, readied, conn),
+                Poll::Ready(Some(Err(e))) => {
                     // an error occurred while cleaning a connection.
                     // what do we do? replace it with a new connection?
                     self.discarded += 1;
@@ -123,13 +122,13 @@ impl Future for Recycler {
 
         // are there any torn-down connections for us to deal with?
         loop {
-            match self.discard.poll() {
-                Ok(Async::NotReady) | Ok(Async::Ready(None)) => break,
-                Ok(Async::Ready(Some(()))) => {
+            match Pin::new(&mut self.discard).poll_next(cx) {
+                Poll::Pending | Poll::Ready(None) => break,
+                Poll::Ready(Some(Ok(()))) => {
                     // yes! count it.
                     self.discarded += 1
                 }
-                Err(e) => {
+                Poll::Ready(Some(Err(e))) => {
                     // an error occurred while closing a connection.
                     // what do we do? we still replace it with a new connection..
                     self.discarded += 1;
@@ -177,9 +176,9 @@ impl Future for Recycler {
         if self.inner.closed.load(atomic::Ordering::Acquire) {
             // since there are no more Pools, we also know that no-one is waiting anymore,
             // so we don't have to worry about calling wake more times
-            Ok(Async::Ready(()))
+            Poll::Ready(())
         } else {
-            Ok(Async::NotReady)
+            Poll::Pending
         }
     }
 }
@@ -188,7 +187,7 @@ struct Inner {
     close: atomic::AtomicBool,
     closed: atomic::AtomicBool,
     idle: crossbeam::queue::ArrayQueue<Conn>,
-    wake: crossbeam::queue::SegQueue<Task>,
+    wake: crossbeam::queue::SegQueue<Waker>,
     exist: atomic::AtomicUsize,
     extra_wakeups: atomic::AtomicUsize,
 
@@ -203,7 +202,7 @@ impl Inner {
         }
 
         while let Ok(task) = self.wake.pop() {
-            task.notify();
+            task.wake();
             readied -= 1;
             if readied == 0 {
                 if self.close.load(atomic::Ordering::Acquire) {
@@ -283,12 +282,11 @@ impl Pool {
     }
 
     /// Shortcut for `get_conn` followed by `start_transaction`.
-    pub fn start_transaction(
+    pub async fn start_transaction(
         &self,
         options: TransactionOptions,
-    ) -> impl MyFuture<Transaction<Conn>> {
-        self.get_conn()
-            .and_then(|conn| Queryable::start_transaction(conn, options))
+    ) -> Result<Transaction<Conn>> {
+        Queryable::start_transaction(self.get_conn().await?, options).await
     }
 
     /// Returns future that disconnects this pool from server and resolves to `()`.
@@ -344,13 +342,17 @@ impl Pool {
     }
 
     /// Poll the pool for an available connection.
-    fn poll_new_conn(&mut self) -> Result<Async<GetConn>> {
-        self.poll_new_conn_inner(false)
+    fn poll_new_conn(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<GetConn>> {
+        self.poll_new_conn_inner(false, cx)
     }
 
-    fn poll_new_conn_inner(&mut self, retrying: bool) -> Result<Async<GetConn>> {
+    fn poll_new_conn_inner(
+        mut self: Pin<&mut Self>,
+        retrying: bool,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<GetConn>> {
         if self.inner.close.load(atomic::Ordering::Acquire) {
-            return Err(Error::Driver(DriverError::PoolDisconnected));
+            return Err(Error::Driver(DriverError::PoolDisconnected)).into();
         }
 
         loop {
@@ -362,7 +364,7 @@ impl Pool {
                         continue;
                     }
 
-                    return Ok(Async::Ready(GetConn {
+                    return Poll::Ready(Ok(GetConn {
                         pool: Some(self.clone()),
                         inner: GetConnInner::Done(Some(conn)),
                     }));
@@ -412,25 +414,25 @@ impl Pool {
                     self.drop
                         .try_send(None)
                         .expect("recycler is active as long as any Pool is");
-                    return Err(Error::Driver(DriverError::PoolDisconnected));
+                    return Err(Error::Driver(DriverError::PoolDisconnected)).into();
                 }
 
-                return Ok(Async::Ready(GetConn {
+                return Poll::Ready(Ok(GetConn {
                     pool: Some(self.clone()),
-                    inner: GetConnInner::Connecting(Box::new(Conn::new(self.opts.clone()))),
+                    inner: GetConnInner::Connecting(Box::pin(Conn::new(self.opts.clone()))),
                 }));
             }
 
             let exist = self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
             if exist < self.pool_constraints.max() {
                 // we'd _now_ be allowed to make a connection
-                return self.poll_new_conn_inner(retrying);
+                return self.poll_new_conn_inner(retrying, cx);
             }
         }
 
         if !retrying {
             // no go -- we have to wait
-            self.inner.wake.push(task::current());
+            self.inner.wake.push(cx.waker().clone());
 
             // there's a potential race here -- imagine another task releases a connection after we
             // try to poll .idle or check .exist, but before we push our task onto .wake. In that
@@ -440,7 +442,7 @@ impl Pool {
             // an alternative strategy would be to _always_ push to .wake and then do the checks,
             // but that would lead to a large number of spurious notifications/wakeups, as well as
             // needless contention on .wake.
-            let conn = try_ready!(self.poll_new_conn_inner(true));
+            let conn = ready!(self.as_mut().poll_new_conn_inner(true, cx))?;
 
             // this is a tricky case. we already registered ourselves as wanting to be woken up,
             // but we now have a connection, so we won't be waiting. this means that _if_ we were
@@ -456,9 +458,9 @@ impl Pool {
             // and also waking someone up (perhaps spuriously) in case we have already been
             // notified.
             if let Ok(task) = self.inner.wake.pop() {
-                if task.will_notify_current() {
+                if task.will_wake(cx.waker()) {
                     // phew -- we got out of that one easy!
-                    return Ok(Async::Ready(conn));
+                    return Poll::Ready(Ok(conn));
                 }
 
                 // if we _haven't_ been notified yet, someone else may be deciding who to wake up
@@ -486,16 +488,16 @@ impl Pool {
                 //
                 // in this case, task1 might never be awoken again, which is not okay.
                 // hence:
-                task.notify();
+                task.wake();
             } else {
                 // someone tried to notify us, but also, no-one else is waiting,
                 // so there's no-one to "forward" that wake-up to.
             }
 
-            return Ok(Async::Ready(conn));
+            return Poll::Ready(Ok(conn));
         }
 
-        Ok(Async::NotReady)
+        Poll::Pending
     }
 }
 

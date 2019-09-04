@@ -6,85 +6,91 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use bytes::{Buf, BufMut};
-use futures::{future::Future, Async};
-use tokio::io::{AsyncRead, AsyncWrite};
+use bytes::BufMut;
+use pin_project::pin_project;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::io::Error;
+use tokio::prelude::*;
 
-use std::{
-    io::{self, Read, Write},
-    path::Path,
-};
+use std::{io, path::Path};
 
 /// Unix domain socket connection on unix, or named pipe connection on windows.
+#[cfg(unix)]
+#[pin_project]
 #[derive(Debug)]
 pub struct Socket {
-    #[cfg(unix)]
-    inner: tokio_uds::UnixStream,
-    #[cfg(windows)]
+    #[pin]
+    inner: tokio::net::unix::UnixStream,
+}
+
+#[cfg(windows)]
+#[pin_project]
+#[derive(Debug)]
+pub struct Socket {
+    #[pin]
     inner: tokio_named_pipes::NamedPipe,
 }
 
 impl Socket {
     /// Connects a new socket.
     #[cfg(unix)]
-    pub fn new<P: AsRef<Path>>(path: P) -> impl Future<Item = Socket, Error = io::Error> {
-        tokio_uds::UnixStream::connect(path).map(|socket| Socket { inner: socket })
+    pub async fn new<P: AsRef<Path>>(path: P) -> Result<Socket, io::Error> {
+        Ok(Socket {
+            inner: tokio::net::unix::UnixStream::connect(path).await?,
+        })
     }
 
     /// Connects a new socket.
     #[cfg(windows)]
-    pub fn new<P: AsRef<Path>>(path: P) -> impl Future<Item = Socket, Error = io::Error> {
+    pub async fn new<P: AsRef<Path>>(path: P) -> Result<Socket, io::Error> {
         use futures::future::IntoFuture;
         use tokio_named_pipes::NamedPipe;
 
         let handle = tokio::reactor::Handle::default();
-        NamedPipe::new(path.as_ref(), &handle)
-            .and_then(|pipe| {
-                pipe.connect()?;
-                Ok(Socket { inner: pipe })
-            })
-            .into_future()
-    }
-}
-
-impl Read for Socket {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
-        self.inner.read(buf)
-    }
-}
-
-impl Write for Socket {
-    fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
-        self.inner.write(buf)
-    }
-
-    fn flush(&mut self) -> Result<(), io::Error> {
-        self.inner.flush()
+        let pipe = NamedPipe::new(path.as_ref(), &handle).await?;
+        pipe.connect()?;
+        Ok(Socket { inner: pipe })
     }
 }
 
 impl AsyncRead for Socket {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, Error>> {
+        self.project().inner.poll_read(cx, buf)
+    }
+
     unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [u8]) -> bool {
         self.inner.prepare_uninitialized_buffer(buf)
     }
 
-    fn read_buf<B: BufMut>(&mut self, buf: &mut B) -> Result<Async<usize>, io::Error>
+    fn poll_read_buf<B>(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &mut B,
+    ) -> Poll<Result<usize, Error>>
     where
-        Self: Sized,
+        B: BufMut,
     {
-        self.inner.read_buf(buf)
+        self.project().inner.poll_read_buf(cx, buf)
     }
 }
 
 impl AsyncWrite for Socket {
-    fn shutdown(&mut self) -> Result<Async<()>, io::Error> {
-        AsyncWrite::shutdown(&mut self.inner)
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &[u8],
+    ) -> Poll<Result<usize, Error>> {
+        self.project().inner.poll_write(cx, buf)
     }
-
-    fn write_buf<B: Buf>(&mut self, buf: &mut B) -> Result<Async<usize>, io::Error>
-    where
-        Self: Sized,
-    {
-        self.inner.write_buf(buf)
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
+        self.project().inner.poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
+        self.project().inner.poll_shutdown(cx)
     }
 }

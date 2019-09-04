@@ -7,7 +7,7 @@ license = "MIT/Apache-2.0"
 name = "mysql_async"
 readme = "README.md"
 repository = "https://github.com/blackbeam/mysql_async"
-version = "0.20.0"
+version = "0.21.0-alpha.1"
 exclude = ["test/*"]
 edition = "2018"
 
@@ -19,19 +19,20 @@ crossbeam = "0.7"
 failure = "0.1"
 failure_derive = "0.1"
 fnv = "1"
-futures = "0.1.18"
+futures-core-preview = "0.3.0-alpha.18"
+futures-util-preview = "0.3.0-alpha.18"
+futures-sink-preview = "0.3.0-alpha.18"
 mysql_common = "0.18"
-native-tls = { version = "0.2", optional = true }
+native-tls = "0.2"
 percent-encoding = "2.1.0"
+pin-project = { version = "0.4.0-alpha.8", features = ["project_attr"] }
 regex = "1"
 serde = "1"
 serde_json = "1"
-tokio = "0.1.9"
-tokio-codec = "0.1"
-tokio-io = "0.1"
-tokio-named-pipes = "0.1"
-tokio-uds = "0.2"
-tokio-sync = "0.1"
+# we only need rt-full for tokio::spawn
+tokio = { version = "0.2.0-alpha.4", default-features = false, features = ["codec", "io", "net", "sync", "fs", "rt-full"] }
+#tokio-named-pipes = "0.1"
+tokio-tls = "0.3.0-alpha.4"
 twox-hash = "1"
 url = "2.1"
 
@@ -40,7 +41,6 @@ lazy_static = "1"
 
 [features]
 nightly = []
-ssl = ['native-tls']
 
 [lib]
 name = "mysql_async"
@@ -48,3 +48,9 @@ path = "src/lib.rs"
 
 [profile.bench]
 debug = true
+
+[patch.crates-io]
+tokio-tls = { git = "https://github.com/tokio-rs/tokio.git", branch = "jonhoo/tokio-tls-inner" }
+
+[patch.'https://github.com/tokio-rs/tokio.git']
+tokio-io = "0.2.0-alpha.4"

@@ -8,7 +8,6 @@
 
 pub use mysql_common::named_params;
 
-use futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
 use mysql_common::{
     crypto,
     packets::{
@@ -29,7 +28,7 @@ use crate::{
     opts::Opts,
     queryable::{query_result, BinaryProtocol, Queryable, TextProtocol},
     time::SteadyTime,
-    BoxFuture, Column, MyFuture, OptsBuilder,
+    Column, MyFuture, OptsBuilder,
 };
 
 pub mod pool;
@@ -37,9 +36,6 @@ pub mod stmt_cache;
 
 /// Helper function that asynchronously disconnects connection on the default tokio executor.
 fn disconnect(mut conn: Conn) {
-    use tokio::executor::{DefaultExecutor, Executor};
-    let mut executor = DefaultExecutor::current();
-
     let disconnected = conn.inner.disconnected;
 
     // Mark conn as disconnected.
@@ -47,9 +43,11 @@ fn disconnect(mut conn: Conn) {
 
     if !disconnected {
         // Server will report broken connection if spawn fails.
-        let _ = executor.spawn(Box::new(
-            conn.cleanup().and_then(Conn::disconnect).map_err(drop),
-        ));
+        tokio::spawn(Box::pin(async move {
+            if let Ok(conn) = conn.cleanup().await {
+                let _ = conn.disconnect().await;
+            }
+        }));
     }
 }
 
@@ -144,9 +142,9 @@ impl Conn {
         self.get_affected_rows()
     }
 
-    fn close(mut self) -> impl MyFuture<()> {
+    async fn close(mut self) -> Result<()> {
         self.inner.disconnected = true;
-        self.cleanup().and_then(Conn::disconnect)
+        self.cleanup().await?.disconnect().await
     }
 
     fn is_secure(&self) -> bool {
@@ -182,37 +180,32 @@ impl Conn {
         }
     }
 
-    fn handle_handshake(self) -> impl MyFuture<Conn> {
-        self.read_packet().and_then(move |(mut conn, packet)| {
-            parse_handshake_packet(&*packet.0)
-                .map_err(Error::from)
-                .and_then(|handshake| {
-                    conn.inner.nonce = {
-                        let mut nonce = Vec::from(handshake.scramble_1_ref());
-                        nonce.extend_from_slice(handshake.scramble_2_ref().unwrap_or(&[][..]));
-                        nonce
-                    };
+    async fn handle_handshake(self) -> Result<Conn> {
+        let (mut conn, packet) = self.read_packet().await?;
+        let handshake = parse_handshake_packet(&*packet.0)?;
+        conn.inner.nonce = {
+            let mut nonce = Vec::from(handshake.scramble_1_ref());
+            nonce.extend_from_slice(handshake.scramble_2_ref().unwrap_or(&[][..]));
+            nonce
+        };
 
-                    conn.inner.capabilities =
-                        handshake.capabilities() & conn.inner.opts.get_capabilities();
-                    conn.inner.version = handshake.server_version_parsed().unwrap_or((0, 0, 0));
-                    conn.inner.id = handshake.connection_id();
-                    conn.inner.status = handshake.status_flags();
-                    conn.inner.auth_plugin = match handshake.auth_plugin() {
-                        Some(AuthPlugin::MysqlNativePassword) => AuthPlugin::MysqlNativePassword,
-                        Some(AuthPlugin::CachingSha2Password) => AuthPlugin::CachingSha2Password,
-                        Some(AuthPlugin::Other(ref name)) => {
-                            let name = String::from_utf8_lossy(name).into();
-                            return Err(DriverError::UnknownAuthPlugin { name }.into());
-                        }
-                        None => AuthPlugin::MysqlNativePassword,
-                    };
-                    Ok(conn)
-                })
-        })
+        conn.inner.capabilities = handshake.capabilities() & conn.inner.opts.get_capabilities();
+        conn.inner.version = handshake.server_version_parsed().unwrap_or((0, 0, 0));
+        conn.inner.id = handshake.connection_id();
+        conn.inner.status = handshake.status_flags();
+        conn.inner.auth_plugin = match handshake.auth_plugin() {
+            Some(AuthPlugin::MysqlNativePassword) => AuthPlugin::MysqlNativePassword,
+            Some(AuthPlugin::CachingSha2Password) => AuthPlugin::CachingSha2Password,
+            Some(AuthPlugin::Other(ref name)) => {
+                let name = String::from_utf8_lossy(name).into();
+                return Err(DriverError::UnknownAuthPlugin { name }.into());
+            }
+            None => AuthPlugin::MysqlNativePassword,
+        };
+        Ok(conn)
     }
 
-    fn switch_to_ssl_if_needed(self) -> impl MyFuture<Conn> {
+    async fn switch_to_ssl_if_needed(self) -> Result<Conn> {
         if self
             .inner
             .opts
@@ -220,21 +213,18 @@ impl Conn {
             .contains(CapabilityFlags::CLIENT_SSL)
         {
             let ssl_request = SslRequest::new(self.inner.capabilities);
-            let fut = self.write_packet(ssl_request.as_ref()).and_then(|conn| {
-                let ssl_opts = conn
-                    .get_opts()
-                    .get_ssl_opts()
-                    .cloned()
-                    .expect("unreachable");
-                let domain = conn.get_opts().get_ip_or_hostname().into();
-                let (streamless, stream) = conn.take_stream();
-                stream
-                    .make_secure(domain, ssl_opts)
-                    .map(move |stream| streamless.return_stream(stream))
-            });
-            A(fut)
+            let conn = self.write_packet(ssl_request.as_ref()).await?;
+            let ssl_opts = conn
+                .get_opts()
+                .get_ssl_opts()
+                .cloned()
+                .expect("unreachable");
+            let domain = conn.get_opts().get_ip_or_hostname().into();
+            let (streamless, stream) = conn.take_stream();
+            let stream = stream.make_secure(domain, ssl_opts).await?;
+            Ok(streamless.return_stream(stream))
         } else {
-            B(ok(self))
+            Ok(self)
         }
     }
 
@@ -256,10 +246,10 @@ impl Conn {
         self.write_packet(handshake_response.as_ref())
     }
 
-    fn perform_auth_switch(
+    async fn perform_auth_switch(
         mut self,
         auth_switch_request: AuthSwitchRequest<'_>,
-    ) -> BoxFuture<Conn> {
+    ) -> Result<Conn> {
         if !self.inner.auth_switched {
             self.inner.auth_switched = true;
             self.inner.nonce = auth_switch_request.plugin_data().into();
@@ -269,161 +259,129 @@ impl Conn {
                 .auth_plugin
                 .gen_data(self.inner.opts.get_pass(), &*self.inner.nonce)
                 .unwrap_or_else(Vec::new);
-            let fut = self.write_packet(plugin_data).and_then(Conn::continue_auth);
-            // We'll box it to avoid recursion.
-            Box::new(fut)
+            self.write_packet(plugin_data).await?.continue_auth().await
         } else {
             unreachable!("auth_switched flag should be checked by caller")
         }
     }
 
-    fn continue_auth(self) -> impl MyFuture<Conn> {
+    async fn continue_auth(self) -> Result<Conn> {
         match self.inner.auth_plugin {
-            AuthPlugin::MysqlNativePassword => A(self.continue_mysql_native_password_auth()),
-            AuthPlugin::CachingSha2Password => B(self.continue_caching_sha2_password_auth()),
+            AuthPlugin::MysqlNativePassword => self.continue_mysql_native_password_auth().await,
+            AuthPlugin::CachingSha2Password => self.continue_caching_sha2_password_auth().await,
             _ => unreachable!(),
         }
     }
 
-    fn continue_caching_sha2_password_auth(self) -> impl MyFuture<Conn> {
-        self.read_packet()
-            .and_then(|(conn, packet)| match packet.as_ref().get(0) {
-                Some(0x01) => match packet.as_ref().get(1) {
-                    Some(0x03) => {
-                        // auth ok
-                        A(conn.drop_packet())
-                    }
-                    Some(0x04) => {
-                        let mut pass = conn
-                            .inner
-                            .opts
-                            .get_pass()
-                            .map(Vec::from)
-                            .unwrap_or_default();
-                        pass.push(0);
-                        let fut = if conn.is_secure() {
-                            A(conn.write_packet(&*pass))
-                        } else {
-                            B(conn
-                                .write_packet(&[0x02][..])
-                                .and_then(Conn::read_packet)
-                                .and_then(move |(conn, packet)| {
-                                    let key = &packet.as_ref()[1..];
-                                    for (i, byte) in pass.iter_mut().enumerate() {
-                                        *byte ^= conn.inner.nonce[i % conn.inner.nonce.len()];
-                                    }
-                                    let encrypted_pass = crypto::encrypt(&*pass, key);
-                                    conn.write_packet(&*encrypted_pass)
-                                }))
-                        };
-                        B(A(fut.and_then(Conn::drop_packet)))
-                    }
-                    _ => B(B(A(err(DriverError::UnexpectedPacket {
-                        payload: packet.as_ref().into(),
-                    }
-                    .into())))),
-                },
-                Some(0xfe) if !conn.inner.auth_switched => {
-                    let fut = parse_auth_switch_request(packet.as_ref())
-                        .map(AuthSwitchRequest::into_owned)
-                        .map_err(Error::from)
-                        .into_future()
-                        .and_then(|auth_switch_request| {
-                            conn.perform_auth_switch(auth_switch_request)
-                        });
-                    B(B(B(A(fut))))
+    async fn continue_caching_sha2_password_auth(self) -> Result<Conn> {
+        let (conn, packet) = self.read_packet().await?;
+        match packet.as_ref().get(0) {
+            Some(0x01) => match packet.as_ref().get(1) {
+                Some(0x03) => {
+                    // auth ok
+                    conn.drop_packet().await
                 }
-                _ => B(B(B(B(err(DriverError::UnexpectedPacket {
+                Some(0x04) => {
+                    let mut pass = conn
+                        .inner
+                        .opts
+                        .get_pass()
+                        .map(Vec::from)
+                        .unwrap_or_default();
+                    pass.push(0);
+
+                    let conn = if conn.is_secure() {
+                        conn.write_packet(&*pass).await?
+                    } else {
+                        let conn = conn.write_packet(&[0x02][..]).await?;
+                        let (conn, packet) = conn.read_packet().await?;
+                        let key = &packet.as_ref()[1..];
+                        for (i, byte) in pass.iter_mut().enumerate() {
+                            *byte ^= conn.inner.nonce[i % conn.inner.nonce.len()];
+                        }
+                        let encrypted_pass = crypto::encrypt(&*pass, key);
+                        conn.write_packet(&*encrypted_pass).await?
+                    };
+                    conn.drop_packet().await
+                }
+                _ => Err(DriverError::UnexpectedPacket {
                     payload: packet.as_ref().into(),
                 }
-                .into()))))),
-            })
-    }
-
-    fn continue_mysql_native_password_auth(self) -> impl MyFuture<Conn> {
-        self.read_packet()
-            .and_then(|(this, packet)| match packet.0.get(0) {
-                Some(0x00) => A(ok(this)),
-                Some(0xfe) if !this.inner.auth_switched => {
-                    let fut = parse_auth_switch_request(packet.as_ref())
-                        .map(AuthSwitchRequest::into_owned)
-                        .map_err(Error::from)
-                        .into_future()
-                        .and_then(|auth_switch_request| {
-                            this.perform_auth_switch(auth_switch_request)
-                        });
-                    B(A(fut))
-                }
-                _ => B(B(err(
-                    DriverError::UnexpectedPacket { payload: packet.0 }.into()
-                ))),
-            })
-    }
-
-    fn drop_packet(self) -> impl MyFuture<Conn> {
-        self.read_packet().map(|(conn, _)| conn)
-    }
-
-    fn run_init_commands(self) -> impl MyFuture<Conn> {
-        let init = self
-            .inner
-            .opts
-            .get_init()
-            .iter()
-            .map(Clone::clone)
-            .collect();
-
-        loop_fn(
-            (init, self),
-            |(mut init, conn): (Vec<String>, Conn)| match init.pop() {
-                None => A(ok(Loop::Break(conn))),
-                Some(query) => {
-                    let fut = conn
-                        .drop_query(query)
-                        .map(|conn| Loop::Continue((init, conn)));
-                    B(fut)
-                }
+                .into()),
             },
-        )
+            Some(0xfe) if !conn.inner.auth_switched => {
+                let auth_switch_request = parse_auth_switch_request(packet.as_ref())?.into_owned();
+                conn.perform_auth_switch(auth_switch_request).await
+            }
+            _ => Err(DriverError::UnexpectedPacket {
+                payload: packet.as_ref().into(),
+            }
+            .into()),
+        }
+    }
+
+    async fn continue_mysql_native_password_auth(self) -> Result<Conn> {
+        let (this, packet) = self.read_packet().await?;
+        match packet.0.get(0) {
+            Some(0x00) => Ok(this),
+            Some(0xfe) if !this.inner.auth_switched => {
+                let auth_switch_request = parse_auth_switch_request(packet.as_ref())?.into_owned();
+                this.perform_auth_switch(auth_switch_request).await
+            }
+            _ => Err(DriverError::UnexpectedPacket { payload: packet.0 }.into()),
+        }
+    }
+
+    async fn drop_packet(self) -> Result<Conn> {
+        Ok(self.read_packet().await?.0)
+    }
+
+    async fn run_init_commands(self) -> Result<Conn> {
+        let mut init: Vec<_> = self.inner.opts.get_init().iter().cloned().collect();
+
+        let mut conn = self;
+        while let Some(query) = init.pop() {
+            conn = conn.drop_query(query).await?;
+        }
+        Ok(conn)
     }
 
     /// Returns future that resolves to `Conn`.
-    pub fn new<T: Into<Opts>>(opts: T) -> impl MyFuture<Conn> {
+    pub async fn new<T: Into<Opts>>(opts: T) -> Result<Conn> {
         let opts = opts.into();
         let mut conn = Conn::empty(opts.clone());
 
         let stream = if let Some(path) = opts.get_socket() {
-            A(Stream::connect_socket(path.to_owned()))
+            Stream::connect_socket(path.to_owned()).await?
         } else {
-            B(Stream::connect_tcp((
-                opts.get_ip_or_hostname(),
-                opts.get_tcp_port(),
-            )))
+            Stream::connect_tcp((opts.get_ip_or_hostname(), opts.get_tcp_port())).await?
         };
 
-        stream
-            .map(move |stream| {
-                conn.inner.stream = Some(stream);
-                conn
-            })
-            .and_then(Conn::setup_stream)
-            .and_then(Conn::handle_handshake)
-            .and_then(Conn::switch_to_ssl_if_needed)
-            .and_then(Conn::do_handshake_response)
-            .and_then(Conn::continue_auth)
-            .and_then(Conn::read_socket)
-            .and_then(Conn::reconnect_via_socket_if_needed)
-            .and_then(Conn::read_max_allowed_packet)
-            .and_then(Conn::read_wait_timeout)
-            .and_then(Conn::run_init_commands)
+        conn.inner.stream = Some(stream);
+        conn.setup_stream()?
+            .handle_handshake()
+            .await?
+            .switch_to_ssl_if_needed()
+            .await?
+            .do_handshake_response()
+            .await?
+            .continue_auth()
+            .await?
+            .read_socket()
+            .await?
+            .reconnect_via_socket_if_needed()
+            .await?
+            .read_max_allowed_packet()
+            .await?
+            .read_wait_timeout()
+            .await?
+            .run_init_commands()
+            .await
     }
 
     /// Returns future that resolves to `Conn`.
-    pub fn from_url<T: AsRef<str>>(url: T) -> impl MyFuture<Conn> {
-        Opts::from_str(url.as_ref())
-            .map_err(Error::from)
-            .into_future()
-            .and_then(Conn::new)
+    pub async fn from_url<T: AsRef<str>>(url: T) -> Result<Conn> {
+        Conn::new(Opts::from_str(url.as_ref())?).await
     }
 
     /// Will try to connect via socket using socket address in `self.inner.socket`.
@@ -431,52 +389,46 @@ impl Conn {
     /// Returns new connection on success or self on error.
     ///
     /// Won't try to reconnect if socket connection is already enforced in `Opts`.
-    fn reconnect_via_socket_if_needed(self) -> Box<dyn MyFuture<Conn>> {
+    async fn reconnect_via_socket_if_needed(self) -> Result<Conn> {
         if let Some(socket) = self.inner.socket.as_ref() {
             let opts = self.inner.opts.clone();
             if opts.get_socket().is_none() {
                 let mut builder = OptsBuilder::from_opts(opts);
                 builder.socket(Some(&**socket));
-                let fut = Conn::new(builder).then(|result| match result {
-                    Ok(conn) => Ok(conn),
-                    Err(_) => Ok(self),
-                });
-                return Box::new(fut);
+                match Conn::new(builder).await {
+                    Ok(conn) => return Ok(conn),
+                    Err(_) => return Ok(self),
+                }
             }
         }
-        Box::new(ok(self))
+        Ok(self)
     }
 
     /// Returns future that resolves to `Conn` with socket address stored in it.
     ///
     /// Do nothing if socket address is already in `Opts` or if `prefer_socket` is `false`.
-    fn read_socket(self) -> impl MyFuture<Self> {
+    async fn read_socket(self) -> Result<Self> {
         if self.inner.opts.get_prefer_socket() && self.inner.socket.is_none() {
-            A(self.first("SELECT @@socket").map(|(mut this, row_opt)| {
-                this.inner.socket = row_opt.unwrap_or((None,)).0;
-                this
-            }))
+            let (mut this, row_opt) = self.first("SELECT @@socket").await?;
+            this.inner.socket = row_opt.unwrap_or((None,)).0;
+            Ok(this)
         } else {
-            B(ok(self))
+            Ok(self)
         }
     }
 
     /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
-    fn read_max_allowed_packet(self) -> impl MyFuture<Self> {
-        self.first("SELECT @@max_allowed_packet")
-            .map(|(mut this, row_opt)| {
-                this.inner.max_allowed_packet = row_opt.unwrap_or((1024 * 1024 * 2,)).0;
-                this
-            })
+    async fn read_max_allowed_packet(self) -> Result<Self> {
+        let (mut this, row_opt) = self.first("SELECT @@max_allowed_packet").await?;
+        this.inner.max_allowed_packet = row_opt.unwrap_or((1024 * 1024 * 2,)).0;
+        Ok(this)
     }
 
     /// Returns future that resolves to `Conn` with `wait_timeout` stored in it.
-    fn read_wait_timeout(self) -> impl MyFuture<Self> {
-        self.first("SELECT @@wait_timeout")
-            .map(|(mut this, row_opt)| {
-                this.inner.wait_timeout = row_opt.unwrap_or((28800,)).0;
-                this
-            })
+    async fn read_wait_timeout(self) -> Result<Self> {
+        let (mut this, row_opt) = self.first("SELECT @@wait_timeout").await?;
+        this.inner.wait_timeout = row_opt.unwrap_or((28800,)).0;
+        Ok(this)
     }
 
     /// Returns true if time since last io exceeds wait_timeout (or conn_ttl if specified in opts).
@@ -491,22 +443,21 @@ impl Conn {
     }
 
     /// Returns future that resolves to a `Conn` with `COM_RESET_CONNECTION` executed on it.
-    pub fn reset(self) -> impl MyFuture<Conn> {
+    pub async fn reset(self) -> Result<Conn> {
         let pool = self.inner.pool.clone();
-        let fut = if self.inner.version > (5, 7, 2) {
-            let fut = self
-                .write_command_data(consts::Command::COM_RESET_CONNECTION, &[])
-                .and_then(|conn| conn.read_packet())
-                .map(|(conn, _)| conn);
-            (ok(pool), A(fut))
+        let mut conn = if self.inner.version > (5, 7, 2) {
+            self.write_command_data(consts::Command::COM_RESET_CONNECTION, &[])
+                .await?
+                .read_packet()
+                .await?
+                .0
         } else {
-            (ok(pool), B(Conn::new(self.inner.opts.clone())))
+            Conn::new(self.inner.opts.clone()).await?
         };
-        fut.into_future().map(|(pool, mut conn)| {
-            conn.inner.stmt_cache.clear();
-            conn.inner.pool = pool;
-            conn
-        })
+
+        conn.inner.stmt_cache.clear();
+        conn.inner.pool = pool;
+        Ok(conn)
     }
 
     fn rollback_transaction(mut self) -> impl MyFuture<Self> {
@@ -515,31 +466,30 @@ impl Conn {
         self.drop_query("ROLLBACK")
     }
 
-    fn drop_result(mut self) -> impl MyFuture<Conn> {
+    async fn drop_result(mut self) -> Result<Conn> {
         match self.inner.has_result.take() {
-            Some((columns, None)) => A(B(query_result::assemble::<_, TextProtocol>(
-                self,
-                Some(columns),
-                None,
-            )
-            .drop_result())),
-            Some((columns, cached)) => A(A(query_result::assemble::<_, BinaryProtocol>(
-                self,
-                Some(columns),
-                cached,
-            )
-            .drop_result())),
-            None => B(ok(self)),
+            Some((columns, None)) => {
+                query_result::assemble::<_, TextProtocol>(self, Some(columns), None)
+                    .drop_result()
+                    .await
+            }
+            Some((columns, cached)) => {
+                query_result::assemble::<_, BinaryProtocol>(self, Some(columns), cached)
+                    .drop_result()
+                    .await
+            }
+            None => Ok(self),
         }
     }
 
-    fn cleanup(self) -> BoxFuture<Conn> {
+    async fn cleanup(self) -> Result<Conn> {
+        // NOTE: we must box to avoid a recursive async fn
         if self.inner.has_result.is_some() {
-            Box::new(self.drop_result().and_then(Self::cleanup))
+            Box::pin(async move { self.drop_result().await?.cleanup().await }).await
         } else if self.inner.in_transaction {
-            Box::new(self.rollback_transaction().and_then(Self::cleanup))
+            Box::pin(async move { self.rollback_transaction().await?.cleanup().await }).await
         } else {
-            Box::new(ok(self))
+            Ok(self)
         }
     }
 }

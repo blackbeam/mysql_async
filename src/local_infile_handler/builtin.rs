@@ -6,9 +6,8 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures::{Future, IntoFuture};
 use tokio::fs::File;
-use tokio_io::AsyncRead;
+use tokio::prelude::*;
 
 use std::{collections::HashSet, path::PathBuf, str::from_utf8};
 
@@ -49,21 +48,17 @@ impl WhiteListFsLocalInfileHandler {
 }
 
 impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
-    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<dyn AsyncRead + Send + 'static>> {
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<dyn AsyncRead + Send + Unpin + 'static>> {
         let path: PathBuf = match from_utf8(file_name) {
             Ok(path_str) => path_str.into(),
-            Err(_) => return Box::new(Err("Invalid file name".into()).into_future()),
+            Err(_) => return Box::pin(futures_util::future::err("Invalid file name".into())),
         };
 
         if !self.white_list.contains(&path) {
             let err_msg = format!("Path `{}' is not in white list", path.display());
-            return Box::new(Err(err_msg.into()).into_future());
+            return Box::pin(futures_util::future::err(err_msg.into()));
         }
 
-        let future = File::open(path.to_owned())
-            .map(|file| Box::new(file) as Box<_>)
-            .map_err(|e| e.into());
-
-        Box::new(future)
+        Box::pin(async move { Ok(Box::new(File::open(path.to_owned()).await?) as Box<_>) })
     }
 }

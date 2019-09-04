@@ -6,11 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures::future::{
-    err, ok,
-    Either::{self, *},
-    Future, IntoFuture,
-};
+use futures_util::future::Either;
 
 use std::fmt;
 
@@ -19,7 +15,6 @@ use crate::{
     error::*,
     io,
     queryable::Queryable,
-    MyFuture,
 };
 
 /// Options for transaction
@@ -96,15 +91,15 @@ impl fmt::Display for IsolationLevel {
 /// `NestedTransaction` error if you call `transaction.start_transaction(_)`.
 pub struct Transaction<T>(Option<Either<T, Streamless<T>>>);
 
-pub fn new<T>(conn_like: T, options: TransactionOptions) -> impl MyFuture<Transaction<T>>
+pub async fn new<T>(conn_like: T, options: TransactionOptions) -> Result<Transaction<T>>
 where
     T: Queryable + ConnectionLike,
 {
-    Transaction::new(conn_like, options)
+    Transaction::new(conn_like, options).await
 }
 
 impl<T: Queryable + ConnectionLike> Transaction<T> {
-    fn new(conn_like: T, options: TransactionOptions) -> impl MyFuture<Transaction<T>> {
+    async fn new(mut conn_like: T, options: TransactionOptions) -> Result<Transaction<T>> {
         let TransactionOptions {
             consistent_snapshot,
             isolation_level,
@@ -112,71 +107,61 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
         } = options;
 
         if conn_like.get_in_transaction() {
-            return A(err(DriverError::NestedTransaction.into()));
+            return Err(DriverError::NestedTransaction.into());
         }
 
         if readonly.is_some() && conn_like.get_server_version() < (5, 6, 5) {
-            return A(err(DriverError::ReadOnlyTransNotSupported.into()));
+            return Err(DriverError::ReadOnlyTransNotSupported.into());
         }
 
-        let fut = if let Some(isolation_level) = isolation_level {
-            A(conn_like.drop_query(format!(
-                "SET TRANSACTION ISOLATION LEVEL {}",
-                isolation_level
-            )))
+        if let Some(isolation_level) = isolation_level {
+            conn_like = conn_like
+                .drop_query(format!(
+                    "SET TRANSACTION ISOLATION LEVEL {}",
+                    isolation_level
+                ))
+                .await?;
+        }
+
+        if let Some(readonly) = readonly {
+            if readonly {
+                conn_like = conn_like.drop_query("SET TRANSACTION READ ONLY").await?;
+            } else {
+                conn_like = conn_like.drop_query("SET TRANSACTION READ WRITE").await?;
+            }
+        }
+
+        conn_like = if consistent_snapshot {
+            conn_like
+                .drop_query("START TRANSACTION WITH CONSISTENT SNAPSHOT")
+                .await?
         } else {
-            B(ok(conn_like))
+            conn_like.drop_query("START TRANSACTION").await?
         };
 
-        let fut = fut
-            .into_future()
-            .and_then(move |conn_like| {
-                if let Some(readonly) = readonly {
-                    if readonly {
-                        A(conn_like.drop_query("SET TRANSACTION READ ONLY"))
-                    } else {
-                        A(conn_like.drop_query("SET TRANSACTION READ WRITE"))
-                    }
-                } else {
-                    B(ok(conn_like))
-                }
-            })
-            .and_then(move |conn_like| {
-                if consistent_snapshot {
-                    conn_like.drop_query("START TRANSACTION WITH CONSISTENT SNAPSHOT")
-                } else {
-                    conn_like.drop_query("START TRANSACTION")
-                }
-            })
-            .map(|mut conn_like| {
-                conn_like.set_in_transaction(true);
-                Transaction(Some(A(conn_like)))
-            });
-
-        B(fut)
+        conn_like.set_in_transaction(true);
+        Ok(Transaction(Some(Either::Left(conn_like))))
     }
 
     fn unwrap(self) -> T {
         match self {
-            Transaction(Some(A(conn_like))) => conn_like,
+            Transaction(Some(Either::Left(conn_like))) => conn_like,
             _ => unreachable!(),
         }
     }
 
     /// Returns future that will perform `COMMIT` query and resolve to a wrapped `Queryable`.
-    pub fn commit(self) -> impl MyFuture<T> {
-        self.drop_query("COMMIT").map(|mut this| {
-            this.set_in_transaction(false);
-            this.unwrap()
-        })
+    pub async fn commit(self) -> Result<T> {
+        let mut this = self.drop_query("COMMIT").await?;
+        this.set_in_transaction(false);
+        Ok(this.unwrap())
     }
 
     /// Returns future that will perform `ROLLBACK` query and resolve to a wrapped `Queryable`.
-    pub fn rollback(self) -> impl MyFuture<T> {
-        self.drop_query("ROLLBACK").map(|mut this| {
-            this.set_in_transaction(false);
-            this.unwrap()
-        })
+    pub async fn rollback(self) -> Result<T> {
+        let mut this = self.drop_query("ROLLBACK").await?;
+        this.set_in_transaction(false);
+        Ok(this.unwrap())
     }
 }
 
@@ -189,9 +174,9 @@ impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Transaction<T> {
     {
         let Transaction(conn_like) = self;
         match conn_like {
-            Some(A(conn_like)) => {
+            Some(Either::Left(conn_like)) => {
                 let (streamless, stream) = conn_like.take_stream();
-                let this = Transaction(Some(B(streamless)));
+                let this = Transaction(Some(Either::Right(streamless)));
                 (Streamless::new(this), stream)
             }
             _ => unreachable!(),
@@ -201,8 +186,8 @@ impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Transaction<T> {
     fn return_stream(&mut self, stream: io::Stream) {
         let conn_like = self.0.take().unwrap();
         match conn_like {
-            B(streamless) => {
-                self.0 = Some(A(streamless.return_stream(stream)));
+            Either::Right(streamless) => {
+                self.0 = Some(Either::Left(streamless.return_stream(stream)));
             }
             _ => unreachable!(),
         }
@@ -210,14 +195,14 @@ impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Transaction<T> {
 
     fn conn_like_ref(&self) -> &Self::ConnLike {
         match self.0 {
-            Some(A(ref conn_like)) => conn_like,
+            Some(Either::Left(ref conn_like)) => conn_like,
             _ => unreachable!(),
         }
     }
 
     fn conn_like_mut(&mut self) -> &mut Self::ConnLike {
         match self.0 {
-            Some(A(ref mut conn_like)) => conn_like,
+            Some(Either::Left(ref mut conn_like)) => conn_like,
             _ => unreachable!(),
         }
     }
