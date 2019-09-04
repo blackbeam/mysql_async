@@ -24,7 +24,7 @@ use crate::{
     io,
     prelude::FromRow,
     queryable::Protocol,
-    Column, MyFuture, Row,
+    Column, Row,
 };
 
 pub fn new<T, P>(
@@ -219,7 +219,7 @@ where
     /// It'll panic if any row isn't convertible to `R` (i.e. programmer error or unknown schema).
     /// * In case of programmer error see `FromRow` docs;
     /// * In case of unknown schema use [`QueryResult::try_collect`].
-    pub fn collect<R>(self) -> impl MyFuture<(Self, Vec<R>)>
+    pub async fn collect<R>(self) -> Result<(Self, Vec<R>)>
     where
         R: FromRow,
         R: Send + 'static,
@@ -228,13 +228,14 @@ where
             acc.push(FromRow::from_row(row));
             acc
         })
+        .await
     }
 
     /// Returns future that collects result set of this query.
     ///
     /// It works the same way as [`QueryResult::collect`] but won't panic
     /// if row isn't convertible to `R`.
-    pub fn try_collect<R>(self) -> impl MyFuture<(Self, Vec<StdResult<R, FromRowError>>)>
+    pub async fn try_collect<R>(self) -> Result<(Self, Vec<StdResult<R, FromRowError>>)>
     where
         R: FromRow,
         R: Send + 'static,
@@ -243,6 +244,7 @@ where
             acc.push(FromRow::from_row_opt(row));
             acc
         })
+        .await
     }
 
     /// Returns future that collects result set of a query result and drops everything else.

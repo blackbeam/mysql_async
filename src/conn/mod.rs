@@ -28,7 +28,7 @@ use crate::{
     opts::Opts,
     queryable::{query_result, BinaryProtocol, Queryable, TextProtocol},
     time::SteadyTime,
-    Column, MyFuture, OptsBuilder,
+    Column, OptsBuilder,
 };
 
 pub mod pool;
@@ -228,7 +228,7 @@ impl Conn {
         }
     }
 
-    fn do_handshake_response(self) -> impl MyFuture<Conn> {
+    async fn do_handshake_response(self) -> Result<Conn> {
         let auth_data = self
             .inner
             .auth_plugin
@@ -243,7 +243,7 @@ impl Conn {
             self.get_capabilities(),
         );
 
-        self.write_packet(handshake_response.as_ref())
+        self.write_packet(handshake_response.as_ref()).await
     }
 
     async fn perform_auth_switch(
@@ -460,10 +460,10 @@ impl Conn {
         Ok(conn)
     }
 
-    fn rollback_transaction(mut self) -> impl MyFuture<Self> {
+    async fn rollback_transaction(mut self) -> Result<Self> {
         assert!(self.inner.in_transaction);
         self.inner.in_transaction = false;
-        self.drop_query("ROLLBACK")
+        self.drop_query("ROLLBACK").await
     }
 
     async fn drop_result(mut self) -> Result<Conn> {

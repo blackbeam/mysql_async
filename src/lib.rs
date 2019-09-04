@@ -141,16 +141,6 @@ pub type BoxFuture<T> = ::std::pin::Pin<
     Box<dyn ::std::future::Future<Output = Result<T, error::Error>> + Send + 'static>,
 >;
 
-/// Alias for `Future` with library error as `Future::Error`.
-pub trait MyFuture<T>:
-    ::std::future::Future<Output = Result<T, error::Error>> + Send + 'static
-{
-}
-impl<T, U> MyFuture<T> for U where
-    U: ::std::future::Future<Output = Result<T, error::Error>> + Send + 'static
-{
-}
-
 #[doc(inline)]
 pub use self::conn::Conn;
 

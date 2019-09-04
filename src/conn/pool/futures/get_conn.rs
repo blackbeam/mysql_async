@@ -14,14 +14,14 @@ use std::task::{Context, Poll};
 use crate::{
     conn::{pool::Pool, Conn},
     error::*,
-    MyFuture,
+    BoxFuture,
 };
 
 pub(crate) enum GetConnInner {
     New,
     Done(Option<Conn>),
     // TODO: one day this should be an existential
-    Connecting(Pin<Box<dyn MyFuture<Conn>>>),
+    Connecting(BoxFuture<Conn>),
 }
 
 impl GetConnInner {
