@@ -50,7 +50,9 @@ path = "src/lib.rs"
 debug = true
 
 [patch.crates-io]
-tokio-tls = { git = "https://github.com/tokio-rs/tokio.git", branch = "jonhoo/tokio-tls-inner" }
+# need https://github.com/tokio-rs/tokio/pull/1537
+tokio-tls = { git = "https://github.com/tokio-rs/tokio.git" }
 
 [patch.'https://github.com/tokio-rs/tokio.git']
+# to undo tokio-tls trying to pull in tokio-io from git
 tokio-io = "0.2.0-alpha.4"
