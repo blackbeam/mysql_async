@@ -45,28 +45,27 @@ fn get_url() -> String {
     }
 }
 
-pub fn get_all_results<TupleType, T, P>(result: QueryResult<T, P>) -> impl MyFuture<Vec<TupleType>>
+pub async fn get_all_results<TupleType, T, P>(result: QueryResult<T, P>) -> Result<Vec<TupleType>>
 where
     TupleType: FromRow + Send + 'static,
     P: Protocol + Send + 'static,
     T: ConnectionLike + Sized + Send + 'static,
 {
-    result.collect().map(|(_, data)| data)
+    Ok(result.collect().await?.1)
 }
 
-pub fn get_single_result<TupleType, T, P>(result: QueryResult<T, P>) -> impl MyFuture<TupleType>
+pub async fn get_single_result<TupleType, T, P>(result: QueryResult<T, P>) -> Result<TupleType>
 where
     TupleType: FromRow + Send + 'static,
     P: Protocol + Send + 'static,
     T: ConnectionLike + Sized + Send + 'static,
 {
-    get_all_results(result).and_then(|mut data| {
-        if data.len() != 1 {
-            Err(Error::from(io::Error::from(io::ErrorKind::InvalidData)))
-        } else {
-            Ok(data.remove(0))
-        }
-    })
+    let mut data = get_all_results(result).await?;
+    if data.len() != 1 {
+        Err(Error::from(io::Error::from(io::ErrorKind::InvalidData)))
+    } else {
+        Ok(data.remove(0))
+    }
 }
 
 #[tokio::test]
