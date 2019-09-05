@@ -632,16 +632,14 @@ mod test {
     }
 
     #[tokio::test]
-    async fn should_connect() {
+    async fn should_connect() -> super::Result<()> {
         Conn::new(get_opts())
-            .await
-            .unwrap()
+            .await?
             .ping()
-            .await
-            .unwrap()
+            .await?
             .disconnect()
-            .await
-            .unwrap()
+            .await?;
+        Ok(())
     }
 
     #[test]
@@ -654,95 +652,78 @@ mod test {
     }
 
     #[tokio::test]
-    async fn should_execute_init_queries_on_new_connection() {
+    async fn should_execute_init_queries_on_new_connection() -> super::Result<()> {
         let mut opts_builder = OptsBuilder::from_opts(get_opts());
         opts_builder.init(vec!["SET @a = 42", "SET @b = 'foo'"]);
         let (conn, result) = Conn::new(opts_builder)
-            .await
-            .unwrap()
+            .await?
             .query("SELECT @a, @b")
-            .await
-            .unwrap()
+            .await?
             .collect_and_drop::<(u8, String)>()
-            .await
-            .unwrap();
-        conn.disconnect().await.unwrap();
+            .await?;
+        conn.disconnect().await?;
         assert_eq!(result, vec![(42, "foo".into())]);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_reset_the_connection() {
-        let conn = Conn::new(get_opts()).await.unwrap();
-        let conn = conn.drop_exec("SELECT ?", (1,)).await.unwrap();
-        let conn = conn.reset().await.unwrap();
-        let conn = conn.drop_exec("SELECT ?", (1,)).await.unwrap();
-        conn.disconnect().await.unwrap();
+    async fn should_reset_the_connection() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
+        let conn = conn.drop_exec("SELECT ?", (1,)).await?;
+        let conn = conn.reset().await?;
+        let conn = conn.drop_exec("SELECT ?", (1,)).await?;
+        conn.disconnect().await?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_not_cache_statements_if_stmt_cache_size_is_zero() {
+    async fn should_not_cache_statements_if_stmt_cache_size_is_zero() -> super::Result<()> {
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.stmt_cache_size(0);
-        let conn = Conn::new(opts).await.unwrap();
-        let conn = conn.drop_exec("DO ?", (1,)).await.unwrap();
-        let stmt = conn.prepare("DO 2").await.unwrap();
-        let (stmt, _) = stmt.first::<_, (crate::Value,)>(()).await.unwrap();
-        let (stmt, _) = stmt.first::<_, (crate::Value,)>(()).await.unwrap();
-        let conn = stmt.close().await.unwrap();
-        let conn = conn
-            .prep_exec("DO 3", ())
-            .await
-            .unwrap()
-            .drop_result()
-            .await
-            .unwrap();
-        let conn = conn.batch_exec("DO 4", vec![(), ()]).await.unwrap();
-        let (conn, _) = conn.first_exec::<_, _, (u8,)>("DO 5", ()).await.unwrap();
+        let conn = Conn::new(opts).await?;
+        let conn = conn.drop_exec("DO ?", (1,)).await?;
+        let stmt = conn.prepare("DO 2").await?;
+        let (stmt, _) = stmt.first::<_, (crate::Value,)>(()).await?;
+        let (stmt, _) = stmt.first::<_, (crate::Value,)>(()).await?;
+        let conn = stmt.close().await?;
+        let conn = conn.prep_exec("DO 3", ()).await?.drop_result().await?;
+        let conn = conn.batch_exec("DO 4", vec![(), ()]).await?;
+        let (conn, _) = conn.first_exec::<_, _, (u8,)>("DO 5", ()).await?;
         let (conn, row) = conn
             .first("SHOW SESSION STATUS LIKE 'Com_stmt_close';")
-            .await
-            .unwrap();
+            .await?;
         assert_eq!(from_row::<(String, usize)>(row.unwrap()).1, 5);
-        conn.disconnect().await.unwrap();
+        conn.disconnect().await?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_hold_stmt_cache_size_bound() {
+    async fn should_hold_stmt_cache_size_bound() -> super::Result<()> {
         use crate::connection_like::ConnectionLike;
 
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.stmt_cache_size(3);
         let conn = Conn::new(opts)
-            .await
-            .unwrap()
+            .await?
             .drop_exec("DO 1", ())
-            .await
-            .unwrap()
+            .await?
             .drop_exec("DO 2", ())
-            .await
-            .unwrap()
+            .await?
             .drop_exec("DO 3", ())
-            .await
-            .unwrap()
+            .await?
             .drop_exec("DO 1", ())
-            .await
-            .unwrap()
+            .await?
             .drop_exec("DO 4", ())
-            .await
-            .unwrap()
+            .await?
             .drop_exec("DO 3", ())
-            .await
-            .unwrap()
+            .await?
             .drop_exec("DO 5", ())
-            .await
-            .unwrap()
+            .await?
             .drop_exec("DO 6", ())
-            .await
-            .unwrap();
+            .await?;
         let (conn, row_opt) = conn
             .first("SHOW SESSION STATUS LIKE 'Com_stmt_close';")
-            .await
-            .unwrap();
+            .await?;
         let (_, count): (String, usize) = row_opt.unwrap();
         assert_eq!(count, 3);
         let order = conn
@@ -751,50 +732,48 @@ mod test {
             .map(Clone::clone)
             .collect::<Vec<String>>();
         assert_eq!(order, &["DO 3", "DO 5", "DO 6"]);
-        conn.disconnect().await.unwrap();
+        conn.disconnect().await?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_perform_queries() {
+    async fn should_perform_queries() -> super::Result<()> {
         let long_string = ::std::iter::repeat('A')
             .take(18 * 1024 * 1024)
             .collect::<String>();
-        let conn = Conn::new(get_opts()).await.unwrap();
+        let conn = Conn::new(get_opts()).await?;
         let result = conn
             .query(format!(r"SELECT '{}', 231", long_string))
-            .await
-            .unwrap();
+            .await?;
         let (conn, result) = result
             .reduce_and_drop(vec![], move |mut acc, row| {
                 acc.push(from_row(row));
                 acc
             })
-            .await
-            .unwrap();
-        conn.disconnect().await.unwrap();
+            .await?;
+        conn.disconnect().await?;
         assert_eq!((long_string, 231), result[0]);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_drop_query() {
-        let conn = Conn::new(get_opts()).await.unwrap();
+    async fn should_drop_query() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
         let (conn, result) = conn
             .drop_query("CREATE TEMPORARY TABLE tmp (id int DEFAULT 10, name text)")
-            .await
-            .unwrap()
+            .await?
             .drop_query("INSERT INTO tmp VALUES (1, 'foo')")
-            .await
-            .unwrap()
+            .await?
             .first::<_, (u8,)>("SELECT COUNT(*) FROM tmp")
-            .await
-            .unwrap();
-        conn.disconnect().await.unwrap();
+            .await?;
+        conn.disconnect().await?;
         assert_eq!(result, Some((1,)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_try_collect() {
-        let conn = Conn::new(get_opts()).await.unwrap();
+    async fn should_try_collect() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
         let result = conn
             .query(
                 r"SELECT 'hello', 123
@@ -804,19 +783,19 @@ mod test {
                     SELECT 'hello', 123
                 ",
             )
-            .await
-            .unwrap();
-        let (result, mut rows) = result.try_collect::<(String, u8)>().await.unwrap();
+            .await?;
+        let (result, mut rows) = result.try_collect::<(String, u8)>().await?;
         assert!(rows.pop().unwrap().is_ok());
         assert!(rows.pop().unwrap().is_err());
         assert!(rows.pop().unwrap().is_ok());
-        let conn = result.drop_result().await.unwrap();
-        conn.disconnect().await.unwrap();
+        let conn = result.drop_result().await?;
+        conn.disconnect().await?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_try_collect_and_drop() {
-        let conn = Conn::new(get_opts()).await.unwrap();
+    async fn should_try_collect_and_drop() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
         let (conn, mut rows) = conn
             .query(
                 r"SELECT 'hello', 123
@@ -827,20 +806,19 @@ mod test {
                     SELECT 'foo', 255;
                 ",
             )
-            .await
-            .unwrap()
+            .await?
             .try_collect_and_drop::<(String, u8)>()
-            .await
-            .unwrap();
+            .await?;
         assert!(rows.pop().unwrap().is_ok());
         assert!(rows.pop().unwrap().is_err());
         assert!(rows.pop().unwrap().is_ok());
-        conn.disconnect().await.unwrap();
+        conn.disconnect().await?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_handle_mutliresult_set() {
-        let conn = Conn::new(get_opts()).await.unwrap();
+    async fn should_handle_mutliresult_set() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
         let result = conn
             .query(
                 r"SELECT 'hello', 123
@@ -849,20 +827,20 @@ mod test {
                     SELECT 'foo', 255;
                 ",
             )
-            .await
-            .unwrap();
-        let (result, rows_1) = result.collect::<(String, u8)>().await.unwrap();
-        let (conn, rows_2) = result.collect_and_drop().await.unwrap();
-        conn.disconnect().await.unwrap();
+            .await?;
+        let (result, rows_1) = result.collect::<(String, u8)>().await?;
+        let (conn, rows_2) = result.collect_and_drop().await?;
+        conn.disconnect().await?;
 
         assert_eq!((String::from("hello"), 123), rows_1[0]);
         assert_eq!((String::from("world"), 231), rows_1[1]);
         assert_eq!((String::from("foo"), 255), rows_2[0]);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_map_resultset() {
-        let conn = Conn::new(get_opts()).await.unwrap();
+    async fn should_map_resultset() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
         let result = conn
             .query(
                 r"
@@ -872,24 +850,21 @@ mod test {
                     SELECT 'foo', 255;
                 ",
             )
-            .await
-            .unwrap();
+            .await?;
 
-        let (result, rows_1) = result
-            .map(|row| from_row::<(String, u8)>(row))
-            .await
-            .unwrap();
-        let (conn, rows_2) = result.map_and_drop(from_row).await.unwrap();
-        conn.disconnect().await.unwrap();
+        let (result, rows_1) = result.map(|row| from_row::<(String, u8)>(row)).await?;
+        let (conn, rows_2) = result.map_and_drop(from_row).await?;
+        conn.disconnect().await?;
 
         assert_eq!((String::from("hello"), 123), rows_1[0]);
         assert_eq!((String::from("world"), 231), rows_1[1]);
         assert_eq!((String::from("foo"), 255), rows_2[0]);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_reduce_resultset() {
-        let conn = Conn::new(get_opts()).await.unwrap();
+    async fn should_reduce_resultset() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
         let result = conn
             .query(
                 r"SELECT 5
@@ -897,23 +872,23 @@ mod test {
                     SELECT 6;
                     SELECT 7;",
             )
-            .await
-            .unwrap();
+            .await?;
         let (result, reduced) = result
             .reduce(0, |mut acc, row| {
                 acc += from_row::<i32>(row);
                 acc
             })
-            .await
-            .unwrap();
-        let (conn, rows_2) = result.collect_and_drop::<Vec<_>>().await.unwrap();
-        conn.disconnect().await.unwrap();
+            .await?;
+        let (conn, rows_2) = result.collect_and_drop::<Vec<_>>().await?;
+        conn.disconnect().await?;
         assert_eq!(11, reduced);
         assert_eq!(7, rows_2[0][0]);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_handle_multi_result_sets_where_some_results_have_no_output() {
+    async fn should_handle_multi_result_sets_where_some_results_have_no_output() -> super::Result<()>
+    {
         const QUERY: &str = r"SELECT 1;
             UPDATE time_zone SET Time_zone_id = 1 WHERE Time_zone_id = 1;
             SELECT 2;
@@ -922,38 +897,34 @@ mod test {
             UPDATE time_zone SET Time_zone_id = 1 WHERE Time_zone_id = 1;
             SELECT 4;";
 
-        let c = Conn::new(get_opts()).await.unwrap();
-        let t = c
-            .start_transaction(TransactionOptions::new())
-            .await
-            .unwrap();
-        let t = t.drop_query(QUERY).await.unwrap();
-        let r = t.query(QUERY).await.unwrap();
-        let (t, out) = r.collect_and_drop::<u8>().await.unwrap();
+        let c = Conn::new(get_opts()).await?;
+        let t = c.start_transaction(TransactionOptions::new()).await?;
+        let t = t.drop_query(QUERY).await?;
+        let r = t.query(QUERY).await?;
+        let (t, out) = r.collect_and_drop::<u8>().await?;
         assert_eq!(vec![1], out);
-        let r = t.query(QUERY).await.unwrap();
+        let r = t.query(QUERY).await?;
         let t = r
             .for_each_and_drop(|x| assert_eq!(from_row::<u8>(x), 1))
-            .await
-            .unwrap();
-        let r = t.query(QUERY).await.unwrap();
-        let (t, out) = r.map_and_drop(|row| from_row::<u8>(row)).await.unwrap();
+            .await?;
+        let r = t.query(QUERY).await?;
+        let (t, out) = r.map_and_drop(|row| from_row::<u8>(row)).await?;
         assert_eq!(vec![1], out);
-        let r = t.query(QUERY).await.unwrap();
+        let r = t.query(QUERY).await?;
         let (t, out) = r
             .reduce_and_drop(0u8, |acc, x| acc + from_row::<u8>(x))
-            .await
-            .unwrap();
+            .await?;
         assert_eq!(1, out);
-        let t = t.query(QUERY).await.unwrap().drop_result().await.unwrap();
-        let c = t.commit().await.unwrap();
-        let (c, result) = c.first_exec::<_, _, u8>("SELECT 1", ()).await.unwrap();
-        c.disconnect().await.unwrap();
+        let t = t.query(QUERY).await?.drop_result().await?;
+        let c = t.commit().await?;
+        let (c, result) = c.first_exec::<_, _, u8>("SELECT 1", ()).await?;
+        c.disconnect().await?;
         assert_eq!(result, Some(1));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_iterate_over_resultset() {
+    async fn should_iterate_over_resultset() -> super::Result<()> {
         use std::sync::{
             atomic::{AtomicUsize, Ordering},
             Arc,
@@ -961,7 +932,7 @@ mod test {
 
         let acc = Arc::new(AtomicUsize::new(0));
 
-        let conn = Conn::new(get_opts()).await.unwrap();
+        let conn = Conn::new(get_opts()).await?;
         let result = conn
             .query(
                 r"SELECT 2
@@ -969,8 +940,7 @@ mod test {
                     SELECT 3;
                     SELECT 5;",
             )
-            .await
-            .unwrap();
+            .await?;
         let result = result
             .for_each({
                 let acc = acc.clone();
@@ -978,8 +948,7 @@ mod test {
                     acc.fetch_add(from_row::<usize>(row), Ordering::SeqCst);
                 }
             })
-            .await
-            .unwrap();
+            .await?;
         let conn = result
             .for_each_and_drop({
                 let acc = acc.clone();
@@ -987,172 +956,150 @@ mod test {
                     acc.fetch_add(from_row::<usize>(row), Ordering::SeqCst);
                 }
             })
-            .await
-            .unwrap();
-        conn.disconnect().await.unwrap();
+            .await?;
+        conn.disconnect().await?;
         assert_eq!(acc.load(Ordering::SeqCst), 10);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_prepare_statement() {
+    async fn should_prepare_statement() -> super::Result<()> {
         Conn::new(get_opts())
-            .await
-            .unwrap()
+            .await?
             .prepare(r"SELECT ?")
-            .await
-            .unwrap()
+            .await?
             .close()
-            .await
-            .unwrap()
+            .await?
             .disconnect()
-            .await
-            .unwrap();
+            .await?;
 
         Conn::new(get_opts())
-            .await
-            .unwrap()
+            .await?
             .prepare(r"SELECT :foo")
-            .await
-            .unwrap()
+            .await?
             .close()
-            .await
-            .unwrap()
+            .await?
             .disconnect()
-            .await
-            .unwrap();
+            .await?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_execute_statement() {
+    async fn should_execute_statement() -> super::Result<()> {
         let long_string = ::std::iter::repeat('A')
             .take(18 * 1024 * 1024)
             .collect::<String>();
-        let conn = Conn::new(get_opts()).await.unwrap();
-        let stmt = conn.prepare(r"SELECT ?").await.unwrap();;
-        let result = stmt.execute((&long_string,)).await.unwrap();
+        let conn = Conn::new(get_opts()).await?;
+        let stmt = conn.prepare(r"SELECT ?").await?;;
+        let result = stmt.execute((&long_string,)).await?;
         let (stmt, mut mapped) = result
             .map_and_drop(|row| from_row::<(String,)>(row))
-            .await
-            .unwrap();
+            .await?;
         assert_eq!(mapped.len(), 1);
         assert_eq!(mapped.pop(), Some((long_string,)));
-        let result = stmt.execute((42,)).await.unwrap();
-        let (stmt, collected) = result.collect_and_drop::<(u8,)>().await.unwrap();
+        let result = stmt.execute((42,)).await?;
+        let (stmt, collected) = result.collect_and_drop::<(u8,)>().await?;
         assert_eq!(collected, vec![(42u8,)]);
-        let result = stmt.execute((8,)).await.unwrap();
+        let result = stmt.execute((8,)).await?;
         let (stmt, reduced) = result
             .reduce_and_drop(2, |mut acc, row| {
                 acc += from_row::<i32>(row);
                 acc
             })
-            .await
-            .unwrap();
-        stmt.close().await.unwrap().disconnect().await.unwrap();
+            .await?;
+        stmt.close().await?.disconnect().await?;
         assert_eq!(reduced, 10);
 
-        let conn = Conn::new(get_opts()).await.unwrap();
-        let stmt = conn.prepare(r"SELECT :foo, :bar, :foo, 3").await.unwrap();
+        let conn = Conn::new(get_opts()).await?;
+        let stmt = conn.prepare(r"SELECT :foo, :bar, :foo, 3").await?;
         let result = stmt
             .execute(params! { "foo" => "quux", "bar" => "baz" })
-            .await
-            .unwrap();
+            .await?;
         let (stmt, mut mapped) = result
             .map_and_drop(|row| from_row::<(String, String, String, u8)>(row))
-            .await
-            .unwrap();
+            .await?;
         assert_eq!(mapped.len(), 1);
         assert_eq!(
             mapped.pop(),
             Some(("quux".into(), "baz".into(), "quux".into(), 3))
         );
-        let result = stmt
-            .execute(params! { "foo" => 2, "bar" => 3 })
-            .await
-            .unwrap();
-        let (stmt, collected) = result.collect_and_drop::<(u8, u8, u8, u8)>().await.unwrap();
+        let result = stmt.execute(params! { "foo" => 2, "bar" => 3 }).await?;
+        let (stmt, collected) = result.collect_and_drop::<(u8, u8, u8, u8)>().await?;
         assert_eq!(collected, vec![(2, 3, 2, 3)]);
-        let result = stmt
-            .execute(params! { "foo" => 2, "bar" => 3 })
-            .await
-            .unwrap();
+        let result = stmt.execute(params! { "foo" => 2, "bar" => 3 }).await?;
         let (stmt, reduced) = result
             .reduce_and_drop(0, |acc, row| {
                 let (a, b, c, d): (u8, u8, u8, u8) = from_row(row);
                 acc + a + b + c + d
             })
-            .await
-            .unwrap();
-        stmt.close().await.unwrap().disconnect().await.unwrap();
+            .await?;
+        stmt.close().await?.disconnect().await?;
         assert_eq!(reduced, 10);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_prep_exec_statement() {
-        let conn = Conn::new(get_opts()).await.unwrap();
+    async fn should_prep_exec_statement() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
         let result = conn
             .prep_exec(r"SELECT :a, :b, :a", params! { "a" => 2, "b" => 3 })
-            .await
-            .unwrap();
+            .await?;
         let (conn, output) = result
             .map_and_drop(|row| {
                 let (a, b, c): (u8, u8, u8) = from_row(row);
                 a * b * c
             })
-            .await
-            .unwrap();
-        conn.disconnect().await.unwrap();
+            .await?;
+        conn.disconnect().await?;
         assert_eq!(output[0], 12u8);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_first_exec_statement() {
-        let conn = Conn::new(get_opts()).await.unwrap();
+    async fn should_first_exec_statement() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
         let (conn, output): (_, Option<(u8,)>) = conn
             .first_exec(
                 r"SELECT :a UNION ALL SELECT :b",
                 params! { "a" => 2, "b" => 3 },
             )
-            .await
-            .unwrap();
-        conn.disconnect().await.unwrap();
+            .await?;
+        conn.disconnect().await?;
         assert_eq!(output.unwrap(), (2u8,));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_run_transactions() {
-        let conn = Conn::new(get_opts()).await.unwrap();
+    async fn should_run_transactions() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
         let conn = conn
             .drop_query("CREATE TEMPORARY TABLE tmp (id INT, name TEXT)")
-            .await
-            .unwrap();
-        let transaction = conn.start_transaction(Default::default()).await.unwrap();
+            .await?;
+        let transaction = conn.start_transaction(Default::default()).await?;
         let conn = transaction
             .drop_query("INSERT INTO tmp VALUES (1, 'foo'), (2, 'bar')")
-            .await
-            .unwrap()
+            .await?
             .commit()
-            .await
-            .unwrap();
-        let (conn, output_opt) = conn.first("SELECT COUNT(*) FROM tmp").await.unwrap();
+            .await?;
+        let (conn, output_opt) = conn.first("SELECT COUNT(*) FROM tmp").await?;
         assert_eq!(output_opt, Some((2u8,)));
-        let transaction = conn.start_transaction(Default::default()).await.unwrap();
+        let transaction = conn.start_transaction(Default::default()).await?;
         let transaction = transaction
             .drop_query("INSERT INTO tmp VALUES (3, 'baz'), (4, 'quux')")
-            .await
-            .unwrap();
+            .await?;
         let (t, output_opt) = transaction
             .first_exec("SELECT COUNT(*) FROM tmp", ())
-            .await
-            .unwrap();
+            .await?;
         assert_eq!(output_opt, Some((4u8,)));
-        let conn = t.rollback().await.unwrap();
-        let (conn, output_opt) = conn.first("SELECT COUNT(*) FROM tmp").await.unwrap();
+        let conn = t.rollback().await?;
+        let (conn, output_opt) = conn.first("SELECT COUNT(*) FROM tmp").await?;
         assert_eq!(output_opt, Some((2u8,)));
-        conn.disconnect().await.unwrap();
+        conn.disconnect().await?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_handle_local_infile() {
+    async fn should_handle_local_infile() -> super::Result<()> {
         use std::io::Write;
 
         let mut opts = OptsBuilder::from_opts(get_opts());
@@ -1160,11 +1107,10 @@ mod test {
             &["local_infile.txt"][..],
         )));
 
-        let conn = Conn::new(opts).await.unwrap();
+        let conn = Conn::new(opts).await?;
         let conn = conn
             .drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);")
-            .await
-            .unwrap();
+            .await?;
 
         let mut file = ::std::fs::File::create("local_infile.txt").unwrap();
         let _ = file.write(b"AAAAAA\n");
@@ -1172,15 +1118,12 @@ mod test {
         let _ = file.write(b"CCCCCC\n");
         let conn = conn
             .drop_query("LOAD DATA LOCAL INFILE 'local_infile.txt' INTO TABLE tmp;")
-            .await
-            .unwrap();
+            .await?;
         let (conn, result) = conn
             .prep_exec("SELECT * FROM tmp;", ())
-            .await
-            .unwrap()
+            .await?
             .map_and_drop(|row| from_row::<(String,)>(row).0)
-            .await
-            .unwrap();
+            .await?;
         assert_eq!(result.len(), 3);
         assert_eq!(result[0], "AAAAAA");
         assert_eq!(result[1], "BBBBBB");
@@ -1190,10 +1133,11 @@ mod test {
         if let Err(crate::error::Error::Server(ref err)) = result {
             if err.code == 1148 {
                 // The used command is not allowed with this MySQL version
-                return;
+                return Ok(());
             }
         }
         result.unwrap();
+        Ok(())
     }
 
     #[cfg(feature = "nightly")]

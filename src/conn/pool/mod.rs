@@ -521,10 +521,11 @@ mod test {
     };
 
     #[tokio::test]
-    async fn should_connect() {
+    async fn should_connect() -> super::Result<()> {
         let pool = Pool::new(&**DATABASE_URL);
-        pool.get_conn().await.unwrap().ping().await.unwrap();
-        pool.disconnect().await.unwrap();
+        pool.get_conn().await?.ping().await?;
+        pool.disconnect().await?;
+        Ok(())
     }
 
     #[tokio::test]
@@ -549,44 +550,33 @@ mod test {
     }
 
     #[tokio::test]
-    async fn should_start_transaction() {
+    async fn should_start_transaction() -> super::Result<()> {
         let pool = Pool::new(format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL));
         pool.get_conn()
-            .await
-            .unwrap()
+            .await?
             .drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)")
-            .await
-            .unwrap();
+            .await?;
         let _ = pool
             .start_transaction(TransactionOptions::default())
-            .await
-            .unwrap()
+            .await?
             .batch_exec("INSERT INTO tmp (id) VALUES (?)", vec![(1,), (2,)])
-            .await
-            .unwrap()
+            .await?
             .prep_exec("SELECT * FROM tmp", ())
-            .await
-            .unwrap();
+            .await?;
         let row_opt = pool
             .get_conn()
-            .await
-            .unwrap()
+            .await?
             .first("SELECT COUNT(*) FROM tmp")
-            .await
-            .unwrap()
+            .await?
             .1;
         assert_eq!(row_opt, Some((0u8,)));
-        pool.get_conn()
-            .await
-            .unwrap()
-            .drop_query("DROP TABLE tmp")
-            .await
-            .unwrap();
-        pool.disconnect().await.unwrap();
+        pool.get_conn().await?.drop_query("DROP TABLE tmp").await?;
+        pool.disconnect().await?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_hold_bounds2() {
+    async fn should_hold_bounds2() -> super::Result<()> {
         use std::cmp::min;
 
         const POOL_MIN: usize = 5;
@@ -602,7 +592,7 @@ mod test {
         let pool_clone = pool.clone();
         let conns = (0..POOL_MAX).map(|_| pool.get_conn()).collect::<Vec<_>>();
 
-        let mut conns = futures_util::try_future::try_join_all(conns).await.unwrap();
+        let mut conns = futures_util::try_future::try_join_all(conns).await?;
 
         // we want to continuously drop connections
         // and check that they are _actually_ dropped until we reach POOL_MIN
@@ -636,11 +626,12 @@ mod test {
             assert_eq!(have, expected);
         }
 
-        pool.disconnect().await.unwrap();
+        pool.disconnect().await?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn should_hold_bounds1() {
+    async fn should_hold_bounds1() -> super::Result<()> {
         let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL));
         let pool_clone = pool.clone();
 
@@ -665,7 +656,7 @@ mod test {
         drop(conn2);
         // only one of conn1 and conn2 should have gone to idle,
         // and should have immediately been picked up by new_conn (now conn1)
-        let conn1 = pool_clone.get_conn().await.unwrap();
+        let conn1 = pool_clone.get_conn().await?;
         assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
 
         drop(conn1);
@@ -673,12 +664,13 @@ mod test {
         // the connection should be returned to idle
         // (but may not have been returned _yet_)
         assert!(pool.inner.idle.len() <= 1);
-        pool.disconnect().await.unwrap();
+        pool.disconnect().await?;
+        Ok(())
     }
 
     // Test that connections which err do not count towards the connection count in the pool.
     #[tokio::test]
-    async fn should_hold_bounds_on_error() {
+    async fn should_hold_bounds_on_error() -> super::Result<()> {
         // Should not be possible to connect to broadcast address.
         let pool = Pool::new(String::from("mysql://255.255.255.255"));
 
@@ -688,6 +680,7 @@ mod test {
                 .is_err()
         );
         assert_eq!(pool.inner.exist.load(atomic::Ordering::SeqCst), 0);
+        Ok(())
     }
 
     /*
@@ -720,13 +713,14 @@ mod test {
     */
 
     #[tokio::test]
-    async fn droptest() {
+    async fn droptest() -> super::Result<()> {
         let pool = Pool::new(&**DATABASE_URL);
         let conns = futures_util::try_future::try_join_all((0..10).map(|_| pool.get_conn()))
             .await
             .unwrap();
         drop(conns);
         drop(pool);
+        Ok(())
     }
 
     /*
