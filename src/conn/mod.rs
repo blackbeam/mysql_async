@@ -43,7 +43,9 @@ fn disconnect(mut conn: Conn) {
 
     if !disconnected {
         // Server will report broken connection if spawn fails.
-        tokio::spawn(Box::pin(async move {
+        use tokio::executor::Executor;
+        // this might fail if, say, the runtime is shutting down, but we've done what we could
+        let _ = tokio::executor::DefaultExecutor::current().spawn(Box::pin(async move {
             if let Ok(conn) = conn.cleanup().await {
                 let _ = conn.disconnect().await;
             }
@@ -627,7 +629,7 @@ mod test {
         let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
         // to suppress warning on unused mut
         builder.stmt_cache_size(None);
-        {
+        if false {
             let mut ssl_opts = SslOpts::default();
             ssl_opts.set_danger_skip_domain_validation(true);
             ssl_opts.set_danger_accept_invalid_certs(true);
@@ -890,10 +892,10 @@ mod test {
                 acc
             })
             .await?;
-        let (conn, rows_2) = result.collect_and_drop::<Vec<_>>().await?;
+        let (conn, rows_2) = result.collect_and_drop::<i32>().await?;
         conn.disconnect().await?;
         assert_eq!(11, reduced);
-        assert_eq!(7, rows_2[0][0]);
+        assert_eq!(7, rows_2[0]);
         Ok(())
     }
 
@@ -909,6 +911,10 @@ mod test {
             SELECT 4;";
 
         let c = Conn::new(get_opts()).await?;
+        let c = c
+            .drop_query("CREATE TEMPORARY TABLE time_zone (Time_zone_id INT)")
+            .await
+            .unwrap();
         let t = c.start_transaction(TransactionOptions::new()).await?;
         let t = t.drop_query(QUERY).await?;
         let r = t.query(QUERY).await?;

@@ -7,11 +7,10 @@
 // modified, or distributed except according to those terms.
 
 use tokio::fs::File;
-use tokio::prelude::*;
 
 use std::{collections::HashSet, path::PathBuf, str::from_utf8};
 
-use crate::{local_infile_handler::LocalInfileHandler, BoxFuture};
+use crate::local_infile_handler::LocalInfileHandler;
 
 /// Handles local infile requests from filesystem using explicit path white list.
 ///
@@ -48,7 +47,7 @@ impl WhiteListFsLocalInfileHandler {
 }
 
 impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
-    fn handle(&self, file_name: &[u8]) -> BoxFuture<Box<dyn AsyncRead + Send + Unpin + 'static>> {
+    fn handle(&self, file_name: &[u8]) -> super::InfileHandlerFuture {
         let path: PathBuf = match from_utf8(file_name) {
             Ok(path_str) => path_str.into(),
             Err(_) => return Box::pin(futures_util::future::err("Invalid file name".into())),

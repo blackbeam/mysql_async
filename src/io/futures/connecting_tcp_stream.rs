@@ -29,12 +29,23 @@ where
                 streams.push(TcpStream::connect(address));
             }
 
-            if !streams.is_empty() {
-                let stream = streams.next().await.unwrap().unwrap();
-                Ok(Stream {
-                    closed: false,
-                    codec: Box::new(Framed::new(stream.into(), PacketCodec::new())).into(),
-                })
+            let mut err = None;
+            while let Some(stream) = streams.next().await {
+                match stream {
+                    Err(e) => {
+                        err = Some(e);
+                    }
+                    Ok(stream) => {
+                        return Ok(Stream {
+                            closed: false,
+                            codec: Box::new(Framed::new(stream.into(), PacketCodec::new())).into(),
+                        });
+                    }
+                }
+            }
+
+            if let Some(e) = err {
+                Err(e.into())
             } else {
                 Err(io::Error::new(
                     io::ErrorKind::InvalidInput,

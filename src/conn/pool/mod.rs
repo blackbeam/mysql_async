@@ -517,12 +517,26 @@ mod test {
     use std::sync::atomic;
 
     use crate::{
-        conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL, TransactionOptions,
+        conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL, OptsBuilder,
+        PoolConstraints, SslOpts, TransactionOptions,
     };
+
+    fn get_opts() -> OptsBuilder {
+        let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
+        // to suppress warning on unused mut
+        builder.stmt_cache_size(None);
+        if false {
+            let mut ssl_opts = SslOpts::default();
+            ssl_opts.set_danger_skip_domain_validation(true);
+            ssl_opts.set_danger_accept_invalid_certs(true);
+            builder.ssl_opts(ssl_opts);
+        }
+        builder
+    }
 
     #[tokio::test]
     async fn should_connect() -> super::Result<()> {
-        let pool = Pool::new(&**DATABASE_URL);
+        let pool = Pool::new(get_opts());
         pool.get_conn().await?.ping().await?;
         pool.disconnect().await?;
         Ok(())
@@ -531,7 +545,7 @@ mod test {
     #[tokio::test]
     #[ignore]
     async fn can_handle_the_pressure() {
-        let pool = Pool::new(&**DATABASE_URL);
+        let pool = Pool::new(get_opts());
         for _ in 0..10i32 {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             for i in 0..10_000 {
@@ -551,7 +565,9 @@ mod test {
 
     #[tokio::test]
     async fn should_start_transaction() -> super::Result<()> {
-        let pool = Pool::new(format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL));
+        let mut opts = get_opts();
+        opts.pool_constraints(PoolConstraints::new(1, 1));
+        let pool = Pool::new(opts);
         pool.get_conn()
             .await?
             .drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)")
@@ -582,13 +598,10 @@ mod test {
         const POOL_MIN: usize = 5;
         const POOL_MAX: usize = 10;
 
-        let url = format!(
-            "{}?pool_min={}&pool_max={}",
-            &**DATABASE_URL, POOL_MIN, POOL_MAX
-        );
-
         // Clean
-        let pool = Pool::new(url.clone());
+        let mut opts = get_opts();
+        opts.pool_constraints(PoolConstraints::new(POOL_MIN, POOL_MAX));
+        let pool = Pool::new(opts);
         let pool_clone = pool.clone();
         let conns = (0..POOL_MAX).map(|_| pool.get_conn()).collect::<Vec<_>>();
 
@@ -632,7 +645,9 @@ mod test {
 
     #[tokio::test]
     async fn should_hold_bounds1() -> super::Result<()> {
-        let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL));
+        let mut opts = get_opts();
+        opts.pool_constraints(PoolConstraints::new(1, 2));
+        let pool = Pool::new(opts);
         let pool_clone = pool.clone();
 
         let (conn1, conn2) = futures_util::try_future::try_join(pool.get_conn(), pool.get_conn())
@@ -686,7 +701,7 @@ mod test {
     /*
     #[test]
     fn should_hold_bounds_on_get_conn_drop() {
-        let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL));
+        let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", get_opts()));
         let mut runtime = tokio::runtime::Runtime::new().unwrap();
 
         // This test is a bit more intricate: we need to poll the connection future once to get the
@@ -714,7 +729,7 @@ mod test {
 
     #[tokio::test]
     async fn droptest() -> super::Result<()> {
-        let pool = Pool::new(&**DATABASE_URL);
+        let pool = Pool::new(get_opts());
         let conns = futures_util::try_future::try_join_all((0..10).map(|_| pool.get_conn()))
             .await
             .unwrap();
@@ -734,7 +749,7 @@ mod test {
         //  - Runtime::shutdown_now is called
         //
         // none of these are true in this test, which is why it's been ignored
-        let pool = Pool::new(&**DATABASE_URL);
+        let pool = Pool::new(get_opts());
         run(collect(
             (0..10).map(|_| pool.get_conn()).collect::<Vec<_>>(),
         ))
@@ -753,7 +768,7 @@ mod test {
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
             let mut runtime = Runtime::new().expect("3");
-            let pool = Pool::new(&**DATABASE_URL);
+            let pool = Pool::new(get_opts());
 
             bencher.iter(|| {
                 let fut = pool.get_conn().and_then(|conn| conn.ping());

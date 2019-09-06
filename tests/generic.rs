@@ -6,28 +6,12 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use ::futures::Future;
-use mysql_async::error::Error;
+use mysql_async::error::*;
 use mysql_async::prelude::*;
-use mysql_async::{MyFuture, Opts, Pool, QueryResult};
-use tokio::prelude::*;
+use mysql_async::{Opts, Pool, QueryResult};
 
 use std::env;
 use std::io;
-
-/// Same as `tokio::run`, but will panic if future panics and will return the result
-/// of future execution.
-fn run<F, T, U>(future: F) -> Result<T, U>
-where
-    F: Future<Item = T, Error = U> + Send + 'static,
-    T: Send + 'static,
-    U: Send + 'static,
-{
-    let mut runtime = tokio::runtime::Runtime::new().unwrap();
-    let result = runtime.block_on(future);
-    runtime.shutdown_on_idle().wait().unwrap();
-    result
-}
 
 fn get_url() -> String {
     if let Ok(url) = env::var("DATABASE_URL") {
@@ -73,7 +57,9 @@ async fn use_generic_code() {
     let pool = Pool::new(Opts::from_url(&*get_url()).unwrap());
     let conn = pool.get_conn().await.unwrap();
     let result = conn.query("SELECT 1, 2, 3").await.unwrap();
-    let result = result.get_single_result::<(u8, u8, u8), _, _>().unwrap();
+    let result = get_single_result::<(u8, u8, u8), _, _>(result)
+        .await
+        .unwrap();
     pool.disconnect().await.unwrap();
     assert_eq!(result, (1, 2, 3));
 }
