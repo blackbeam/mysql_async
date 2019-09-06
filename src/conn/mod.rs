@@ -1133,9 +1133,17 @@ mod test {
         let _ = file.write(b"AAAAAA\n");
         let _ = file.write(b"BBBBBB\n");
         let _ = file.write(b"CCCCCC\n");
-        let conn = conn
+        let conn = match conn
             .drop_query("LOAD DATA LOCAL INFILE 'local_infile.txt' INTO TABLE tmp;")
-            .await?;
+            .await
+        {
+            Ok(conn) => conn,
+            Err(super::Error::Server(ref err)) if err.code == 1148 => {
+                // The used command is not allowed with this MySQL version
+                return Ok(());
+            }
+            e @ Err(_) => e.unwrap(),
+        };
         let (conn, result) = conn
             .prep_exec("SELECT * FROM tmp;", ())
             .await?
