@@ -44,12 +44,9 @@ impl Socket {
     /// Connects a new socket.
     #[cfg(windows)]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Socket, io::Error> {
-        use futures::future::IntoFuture;
         use tokio_named_pipes::NamedPipe;
-
-        let handle = tokio::reactor::Handle::default();
-        let pipe = NamedPipe::new(path.as_ref(), &handle).await?;
-        pipe.connect()?;
+        let pipe = NamedPipe::new(path.as_ref()).await?;
+        pipe.connect().await?;
         Ok(Socket { inner: pipe })
     }
 }
