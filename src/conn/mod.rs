@@ -16,7 +16,7 @@ use mysql_common::{
     },
 };
 
-use std::{fmt, mem, str::FromStr, sync::Arc};
+use std::{fmt, future::Future, mem, pin::Pin, str::FromStr, sync::Arc};
 
 use crate::{
     conn::{pool::Pool, stmt_cache::StmtCache},
@@ -265,12 +265,16 @@ impl Conn {
         }
     }
 
-    async fn continue_auth(self) -> Result<Conn> {
-        match self.inner.auth_plugin {
-            AuthPlugin::MysqlNativePassword => self.continue_mysql_native_password_auth().await,
-            AuthPlugin::CachingSha2Password => self.continue_caching_sha2_password_auth().await,
-            _ => unreachable!(),
-        }
+    fn continue_auth(self) -> Pin<Box<dyn Future<Output = Result<Conn>> + Send>> {
+        // NOTE: we need to box this since it may recurse
+        // see https://github.com/rust-lang/rust/issues/46415#issuecomment-528099782
+        Box::pin(async move {
+            match self.inner.auth_plugin {
+                AuthPlugin::MysqlNativePassword => self.continue_mysql_native_password_auth().await,
+                AuthPlugin::CachingSha2Password => self.continue_caching_sha2_password_auth().await,
+                _ => unreachable!(),
+            }
+        })
     }
 
     async fn continue_caching_sha2_password_auth(self) -> Result<Conn> {
@@ -389,19 +393,23 @@ impl Conn {
     /// Returns new connection on success or self on error.
     ///
     /// Won't try to reconnect if socket connection is already enforced in `Opts`.
-    async fn reconnect_via_socket_if_needed(self) -> Result<Conn> {
-        if let Some(socket) = self.inner.socket.as_ref() {
-            let opts = self.inner.opts.clone();
-            if opts.get_socket().is_none() {
-                let mut builder = OptsBuilder::from_opts(opts);
-                builder.socket(Some(&**socket));
-                match Conn::new(builder).await {
-                    Ok(conn) => return Ok(conn),
-                    Err(_) => return Ok(self),
+    fn reconnect_via_socket_if_needed(self) -> Pin<Box<dyn Future<Output = Result<Conn>> + Send>> {
+        // NOTE: we need to box this since it may recurse
+        // see https://github.com/rust-lang/rust/issues/46415#issuecomment-528099782
+        Box::pin(async move {
+            if let Some(socket) = self.inner.socket.as_ref() {
+                let opts = self.inner.opts.clone();
+                if opts.get_socket().is_none() {
+                    let mut builder = OptsBuilder::from_opts(opts);
+                    builder.socket(Some(&**socket));
+                    match Conn::new(builder).await {
+                        Ok(conn) => return Ok(conn),
+                        Err(_) => return Ok(self),
+                    }
                 }
             }
-        }
-        Ok(self)
+            Ok(self)
+        })
     }
 
     /// Returns future that resolves to `Conn` with socket address stored in it.
@@ -482,15 +490,18 @@ impl Conn {
         }
     }
 
-    async fn cleanup(self) -> Result<Conn> {
-        // NOTE: we must box to avoid a recursive async fn
-        if self.inner.has_result.is_some() {
-            Box::pin(async move { self.drop_result().await?.cleanup().await }).await
-        } else if self.inner.in_transaction {
-            Box::pin(async move { self.rollback_transaction().await?.cleanup().await }).await
-        } else {
-            Ok(self)
-        }
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<Conn>> + Send>> {
+        // NOTE: we need to box this since it may recurse
+        // see https://github.com/rust-lang/rust/issues/46415#issuecomment-528099782
+        Box::pin(async move {
+            if self.inner.has_result.is_some() {
+                self.drop_result().await?.cleanup().await
+            } else if self.inner.in_transaction {
+                self.rollback_transaction().await?.cleanup().await
+            } else {
+                Ok(self)
+            }
+        })
     }
 }
 
