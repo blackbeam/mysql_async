@@ -48,11 +48,11 @@ jobs:
       - when:
           condition: << parameters.test-unstable >>
           steps:
-            - run:
-                name: Beta
-                command: |
-                  rustup toolchain install beta
-                  cargo +beta test
+#            - run:
+#                name: Beta
+#                command: |
+#                  rustup toolchain install beta
+#                  cargo +beta test
             - run:
                 name: Nightly
                 command: |
@@ -63,36 +63,36 @@ jobs:
 workflows:
   test:
     jobs:
-      - linux:
-          name: stable-mysql-5.6
-          rust: latest
-          flavor: mysql
-          version: "5.6"
-      - linux:
-          name: stable-mysql-5.7
-          rust: latest
-          flavor: mysql
-          version: "5.7"
-          test-ssl: true
+#      - linux:
+#          name: stable-mysql-5.6
+#          rust: latest
+#          flavor: mysql
+#          version: "5.6"
+#      - linux:
+#          name: stable-mysql-5.7
+#          rust: latest
+#          flavor: mysql
+#          version: "5.7"
+#          test-ssl: true
       - linux:
           name: stable-mysql-8.0
           rust: latest
           flavor: mysql
           version: "8.0"
-          test-ssl: true
+#          test-ssl: true
           test-unstable: true
-      - linux:
-          name: stable-mariadb-5.5
-          rust: latest
-          flavor: mariadb
-          version: "5.5"
-      - linux:
-          name: stable-mariadb-10.3
-          rust: latest
-          flavor: mariadb
-          version: "10.3"
-      - linux:
-          name: stable-mariadb-10.4
-          rust: latest
-          flavor: mariadb
-          version: "10.4"
+#      - linux:
+#          name: stable-mariadb-5.5
+#          rust: latest
+#          flavor: mariadb
+#          version: "5.5"
+#      - linux:
+#          name: stable-mariadb-10.3
+#          rust: latest
+#          flavor: mariadb
+#          version: "10.3"
+#      - linux:
+#          name: stable-mariadb-10.4
+#          rust: latest
+#          flavor: mariadb
+#          version: "10.4"
