@@ -34,13 +34,13 @@ jobs:
             - /usr/local/cargo/registry/index
       - restore_cache:
           key: deps-<< parameters.rust >>-{{ checksum "Cargo.lock" }}
-      - run: cargo test
-      - when:
-          condition: << parameters.test-ssl >>
-          steps:
-            - run: cargo test --features ssl
-      - run: rustup component add rustfmt
-      - run: cargo fmt -- --check
+#      - run: cargo test
+#      - when:
+#          condition: << parameters.test-ssl >>
+#          steps:
+#            - run: cargo test --features ssl
+#      - run: rustup component add rustfmt
+#      - run: cargo fmt -- --check
       - save_cache:
           key: deps-<< parameters.rust >>-{{ checksum "Cargo.lock" }}
           paths:
