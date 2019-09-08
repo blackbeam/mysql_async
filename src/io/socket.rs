@@ -16,19 +16,14 @@ use tokio::prelude::*;
 use std::{io, path::Path};
 
 /// Unix domain socket connection on unix, or named pipe connection on windows.
-#[cfg(unix)]
 #[pin_project]
 #[derive(Debug)]
 pub struct Socket {
     #[pin]
+    #[cfg(unix)]
     inner: tokio::net::unix::UnixStream,
-}
-
-#[cfg(windows)]
-#[pin_project]
-#[derive(Debug)]
-pub struct Socket {
     #[pin]
+    #[cfg(windows)]
     inner: tokio_named_pipes::NamedPipe,
 }
 
