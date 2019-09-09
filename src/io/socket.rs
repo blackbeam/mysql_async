@@ -24,7 +24,7 @@ pub struct Socket {
     inner: tokio::net::unix::UnixStream,
     #[pin]
     #[cfg(windows)]
-    inner: tokio_named_pipes::NamedPipe,
+    inner: tokio_net::PollEvented<mio_named_pipes::NamedPipe>,
 }
 
 impl Socket {
@@ -39,10 +39,11 @@ impl Socket {
     /// Connects a new socket.
     #[cfg(windows)]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Socket, io::Error> {
-        use tokio_named_pipes::NamedPipe;
-        let pipe = NamedPipe::new(path.as_ref()).await?;
-        pipe.connect().await?;
-        Ok(Socket { inner: pipe })
+        let pipe = mio_named_pipes::NamedPipe::new(path.as_ref())?;
+        pipe.connect()?;
+        Ok(Socket {
+            inner: tokio_net::PollEvented::new(pipe),
+        })
     }
 }
 
