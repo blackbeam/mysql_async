@@ -24,7 +24,7 @@ pub struct Socket {
     inner: tokio::net::unix::UnixStream,
     #[pin]
     #[cfg(windows)]
-    inner: tokio_net::PollEvented<mio_named_pipes::NamedPipe>,
+    inner: tokio_net::util::PollEvented<mio_named_pipes::NamedPipe>,
 }
 
 impl Socket {
@@ -42,7 +42,7 @@ impl Socket {
         let pipe = mio_named_pipes::NamedPipe::new(path.as_ref())?;
         pipe.connect()?;
         Ok(Socket {
-            inner: tokio_net::PollEvented::new(pipe),
+            inner: tokio_net::util::PollEvented::new(pipe),
         })
     }
 }
