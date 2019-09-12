@@ -108,7 +108,8 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let connector = tokio_tls::TlsConnector::from(connector.clone());
+    let connect = connector.connect(domain, stream);
     Ok(TlsStream {
-        inner: connector.connect(domain, stream).await?,
+        inner: connect.await?,
     })
 }
