@@ -116,9 +116,7 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
 
         if let Some(isolation_level) = isolation_level {
             let query = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation_level);
-            conn_like = conn_like
-                .drop_query(query)
-                .await?;
+            conn_like = conn_like.drop_query(query).await?;
         }
 
         if let Some(readonly) = readonly {

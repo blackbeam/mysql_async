@@ -517,22 +517,9 @@ mod test {
     use std::sync::atomic;
 
     use crate::{
-        conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL, OptsBuilder,
-        PoolConstraints, SslOpts, TransactionOptions,
+        conn::pool::Pool, queryable::Queryable, test_misc::get_opts, PoolConstraints,
+        TransactionOptions,
     };
-
-    fn get_opts() -> OptsBuilder {
-        let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
-        // to suppress warning on unused mut
-        builder.stmt_cache_size(None);
-        if false {
-            let mut ssl_opts = SslOpts::default();
-            ssl_opts.set_danger_skip_domain_validation(true);
-            ssl_opts.set_danger_accept_invalid_certs(true);
-            builder.ssl_opts(ssl_opts);
-        }
-        builder
-    }
 
     #[tokio::test]
     async fn should_connect() -> super::Result<()> {
@@ -760,14 +747,16 @@ mod test {
 
     #[cfg(feature = "nightly")]
     mod bench {
-        use futures::Future;
+        use futures_util::try_future::TryFutureExt;
         use tokio::runtime::Runtime;
 
-        use crate::{conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL};
+        use crate::prelude::Queryable;
+        use crate::test_misc::get_opts;
+        use crate::Pool;
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
-            let mut runtime = Runtime::new().expect("3");
+            let runtime = Runtime::new().expect("3");
             let pool = Pool::new(get_opts());
 
             bencher.iter(|| {

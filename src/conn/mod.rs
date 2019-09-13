@@ -89,6 +89,7 @@ impl fmt::Debug for ConnInner {
             .field("pool", &self.pool)
             .field("has result", &self.has_result.is_some())
             .field("in transaction", &self.in_transaction)
+            .field("stream", &self.stream)
             .field("options", &self.opts)
             .finish()
     }
@@ -619,24 +620,10 @@ impl ConnectionLike for Conn {
 
 #[cfg(test)]
 mod test {
-    use crate::SslOpts;
     use crate::{
-        from_row, params, prelude::*, test_misc::DATABASE_URL, Conn, OptsBuilder,
-        TransactionOptions, WhiteListFsLocalInfileHandler,
+        from_row, params, prelude::*, test_misc::get_opts, Conn, OptsBuilder, TransactionOptions,
+        WhiteListFsLocalInfileHandler,
     };
-
-    fn get_opts() -> OptsBuilder {
-        let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
-        // to suppress warning on unused mut
-        builder.stmt_cache_size(None);
-        if false {
-            let mut ssl_opts = SslOpts::default();
-            ssl_opts.set_danger_skip_domain_validation(true);
-            ssl_opts.set_danger_accept_invalid_certs(true);
-            builder.ssl_opts(ssl_opts);
-        }
-        builder
-    }
 
     #[test]
     fn opts_should_satisfy_send_and_sync() {
@@ -1007,7 +994,7 @@ mod test {
             .take(18 * 1024 * 1024)
             .collect::<String>();
         let conn = Conn::new(get_opts()).await?;
-        let stmt = conn.prepare(r"SELECT ?").await?;;
+        let stmt = conn.prepare(r"SELECT ?").await?;
         let result = stmt.execute((&long_string,)).await?;
         let (stmt, mut mapped) = result
             .map_and_drop(|row| from_row::<(String,)>(row))
@@ -1167,14 +1154,13 @@ mod test {
 
     #[cfg(feature = "nightly")]
     mod bench {
-        use futures::Future;
+        use futures_util::try_future::TryFutureExt;
 
-        use super::get_opts;
-        use crate::{conn::Conn, queryable::Queryable};
+        use crate::{conn::Conn, queryable::Queryable, test_misc::get_opts};
 
         #[bench]
         fn simple_exec(bencher: &mut test::Bencher) {
-            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
             let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
 
             bencher.iter(|| {
@@ -1185,12 +1171,12 @@ mod test {
             runtime
                 .block_on(conn_opt.take().unwrap().disconnect())
                 .unwrap();
-            runtime.shutdown_on_idle().wait().unwrap();
+            runtime.shutdown_on_idle();
         }
 
         #[bench]
         fn select_large_string(bencher: &mut test::Bencher) {
-            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
             let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
 
             bencher.iter(|| {
@@ -1205,12 +1191,12 @@ mod test {
             runtime
                 .block_on(conn_opt.take().unwrap().disconnect())
                 .unwrap();
-            runtime.shutdown_on_idle().wait().unwrap();
+            runtime.shutdown_on_idle();
         }
 
         #[bench]
         fn prepared_exec(bencher: &mut test::Bencher) {
-            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
             let mut stmt_opt = Some(
                 runtime
                     .block_on(Conn::new(get_opts()).and_then(|conn| conn.prepare("DO 1")))
@@ -1235,12 +1221,12 @@ mod test {
                         .and_then(|conn| conn.disconnect()),
                 )
                 .unwrap();
-            runtime.shutdown_on_idle().wait().unwrap();
+            runtime.shutdown_on_idle();
         }
 
         #[bench]
         fn prepare_and_exec(bencher: &mut test::Bencher) {
-            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
             let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
 
             bencher.iter(|| {
@@ -1260,7 +1246,7 @@ mod test {
             runtime
                 .block_on(conn_opt.take().unwrap().disconnect())
                 .unwrap();
-            runtime.shutdown_on_idle().wait().unwrap();
+            runtime.shutdown_on_idle();
         }
     }
 }

@@ -205,7 +205,7 @@ mod test_misc {
 
     use std::env;
 
-    use crate::opts;
+    use crate::opts::{Opts, OptsBuilder, SslOpts};
 
     #[allow(dead_code)]
     fn error_should_implement_send_and_sync() {
@@ -216,7 +216,7 @@ mod test_misc {
     lazy_static! {
         pub static ref DATABASE_URL: String = {
             if let Ok(url) = env::var("DATABASE_URL") {
-                let opts = opts::Opts::from_url(&url).expect("DATABASE_URL invalid");
+                let opts = Opts::from_url(&url).expect("DATABASE_URL invalid");
                 if opts
                     .get_db_name()
                     .expect("a database name is required")
@@ -229,5 +229,19 @@ mod test_misc {
                 "mysql://root:password@127.0.0.1:3307/mysql".into()
             }
         };
+    }
+
+    pub fn get_opts() -> OptsBuilder {
+        let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
+        // to suppress warning on unused mut
+        builder.stmt_cache_size(None);
+        if ["true", "1"].contains(&&*env::var("SSL").unwrap_or("".into())) {
+            builder.prefer_socket(false);
+            let mut ssl_opts = SslOpts::default();
+            ssl_opts.set_danger_skip_domain_validation(true);
+            ssl_opts.set_danger_accept_invalid_certs(true);
+            builder.ssl_opts(ssl_opts);
+        }
+        builder
     }
 }
