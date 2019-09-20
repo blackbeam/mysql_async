@@ -20,14 +20,7 @@
 //! ### Example
 //!
 //! ```rust
-//! extern crate futures;
-//! #[macro_use]
-//! extern crate mysql_async as my;
-//! extern crate tokio;
-//! // ...
-//!
-//! use futures::Future;
-//! use my::prelude::*;
+//! use mysql_async::prelude::*;
 //! # use std::env;
 //!
 //! #[derive(Debug, PartialEq, Eq, Clone)]
@@ -37,21 +30,8 @@
 //!     account_name: Option<String>,
 //! }
 //!
-//! /// Same as `tokio::run`, but will panic if future panics and will return the result
-//! /// of future execution.
-//! pub fn run<F, T, U>(future: F) -> Result<T, U>
-//! where
-//!     F: Future<Item = T, Error = U> + Send + 'static,
-//!     T: Send + 'static,
-//!     U: Send + 'static,
-//! {
-//!     let mut runtime = tokio::runtime::Runtime::new().unwrap();
-//!     let result = runtime.block_on(future);
-//!     runtime.shutdown_on_idle().wait().unwrap();
-//!     result
-//! }
-//!
-//! fn main() {
+//! #[tokio::main]
+//! async fn main() -> Result<(), mysql_async::error::Error> {
 //!     let payments = vec![
 //!         Payment { customer_id: 1, amount: 2, account_name: None },
 //!         Payment { customer_id: 3, amount: 4, account_name: Some("foo".into()) },
@@ -61,60 +41,63 @@
 //!     ];
 //!     let payments_clone = payments.clone();
 //!
-//!     # let database_url: String = if let Ok(url) = env::var("DATABASE_URL") {
-//!     #     let opts = my::Opts::from_url(&url).expect("DATABASE_URL invalid");
+//!     let database_url = /* ... */
+//!     # if let Ok(url) = env::var("DATABASE_URL") {
+//!     #     let opts = mysql_async::Opts::from_url(&url).expect("DATABASE_URL invalid");
 //!     #     if opts.get_db_name().expect("a database name is required").is_empty() {
 //!     #         panic!("database name is empty");
 //!     #     }
 //!     #     url
 //!     # } else {
-//!     #     "mysql://root:password@127.0.0.1:3307/mysql".into()
+//!     #     "mysql://root:password@127.0.0.1:3307/mysql".to_string()
 //!     # };
 //!
-//!     let pool = my::Pool::new(database_url);
-//!     let future = pool.get_conn().and_then(|conn| {
-//!         // Create temporary table
-//!         conn.drop_query(
-//!             r"CREATE TEMPORARY TABLE payment (
-//!                 customer_id int not null,
-//!                 amount int not null,
-//!                 account_name text
-//!             )"
-//!         )
-//!     }).and_then(move |conn| {
-//!         // Save payments
-//!         let params = payments_clone.into_iter().map(|payment| {
-//!             params! {
-//!                 "customer_id" => payment.customer_id,
-//!                 "amount" => payment.amount,
-//!                 "account_name" => payment.account_name.clone(),
-//!             }
-//!         });
+//!     let pool = mysql_async::Pool::new(database_url);
+//!     let conn = pool.get_conn().await?;
 //!
-//!         conn.batch_exec(r"INSERT INTO payment (customer_id, amount, account_name)
-//!                         VALUES (:customer_id, :amount, :account_name)", params)
-//!     }).and_then(|conn| {
-//!         // Load payments from database.
-//!         conn.prep_exec("SELECT customer_id, amount, account_name FROM payment", ())
-//!     }).and_then(|result| {
-//!         // Collect payments
-//!         result.map_and_drop(|row| {
-//!             let (customer_id, amount, account_name) = my::from_row(row);
-//!             Payment {
-//!                 customer_id: customer_id,
-//!                 amount: amount,
-//!                 account_name: account_name,
-//!             }
-//!         })
-//!     }).and_then(|(_ /* conn */, payments)| {
-//!         // The destructor of a connection will return it to the pool,
-//!         // but pool should be disconnected explicitly because it's
-//!         // an asynchronous procedure.
-//!         pool.disconnect().map(|_| payments)
+//!     // Create temporary table
+//!     let conn = conn.drop_query(
+//!         r"CREATE TEMPORARY TABLE payment (
+//!             customer_id int not null,
+//!             amount int not null,
+//!             account_name text
+//!         )"
+//!     ).await?;
+//!
+//!     // Save payments
+//!     let params = payments_clone.into_iter().map(|payment| {
+//!         params! {
+//!             "customer_id" => payment.customer_id,
+//!             "amount" => payment.amount,
+//!             "account_name" => payment.account_name.clone(),
+//!         }
 //!     });
 //!
-//!     let loaded_payments = run(future).unwrap();
+//!     let conn = conn.batch_exec(r"INSERT INTO payment (customer_id, amount, account_name)
+//!                     VALUES (:customer_id, :amount, :account_name)", params).await?;
+//!
+//!     // Load payments from database.
+//!     let result = conn.prep_exec("SELECT customer_id, amount, account_name FROM payment", ()).await?;
+//!
+//!     // Collect payments
+//!     let (_ /* conn */, loaded_payments) = result.map_and_drop(|row| {
+//!         let (customer_id, amount, account_name) = mysql_async::from_row(row);
+//!         Payment {
+//!             customer_id: customer_id,
+//!             amount: amount,
+//!             account_name: account_name,
+//!         }
+//!     }).await?;
+//!
+//!     // The destructor of a connection will return it to the pool,
+//!     // but pool should be disconnected explicitly because it's
+//!     // an asynchronous procedure.
+//!     pool.disconnect().await?;
+//!
 //!     assert_eq!(loaded_payments, payments);
+//!
+//!     // the async fn returns Result, so
+//!     Ok(())
 //! }
 //! ```
 
@@ -137,14 +120,9 @@ mod local_infile_handler;
 mod opts;
 mod queryable;
 
-pub type BoxFuture<T> = Box<dyn ::futures::Future<Item = T, Error = error::Error> + Send + 'static>;
-
-/// Alias for `Future` with library error as `Future::Error`.
-pub trait MyFuture<T>: ::futures::Future<Item = T, Error = error::Error> + Send + 'static {}
-impl<T, U> MyFuture<T> for U where
-    U: ::futures::Future<Item = T, Error = error::Error> + Send + 'static
-{
-}
+pub type BoxFuture<T> = ::std::pin::Pin<
+    Box<dyn ::std::future::Future<Output = Result<T, error::Error>> + Send + 'static>,
+>;
 
 #[doc(inline)]
 pub use self::conn::Conn;
@@ -159,7 +137,7 @@ pub use self::queryable::transaction::IsolationLevel;
 pub use self::opts::{Opts, OptsBuilder, PoolConstraints, SslOpts};
 
 #[doc(inline)]
-pub use self::local_infile_handler::builtin::WhiteListFsLocalInfileHandler;
+pub use self::local_infile_handler::{builtin::WhiteListFsLocalInfileHandler, InfileHandlerFuture};
 
 #[doc(inline)]
 pub use mysql_common::packets::Column;
@@ -197,9 +175,6 @@ pub use self::queryable::stmt::Stmt;
 /// Futures used in this crate
 pub mod futures {
     pub use crate::conn::pool::futures::{DisconnectPool, GetConn};
-    pub use crate::queryable::query_result::{
-        ForEach, ForEachAndDrop, Map, MapAndDrop, Reduce, ReduceAndDrop,
-    };
 }
 
 /// Traits used in this crate
@@ -220,6 +195,8 @@ pub mod prelude {
     /// Trait for protocol markers [`TextProtocol`] and [`BinaryProtocol`].
     pub trait Protocol: crate::queryable::Protocol {}
     impl<T: crate::queryable::Protocol> Protocol for T {}
+
+    pub use mysql_common::params;
 }
 
 #[cfg(test)]
@@ -228,7 +205,7 @@ mod test_misc {
 
     use std::env;
 
-    use crate::opts;
+    use crate::opts::{Opts, OptsBuilder, SslOpts};
 
     #[allow(dead_code)]
     fn error_should_implement_send_and_sync() {
@@ -239,7 +216,7 @@ mod test_misc {
     lazy_static! {
         pub static ref DATABASE_URL: String = {
             if let Ok(url) = env::var("DATABASE_URL") {
-                let opts = opts::Opts::from_url(&url).expect("DATABASE_URL invalid");
+                let opts = Opts::from_url(&url).expect("DATABASE_URL invalid");
                 if opts
                     .get_db_name()
                     .expect("a database name is required")
@@ -252,5 +229,19 @@ mod test_misc {
                 "mysql://root:password@127.0.0.1:3307/mysql".into()
             }
         };
+    }
+
+    pub fn get_opts() -> OptsBuilder {
+        let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
+        // to suppress warning on unused mut
+        builder.stmt_cache_size(None);
+        if ["true", "1"].contains(&&*env::var("SSL").unwrap_or("".into())) {
+            builder.prefer_socket(false);
+            let mut ssl_opts = SslOpts::default();
+            ssl_opts.set_danger_skip_domain_validation(true);
+            ssl_opts.set_danger_accept_invalid_certs(true);
+            builder.ssl_opts(ssl_opts);
+        }
+        builder
     }
 }

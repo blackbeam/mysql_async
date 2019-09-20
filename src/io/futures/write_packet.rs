@@ -6,8 +6,12 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures::{try_ready, Async, AsyncSink, Future, Poll, Sink};
+use futures_core::ready;
+use futures_sink::Sink;
 use mysql_common::packets::RawPacket;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use crate::{consts::MAX_PAYLOAD_LEN, error::*, io::Stream};
 
@@ -42,37 +46,22 @@ pub fn new(stream: Stream, data: Vec<u8>, seq_id: u8) -> WritePacket {
 }
 
 impl Future for WritePacket {
-    type Item = (Stream, u8);
-    type Error = Error;
+    type Output = Result<(Stream, u8)>;
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        if let Some(data) = self.data.take() {
-            let send_result = self
-                .stream
-                .as_mut()
-                .unwrap()
-                .codec
-                .as_mut()
-                .unwrap()
-                .start_send((data, self.seq_id))?;
-            if let AsyncSink::NotReady(data) = send_result {
-                self.data = Some(data.0);
-                return Ok(Async::NotReady);
-            }
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.data.is_some() {
+            ready!(Pin::new(self.stream.as_mut().unwrap().codec.as_mut().unwrap()).poll_ready(cx))?;
         }
 
-        try_ready!(self
-            .stream
-            .as_mut()
-            .unwrap()
-            .codec
-            .as_mut()
-            .unwrap()
-            .poll_complete()
-            .map_err(Error::from));
-        Ok(Async::Ready((
-            self.stream.take().unwrap(),
-            self.resulting_seq_id,
-        )))
+        if let Some(data) = self.data.take() {
+            // to get here, stream must be ready
+            let id = self.seq_id;
+            Pin::new(self.stream.as_mut().unwrap().codec.as_mut().unwrap())
+                .start_send((data, id))?;
+        }
+
+        ready!(Pin::new(self.stream.as_mut().unwrap().codec.as_mut().unwrap()).poll_flush(cx))
+            .map_err(Error::from)?;
+        Poll::Ready(Ok((self.stream.take().unwrap(), self.resulting_seq_id)))
     }
 }

@@ -6,13 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-pub use self::{for_each::ForEach, map::Map, reduce::Reduce};
-
-use futures::future::{
-    loop_fn, ok, AndThen,
-    Either::{self, *},
-    Future, FutureResult, Loop,
-};
+use futures_util::future::Either;
 use mysql_common::packets::RawPacket;
 use mysql_common::row::convert::FromRowError;
 
@@ -30,27 +24,8 @@ use crate::{
     io,
     prelude::FromRow,
     queryable::Protocol,
-    BoxFuture, Column, MyFuture, Row,
+    Column, Row,
 };
-
-mod for_each;
-mod map;
-mod reduce;
-
-pub type ForEachAndDrop<S, T, P, F> =
-    AndThen<Either<FutureResult<S, Error>, ForEach<T, P, F>>, BoxFuture<T>, fn(S) -> BoxFuture<T>>;
-
-pub type MapAndDrop<S, T, P, F, U> = AndThen<
-    Either<FutureResult<(S, Vec<U>), Error>, Map<T, P, F, U>>,
-    (BoxFuture<T>, FutureResult<Vec<U>, Error>),
-    fn((S, Vec<U>)) -> (BoxFuture<T>, FutureResult<Vec<U>, Error>),
->;
-
-pub type ReduceAndDrop<S, T, P, F, U> = AndThen<
-    Either<FutureResult<(S, U), Error>, Reduce<T, P, F, U>>,
-    (BoxFuture<T>, FutureResult<U, Error>),
-    fn((S, U)) -> (BoxFuture<T>, FutureResult<U, Error>),
->;
 
 pub fn new<T, P>(
     conn_like: T,
@@ -69,8 +44,8 @@ pub fn disassemble<T, P>(
     query_result: QueryResult<T, P>,
 ) -> (T, Option<Arc<Vec<Column>>>, Option<StmtCacheResult>) {
     match query_result {
-        QueryResult(Empty(Some(A(conn_like)), cached, _)) => (conn_like, None, cached),
-        QueryResult(WithRows(Some(A(conn_like)), columns, cached, _)) => {
+        QueryResult(Empty(Some(Either::Left(conn_like)), cached, _)) => (conn_like, None, cached),
+        QueryResult(WithRows(Some(Either::Left(conn_like)), columns, cached, _)) => {
             (conn_like, Some(columns), cached)
         }
         _ => unreachable!(),
@@ -87,8 +62,13 @@ where
     P: Protocol + 'static,
 {
     match columns {
-        Some(columns) => QueryResult(WithRows(Some(A(conn_like)), columns, cached, PhantomData)),
-        None => QueryResult(Empty(Some(A(conn_like)), cached, PhantomData)),
+        Some(columns) => QueryResult(WithRows(
+            Some(Either::Left(conn_like)),
+            columns,
+            cached,
+            PhantomData,
+        )),
+        None => QueryResult(Empty(Some(Either::Left(conn_like)), cached, PhantomData)),
     }
 }
 
@@ -130,48 +110,46 @@ where
         match self {
             QueryResult(Empty(conn_like, cached, _))
             | QueryResult(WithRows(conn_like, _, cached, _)) => match conn_like {
-                Some(A(conn_like)) => (conn_like, cached),
+                Some(Either::Left(conn_like)) => (conn_like, cached),
                 _ => unreachable!(),
             },
         }
     }
 
-    fn get_row_raw(self) -> impl MyFuture<(Self, Option<RawPacket>)> {
+    async fn get_row_raw(self) -> Result<(Self, Option<RawPacket>)> {
         if self.is_empty() {
-            return A(ok((self, None)));
+            return Ok((self, None));
         }
-        let fut = self.read_packet().and_then(|(this, packet)| {
-            if P::is_last_result_set_packet(&this, &packet) {
-                if this
-                    .get_status()
-                    .contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS)
-                {
-                    let (inner, cached) = this.into_inner();
-                    A(A(inner
-                        .read_result_set(cached)
-                        .map(|new_this| (new_this, None))))
-                } else {
-                    A(B(ok((this.into_empty(), None))))
-                }
+
+        let (this, packet) = self.read_packet().await?;
+        if P::is_last_result_set_packet(&this, &packet) {
+            if this
+                .get_status()
+                .contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS)
+            {
+                let (inner, cached) = this.into_inner();
+                let this = inner.read_result_set(cached).await?;
+                Ok((this, None))
             } else {
-                B(ok((this, Some(packet))))
+                Ok((this.into_empty(), None))
             }
-        });
-        B(fut)
+        } else {
+            Ok((this, Some(packet)))
+        }
     }
 
-    fn get_row(self) -> impl MyFuture<(Self, Option<Row>)> {
-        self.get_row_raw()
-            .and_then(|(this, packet_opt)| match packet_opt {
-                Some(packet) => match this {
-                    QueryResult(WithRows(_, ref columns, ..)) => {
-                        P::read_result_set_row(&packet, columns.clone())
-                    }
-                    _ => unreachable!(),
-                }
-                .map(|row| (this, Some(row))),
-                None => Ok((this, None)),
-            })
+    async fn get_row(self) -> Result<(Self, Option<Row>)> {
+        let (this, packet) = self.get_row_raw().await?;
+        if let Some(packet) = packet {
+            if let QueryResult(WithRows(_, ref columns, ..)) = this {
+                let row = P::read_result_set_row(&packet, columns.clone())?;
+                Ok((this, Some(row)))
+            } else {
+                unreachable!()
+            }
+        } else {
+            Ok((this, None))
+        }
     }
 
     fn new(
@@ -180,10 +158,13 @@ where
         cached: Option<StmtCacheResult>,
     ) -> QueryResult<T, P> {
         match columns {
-            Some(columns) => {
-                QueryResult(WithRows(Some(A(conn_like)), columns, cached, PhantomData))
-            }
-            None => QueryResult(Empty(Some(A(conn_like)), cached, PhantomData)),
+            Some(columns) => QueryResult(WithRows(
+                Some(Either::Left(conn_like)),
+                columns,
+                cached,
+                PhantomData,
+            )),
+            None => QueryResult(Empty(Some(Either::Left(conn_like)), cached, PhantomData)),
         }
     }
 
@@ -238,7 +219,7 @@ where
     /// It'll panic if any row isn't convertible to `R` (i.e. programmer error or unknown schema).
     /// * In case of programmer error see `FromRow` docs;
     /// * In case of unknown schema use [`QueryResult::try_collect`].
-    pub fn collect<R>(self) -> impl MyFuture<(Self, Vec<R>)>
+    pub async fn collect<R>(self) -> Result<(Self, Vec<R>)>
     where
         R: FromRow,
         R: Send + 'static,
@@ -247,13 +228,14 @@ where
             acc.push(FromRow::from_row(row));
             acc
         })
+        .await
     }
 
     /// Returns future that collects result set of this query.
     ///
     /// It works the same way as [`QueryResult::collect`] but won't panic
     /// if row isn't convertible to `R`.
-    pub fn try_collect<R>(self) -> impl MyFuture<(Self, Vec<StdResult<R, FromRowError>>)>
+    pub async fn try_collect<R>(self) -> Result<(Self, Vec<StdResult<R, FromRowError>>)>
     where
         R: FromRow,
         R: Send + 'static,
@@ -262,6 +244,7 @@ where
             acc.push(FromRow::from_row_opt(row));
             acc
         })
+        .await
     }
 
     /// Returns future that collects result set of a query result and drops everything else.
@@ -272,13 +255,14 @@ where
     /// It'll panic if any row isn't convertible to `R` (i.e. programmer error or unknown schema).
     /// * In case of programmer error see `FromRow` docs;
     /// * In case of unknown schema use [`QueryResult::try_collect`].
-    pub fn collect_and_drop<R>(self) -> impl MyFuture<(T, Vec<R>)>
+    pub async fn collect_and_drop<R>(self) -> Result<(T, Vec<R>)>
     where
         R: FromRow,
         R: Send + 'static,
     {
-        self.collect()
-            .and_then(|(this, output)| (this.drop_result(), ok(output)))
+        let (this, output) = self.collect().await?;
+        let conn = this.drop_result().await?;
+        Ok((conn, output))
     }
 
     /// Returns future that collects result set of a query result and drops everything else.
@@ -286,133 +270,140 @@ where
     ///
     /// It works the same way as [`QueryResult::collect_and_drop`] but won't panic
     /// if row isn't convertible to `R`.
-    pub fn try_collect_and_drop<R>(self) -> impl MyFuture<(T, Vec<StdResult<R, FromRowError>>)>
+    pub async fn try_collect_and_drop<R>(self) -> Result<(T, Vec<StdResult<R, FromRowError>>)>
     where
         R: FromRow,
         R: Send + 'static,
     {
-        self.try_collect()
-            .and_then(|(this, output)| (this.drop_result(), ok(output)))
+        let (this, output) = self.try_collect().await?;
+        let conn = this.drop_result().await?;
+        Ok((conn, output))
     }
 
     /// Returns future that will execute `fun` on every row of current result set.
     ///
     /// It will stop on result set boundary (see `QueryResult::collect` docs).
-    pub fn for_each<F>(self, fun: F) -> Either<FutureResult<Self, Error>, ForEach<T, P, F>>
+    pub async fn for_each<F>(self, mut fun: F) -> Result<Self>
     where
         F: FnMut(Row),
     {
         if self.is_empty() {
-            A(ok(self))
+            Ok(self)
         } else {
-            B(ForEach::new(self, fun))
+            let mut qr = self;
+            loop {
+                let (qr_, row) = qr.get_row().await?;
+                qr = qr_;
+                if let Some(row) = row {
+                    fun(row);
+                } else {
+                    break Ok(qr);
+                }
+            }
         }
     }
 
     /// Returns future that will execute `fun` on every row of current result set and drop
     /// everything else. It will resolve to a wrapped `Queryable`.
-    pub fn for_each_and_drop<F>(self, fun: F) -> ForEachAndDrop<Self, T, P, F>
+    pub async fn for_each_and_drop<F>(self, fun: F) -> Result<T>
     where
         F: FnMut(Row),
     {
-        self.for_each(fun)
-            .and_then(|x| Box::new(QueryResult::drop_result(x)))
+        self.for_each(fun).await?.drop_result().await
     }
 
     /// Returns future that will map every row of current result set to `U` using `fun`.
     ///
     /// It will stop on result set boundary (see `QueryResult::collect` docs).
-    pub fn map<F, U>(self, fun: F) -> Either<FutureResult<(Self, Vec<U>), Error>, Map<T, P, F, U>>
+    pub async fn map<F, U>(self, mut fun: F) -> Result<(Self, Vec<U>)>
     where
         F: FnMut(Row) -> U,
     {
         if self.is_empty() {
-            A(ok((self, Vec::new())))
+            Ok((self, Vec::new()))
         } else {
-            B(Map::new(self, fun))
+            let mut qr = self;
+            let mut rows = Vec::new();
+            loop {
+                let (qr_, row) = qr.get_row().await?;
+                qr = qr_;
+                if let Some(row) = row {
+                    rows.push(fun(row));
+                } else {
+                    break Ok((qr, rows));
+                }
+            }
         }
     }
 
     /// Returns future that will map every row of current result set to `U` using `fun` and drop
     /// everything else. It will resolve to a pair of wrapped `Queryable` and mapped result set.
-    pub fn map_and_drop<F, U>(self, fun: F) -> MapAndDrop<Self, T, P, F, U>
+    pub async fn map_and_drop<F, U>(self, fun: F) -> Result<(T, Vec<U>)>
     where
         F: FnMut(Row) -> U,
     {
-        fn join_drop<T, P, U>(
-            (this, output): (QueryResult<T, P>, Vec<U>),
-        ) -> (BoxFuture<T>, FutureResult<Vec<U>, Error>)
-        where
-            T: ConnectionLike + Sized + 'static,
-            P: Protocol + 'static,
-        {
-            (Box::new(QueryResult::drop_result(this)), ok(output))
-        }
-
-        self.map(fun).and_then(join_drop)
+        let (this, rows) = self.map(fun).await?;
+        let this = this.drop_result().await?;
+        Ok((this, rows))
     }
 
     /// Returns future that will reduce rows of current result set to `U` using `fun`.
     ///
     /// It will stop on result set boundary (see `QueryResult::collect` docs).
-    pub fn reduce<F, U>(
-        self,
-        init: U,
-        fun: F,
-    ) -> Either<FutureResult<(Self, U), Error>, Reduce<T, P, F, U>>
+    pub async fn reduce<F, U>(self, init: U, mut fun: F) -> Result<(Self, U)>
     where
         F: FnMut(U, Row) -> U,
     {
         if self.is_empty() {
-            A(ok((self, init)))
+            Ok((self, init))
         } else {
-            B(Reduce::new(self, init, fun))
+            let mut qr = self;
+            let mut acc = init;
+            loop {
+                let (qr_, row) = qr.get_row().await?;
+                qr = qr_;
+                if let Some(row) = row {
+                    acc = fun(acc, row);
+                } else {
+                    break Ok((qr, acc));
+                }
+            }
         }
     }
 
     /// Returns future that will reduce rows of current result set to `U` using `fun` and drop
     /// everything else. It will resolve to a pair of wrapped `Queryable` and `U`.
-    pub fn reduce_and_drop<F, U>(self, init: U, fun: F) -> ReduceAndDrop<Self, T, P, F, U>
+    pub async fn reduce_and_drop<F, U>(self, init: U, fun: F) -> Result<(T, U)>
     where
         F: FnMut(U, Row) -> U,
     {
-        fn join_drop<T, P, U>(
-            (this, output): (QueryResult<T, P>, U),
-        ) -> (BoxFuture<T>, FutureResult<U, Error>)
-        where
-            T: ConnectionLike + Sized + 'static,
-            P: Protocol + 'static,
-        {
-            (Box::new(QueryResult::drop_result(this)), ok(output))
-        }
-
-        self.reduce(init, fun).and_then(join_drop)
+        let (this, acc) = self.reduce(init, fun).await?;
+        let this = this.drop_result().await?;
+        Ok((this, acc))
     }
 
     /// Returns future that will drop this query result end resolve to a wrapped `Queryable`.
-    pub fn drop_result(self) -> impl MyFuture<T> {
-        let fut = loop_fn(self, |this| {
+    pub async fn drop_result(self) -> Result<T> {
+        let mut this = self;
+        let (conn_like, cached) = loop {
             if !this.has_rows() {
                 if this.more_results_exists() {
                     let (inner, cached) = this.into_inner();
-                    A(A(inner
-                        .read_result_set(cached)
-                        .map(|new_this| Loop::Continue(new_this))))
+                    this = inner.read_result_set(cached).await?;
                 } else {
-                    A(B(ok(Loop::Break(this.into_inner()))))
+                    break this.into_inner();
                 }
             } else {
-                B(this.get_row_raw().map(|(this, _)| Loop::Continue(this)))
+                let (this_, _) = this.get_row_raw().await?;
+                this = this_;
             }
-        });
+        };
 
-        fut.and_then(|(conn_like, cached)| {
-            if let Some(StmtCacheResult::NotCached(statement_id)) = cached {
-                A(conn_like.close_stmt(statement_id))
-            } else {
-                B(ok(conn_like))
-            }
-        })
+        if let Some(StmtCacheResult::NotCached(statement_id)) = cached {
+            conn_like.close_stmt(statement_id).await
+        } else {
+            Ok(conn_like)
+        }
     }
 
     /// Returns reference to columns in this query result.
@@ -444,30 +435,30 @@ impl<T: ConnectionLike + 'static, P: Protocol> ConnectionLikeWrapper for QueryRe
     {
         match self {
             QueryResult(Empty(conn_like, cached, _)) => match conn_like {
-                Some(A(conn_like)) => {
+                Some(Either::Left(conn_like)) => {
                     let (streamless, stream) = conn_like.take_stream();
                     let self_streamless = Streamless::new(QueryResult(Empty(
-                        Some(B(streamless)),
+                        Some(Either::Right(streamless)),
                         cached,
                         PhantomData,
                     )));
                     (self_streamless, stream)
                 }
-                Some(B(..)) => panic!("Logic error: stream taken"),
+                Some(Either::Right(..)) => panic!("Logic error: stream taken"),
                 None => unreachable!(),
             },
             QueryResult(WithRows(conn_like, columns, cached, _)) => match conn_like {
-                Some(A(conn_like)) => {
+                Some(Either::Left(conn_like)) => {
                     let (streamless, stream) = conn_like.take_stream();
                     let self_streamless = Streamless::new(QueryResult(WithRows(
-                        Some(B(streamless)),
+                        Some(Either::Right(streamless)),
                         columns,
                         cached,
                         PhantomData,
                     )));
                     (self_streamless, stream)
                 }
-                Some(B(..)) => panic!("Logic error: stream taken"),
+                Some(Either::Right(..)) => panic!("Logic error: stream taken"),
                 None => unreachable!(),
             },
         }
@@ -477,9 +468,9 @@ impl<T: ConnectionLike + 'static, P: Protocol> ConnectionLikeWrapper for QueryRe
         match *self {
             QueryResult(Empty(ref mut conn_like, ..))
             | QueryResult(WithRows(ref mut conn_like, ..)) => match conn_like.take() {
-                Some(A(..)) => panic!("Logic error: stream exists"),
-                Some(B(streamless)) => {
-                    *conn_like = Some(A(streamless.return_stream(stream)));
+                Some(Either::Left(..)) => panic!("Logic error: stream exists"),
+                Some(Either::Right(streamless)) => {
+                    *conn_like = Some(Either::Left(streamless.return_stream(stream)));
                 }
                 None => unreachable!(),
             },
@@ -490,7 +481,7 @@ impl<T: ConnectionLike + 'static, P: Protocol> ConnectionLikeWrapper for QueryRe
         match *self {
             QueryResult(Empty(ref conn_like, ..)) | QueryResult(WithRows(ref conn_like, ..)) => {
                 match *conn_like {
-                    Some(A(ref conn_like)) => conn_like,
+                    Some(Either::Left(ref conn_like)) => conn_like,
                     _ => unreachable!(),
                 }
             }
@@ -501,7 +492,7 @@ impl<T: ConnectionLike + 'static, P: Protocol> ConnectionLikeWrapper for QueryRe
         match *self {
             QueryResult(Empty(ref mut conn_like, ..))
             | QueryResult(WithRows(ref mut conn_like, ..)) => match *conn_like {
-                Some(A(ref mut conn_like)) => conn_like,
+                Some(Either::Left(ref mut conn_like)) => conn_like,
                 _ => unreachable!(),
             },
         }

@@ -6,13 +6,13 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures::{
-    stream::{Stream, StreamFuture},
-    try_ready,
-    Async::Ready,
-    Future, Poll,
-};
+use futures_core::ready;
+use futures_util::stream::{StreamExt, StreamFuture};
 use mysql_common::packets::{parse_err_packet, parse_ok_packet, RawPacket};
+use pin_project::pin_project;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use crate::{
     connection_like::{streamless::Streamless, ConnectionLike},
@@ -20,8 +20,10 @@ use crate::{
     io,
 };
 
+#[pin_project]
 pub struct ReadPacket<T> {
     conn_like: Option<Streamless<T>>,
+    #[pin]
     fut: StreamFuture<io::Stream>,
 }
 
@@ -36,12 +38,13 @@ impl<T: ConnectionLike> ReadPacket<T> {
 }
 
 impl<T: ConnectionLike> Future for ReadPacket<T> {
-    type Item = (T, RawPacket);
-    type Error = Error;
+    type Output = Result<(T, RawPacket)>;
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let (packet_opt, stream) = try_ready!(self.fut.poll());
-        let mut conn_like = self.conn_like.take().unwrap().return_stream(stream);
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        let (packet_opt, stream) = ready!(this.fut.poll(cx));
+        let packet_opt = packet_opt.transpose()?;
+        let mut conn_like = this.conn_like.take().unwrap().return_stream(stream);
         match packet_opt {
             Some((packet, seq_id)) => {
                 if let Ok(ok_packet) = parse_ok_packet(&*packet.0, conn_like.get_capabilities()) {
@@ -52,14 +55,14 @@ impl<T: ConnectionLike> Future for ReadPacket<T> {
                 } else if let Ok(err_packet) =
                     parse_err_packet(&*packet.0, conn_like.get_capabilities())
                 {
-                    return Err(err_packet.into());
+                    return Err(err_packet.into()).into();
                 }
 
                 conn_like.touch();
                 conn_like.set_seq_id(seq_id.wrapping_add(1));
-                Ok(Ready((conn_like, packet)))
+                Poll::Ready(Ok((conn_like, packet)))
             }
-            None => Err(DriverError::ConnectionClosed.into()),
+            None => Poll::Ready(Err(DriverError::ConnectionClosed.into())),
         }
     }
 }

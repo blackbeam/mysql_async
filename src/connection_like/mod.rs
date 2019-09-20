@@ -7,12 +7,12 @@
 // modified, or distributed except according to those terms.
 
 use byteorder::{ByteOrder, LittleEndian};
-use futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
+use futures_util::future::ok;
 use mysql_common::{
     io::ReadMysqlExt,
     packets::{column_from_payload, parse_local_infile_packet, Column, RawPacket},
 };
-use tokio_io::io::read;
+use tokio::prelude::*;
 
 use std::sync::Arc;
 
@@ -28,7 +28,7 @@ use crate::{
         stmt::InnerStmt,
         Protocol,
     },
-    BoxFuture, MyFuture, Opts,
+    BoxFuture, Opts,
 };
 
 pub mod read_packet;
@@ -217,18 +217,19 @@ pub trait ConnectionLike: Send {
     where
         Self: Sized + 'static,
     {
-        let fut = if self.get_opts().get_stmt_cache_size() > 0 {
+        if self.get_opts().get_stmt_cache_size() > 0 {
             if let Some(old_stmt) = self.stmt_cache_mut().put(query, stmt.clone()) {
-                A(self
-                    .close_stmt(old_stmt.statement_id)
-                    .map(|this| (this, StmtCacheResult::Cached)))
+                let f = self.close_stmt(old_stmt.statement_id);
+                Box::pin(async move { Ok((f.await?, StmtCacheResult::Cached)) })
             } else {
-                B(ok((self, StmtCacheResult::Cached)))
+                Box::pin(futures_util::future::ok((self, StmtCacheResult::Cached)))
             }
         } else {
-            B(ok((self, StmtCacheResult::NotCached(stmt.statement_id))))
-        };
-        Box::new(fut)
+            Box::pin(futures_util::future::ok((
+                self,
+                StmtCacheResult::NotCached(stmt.statement_id),
+            )))
+        }
     }
 
     fn get_cached_stmt(&mut self, query: &str) -> Option<&InnerStmt> {
@@ -249,21 +250,18 @@ pub trait ConnectionLike: Send {
         Self: Sized + 'static,
     {
         if n == 0 {
-            return Box::new(ok((self, Vec::new())));
+            return Box::pin(ok((self, Vec::new())));
         }
-        let fut = loop_fn((Vec::new(), n - 1, self), |(mut acc, num, conn_like)| {
-            conn_like
-                .read_packet()
-                .and_then(move |(conn_like, packet)| {
-                    acc.push(packet);
-                    if num == 0 {
-                        Ok(Loop::Break((conn_like, acc)))
-                    } else {
-                        Ok(Loop::Continue((acc, num - 1, conn_like)))
-                    }
-                })
-        });
-        Box::new(fut)
+        Box::pin(async move {
+            let mut acc = Vec::new();
+            let mut conn_like = self;
+            for _ in 0..n {
+                let (cl, packet) = conn_like.read_packet().await?;
+                conn_like = cl;
+                acc.push(packet);
+            }
+            Ok((conn_like, acc))
+        })
     }
 
     fn prepare_stmt<Q>(mut self, query: Q) -> BoxFuture<(Self, InnerStmt, StmtCacheResult)>
@@ -276,102 +274,59 @@ pub trait ConnectionLike: Send {
                 let query = query.into_owned();
                 if let Some(mut inner_stmt) = self.get_cached_stmt(&query).map(Clone::clone) {
                     inner_stmt.named_params = named_params.clone();
-                    Box::new(ok((self, inner_stmt, StmtCacheResult::Cached)))
+                    Box::pin(ok((self, inner_stmt, StmtCacheResult::Cached)))
                 } else {
-                    let fut = self
-                        .write_command_data(Command::COM_STMT_PREPARE, &*query)
-                        .and_then(|this| this.read_packet())
-                        .and_then(|(this, packet)| {
-                            InnerStmt::new(&*packet.0, named_params)
-                                .into_future()
-                                .map(|inner_stmt| (this, inner_stmt))
-                        })
-                        .and_then(|(this, mut inner_stmt)| {
-                            this.read_packets(inner_stmt.num_params as usize)
-                                .and_then(|(this, packets)| {
-                                    let params = if !packets.is_empty() {
-                                        let params = packets
-                                            .into_iter()
-                                            .map(|packet| {
-                                                column_from_payload(packet.0).map_err(Error::from)
-                                            })
-                                            .collect::<Result<Vec<Column>>>();
-                                        Some(params)
-                                    } else {
-                                        None
-                                    };
-                                    match params {
-                                        Some(Err(error)) => return A(err(error)),
-                                        Some(Ok(params)) => inner_stmt.params = Some(params),
-                                        _ => (),
-                                    }
-                                    B(ok((this, inner_stmt)))
-                                })
-                                .and_then(|(this, inner_stmt)| {
-                                    if inner_stmt.num_params > 0 {
-                                        if this
-                                            .get_capabilities()
-                                            .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
-                                        {
-                                            A(ok((this, inner_stmt)))
-                                        } else {
-                                            B(this
-                                                .read_packet()
-                                                .map(|(this, _)| (this, inner_stmt)))
-                                        }
-                                    } else {
-                                        A(ok((this, inner_stmt)))
-                                    }
-                                })
-                        })
-                        .and_then(|(this, mut inner_stmt)| {
-                            this.read_packets(inner_stmt.num_columns as usize)
-                                .and_then(|(this, packets)| {
-                                    let columns = if !packets.is_empty() {
-                                        let columns = packets
-                                            .into_iter()
-                                            .map(|packet| {
-                                                column_from_payload(packet.0).map_err(Error::from)
-                                            })
-                                            .collect::<Result<Vec<Column>>>();
-                                        Some(columns)
-                                    } else {
-                                        None
-                                    };
-                                    match columns {
-                                        Some(Err(error)) => return A(err(error)),
-                                        Some(Ok(columns)) => inner_stmt.columns = Some(columns),
-                                        _ => (),
-                                    }
-                                    B(ok((this, inner_stmt)))
-                                })
-                                .and_then(|(this, inner_stmt)| {
-                                    if inner_stmt.num_columns > 0 {
-                                        if this
-                                            .get_capabilities()
-                                            .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
-                                        {
-                                            A(ok((this, inner_stmt)))
-                                        } else {
-                                            B(this
-                                                .read_packet()
-                                                .map(|(this, _)| (this, inner_stmt)))
-                                        }
-                                    } else {
-                                        A(ok((this, inner_stmt)))
-                                    }
-                                })
-                        })
-                        .and_then(|(this, inner_stmt)| {
-                            this.cache_stmt(query, &inner_stmt)
-                                .map(|(this, stmt_cache_result)| {
-                                    (this, inner_stmt, stmt_cache_result)
-                                })
-                        });
-                    Box::new(fut)
+                    Box::pin(async move {
+                        let (this, packet) = self
+                            .write_command_data(Command::COM_STMT_PREPARE, &*query)
+                            .await?
+                            .read_packet()
+                            .await?;
+                        let mut inner_stmt = InnerStmt::new(&*packet.0, named_params)?;
+                        let (mut this, packets) =
+                            this.read_packets(inner_stmt.num_params as usize).await?;
+                        if !packets.is_empty() {
+                            let params = packets
+                                .into_iter()
+                                .map(|packet| column_from_payload(packet.0).map_err(Error::from))
+                                .collect::<Result<Vec<Column>>>()?;
+                            inner_stmt.params = Some(params);
+                        }
+
+                        if inner_stmt.num_params > 0 {
+                            if !this
+                                .get_capabilities()
+                                .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
+                            {
+                                this = this.read_packet().await?.0;
+                            }
+                        }
+
+                        let (mut this, packets) =
+                            this.read_packets(inner_stmt.num_columns as usize).await?;
+                        if !packets.is_empty() {
+                            let columns = packets
+                                .into_iter()
+                                .map(|packet| column_from_payload(packet.0).map_err(Error::from))
+                                .collect::<Result<Vec<Column>>>()?;
+                            inner_stmt.columns = Some(columns);
+                        }
+
+                        if inner_stmt.num_columns > 0 {
+                            if !this
+                                .get_capabilities()
+                                .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
+                            {
+                                this = this.read_packet().await?.0;
+                            }
+                        }
+
+                        let (this, stmt_cache_result) = this.cache_stmt(query, &inner_stmt).await?;
+                        Ok((this, inner_stmt, stmt_cache_result))
+                    })
                 }
             }
-            Err(err) => Box::new(Err(Error::from(err)).into_future()),
+            Err(err) => Box::pin(async move { Err(Error::from(err)) }),
         }
     }
 
@@ -391,14 +346,14 @@ pub trait ConnectionLike: Send {
         P: Protocol,
         P: Send + 'static,
     {
-        let fut = self
-            .read_packet()
-            .and_then(|(this, packet)| match packet.0[0] {
-                0x00 => A(A(ok(query_result::new(this, None, cached)))),
-                0xFB => A(B(handle_local_infile(this, packet, cached))),
-                _ => B(handle_result_set(this, packet, cached)),
-            });
-        Box::new(fut)
+        Box::pin(async move {
+            let (this, packet) = self.read_packet().await?;
+            match packet.0[0] {
+                0x00 => Ok(query_result::new(this, None, cached)),
+                0xFB => handle_local_infile(this, packet, cached).await,
+                _ => handle_result_set(this, packet, cached).await,
+            }
+        })
     }
 
     /// Returns future that writes packet to a server end resolves to `Self`.
@@ -425,89 +380,64 @@ pub trait ConnectionLike: Send {
 }
 
 /// Will handle local infile packet.
-fn handle_local_infile<T, P>(
-    this: T,
+async fn handle_local_infile<T, P>(
+    mut this: T,
     packet: RawPacket,
     cached: Option<StmtCacheResult>,
-) -> impl MyFuture<QueryResult<T, P>>
+) -> Result<QueryResult<T, P>>
 where
     P: Protocol + 'static,
     T: ConnectionLike,
     T: Send + Sized + 'static,
 {
-    parse_local_infile_packet(&*packet.0)
-        .map_err(Error::from)
-        .and_then(|local_infile| match this.get_local_infile_handler() {
-            Some(handler) => Ok((local_infile.into_owned(), handler)),
-            None => Err(DriverError::NoLocalInfileHandler.into()),
-        })
-        .into_future()
-        .and_then(|(local_infile, handler)| handler.handle(local_infile.file_name_ref()))
-        .and_then(|reader| {
-            let mut buf = Vec::with_capacity(4096);
-            unsafe {
-                buf.set_len(4096);
-            }
-            loop_fn((this, buf, reader), |(this, buf, reader)| {
-                read(reader, buf)
-                    .map_err(Into::into)
-                    .and_then(|(reader, mut buf, count)| {
-                        unsafe {
-                            buf.set_len(count);
-                        }
-                        this.write_packet(&buf[..count])
-                            .map(move |this| (this, buf, reader, count))
-                    })
-                    .map(|(this, buf, reader, count)| {
-                        if count > 0 {
-                            Loop::Continue((this, buf, reader))
-                        } else {
-                            Loop::Break(this)
-                        }
-                    })
-            })
-            .and_then(|this| this.read_packet())
-            .map(|(this, _)| query_result::new(this, None, cached))
-        })
+    let local_infile = parse_local_infile_packet(&*packet.0)?;
+    let (local_infile, handler) = match this.get_local_infile_handler() {
+        Some(handler) => ((local_infile.into_owned(), handler)),
+        None => return Err(DriverError::NoLocalInfileHandler.into()),
+    };
+    let mut reader = handler.handle(local_infile.file_name_ref()).await?;
+
+    let mut buf = [0; 4096];
+    loop {
+        let read = reader.read(&mut buf[..]).await?;
+        this = this.write_packet(&buf[..read]).await?;
+
+        if read == 0 {
+            break;
+        }
+    }
+
+    let (this, _) = this.read_packet().await?;
+    Ok(query_result::new(this, None, cached))
 }
 
 /// Will handle result set packet.
-fn handle_result_set<T, P>(
+async fn handle_result_set<T, P>(
     this: T,
     packet: RawPacket,
     cached: Option<StmtCacheResult>,
-) -> impl MyFuture<QueryResult<T, P>>
+) -> Result<QueryResult<T, P>>
 where
     P: Protocol,
     P: Send + 'static,
     T: ConnectionLike,
     T: Send + Sized + 'static,
 {
-    (&*packet.0)
-        .read_lenenc_int()
-        .map_err(Into::into)
-        .into_future()
-        .and_then(|column_count| this.read_packets(column_count as usize))
-        .and_then(|(this, packets)| {
-            packets
-                .into_iter()
-                .map(|packet| column_from_payload(packet.0).map_err(Error::from))
-                .collect::<Result<Vec<Column>>>()
-                .into_future()
-                .and_then(|columns| {
-                    if this
-                        .get_capabilities()
-                        .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
-                    {
-                        A(ok((this, columns)))
-                    } else {
-                        B(this.read_packet().map(|(this, _)| (this, columns)))
-                    }
-                })
-        })
-        .map(|(mut this, columns)| {
-            let columns = Arc::new(columns);
-            this.set_pending_result(Some((Clone::clone(&columns), None)));
-            query_result::new(this, Some(columns), cached)
-        })
+    let column_count = (&*packet.0).read_lenenc_int()?;
+    let (mut this, packets) = this.read_packets(column_count as usize).await?;
+    let columns = packets
+        .into_iter()
+        .map(|packet| column_from_payload(packet.0).map_err(Error::from))
+        .collect::<Result<Vec<Column>>>()?;
+
+    if !this
+        .get_capabilities()
+        .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
+    {
+        this = this.read_packet().await?.0;
+    }
+
+    let columns = Arc::new(columns);
+    this.set_pending_result(Some((Clone::clone(&columns), None)));
+    Ok(query_result::new(this, Some(columns), cached))
 }

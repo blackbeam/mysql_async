@@ -6,13 +6,13 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use ::futures::stream::futures_unordered::FuturesUnordered;
-use ::futures::{
-    task::{self, Task},
-    try_ready, Async, Future, Poll, Stream,
-};
+use futures_core::{ready, stream::Stream};
+use futures_util::stream::futures_unordered::FuturesUnordered;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
 
-use tokio_sync::mpsc;
+use tokio::sync::mpsc;
 
 use std::{
     fmt,
@@ -28,7 +28,7 @@ use crate::{
         transaction::{Transaction, TransactionOptions},
         Queryable,
     },
-    BoxFuture, MyFuture,
+    BoxFuture,
 };
 
 // this is a really unfortunate name for a module
@@ -47,10 +47,9 @@ struct Recycler {
 }
 
 impl Future for Recycler {
-    type Item = ();
-    type Error = ();
+    type Output = ();
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut readied = 0;
         let mut close = self.inner.close.load(atomic::Ordering::Acquire);
 
@@ -58,11 +57,11 @@ impl Future for Recycler {
             ($self:ident, $readied:ident, $conn:ident) => {
                 if $conn.inner.stream.is_none() || $conn.inner.disconnected {
                     // drop unestablished connection
-                    $self.discard.push(Box::new(::futures::future::ok(())));
+                    $self.discard.push(Box::pin(::futures_util::future::ok(())));
                 } else if $conn.inner.in_transaction || $conn.inner.has_result.is_some() {
-                    $self.cleaning.push($conn.cleanup());
+                    $self.cleaning.push(Box::pin($conn.cleanup()));
                 } else if $conn.expired() || $self.inner.idle.len() >= $self.min || close {
-                    $self.discard.push(Box::new($conn.close()));
+                    $self.discard.push(Box::pin($conn.close()));
                 } else {
                     $self
                         .inner
@@ -76,23 +75,23 @@ impl Future for Recycler {
 
         while !self.eof {
             // see if there are more connections for us to recycle
-            match self.dropped.poll().unwrap() {
-                Async::Ready(Some(Some(conn))) => {
+            match Pin::new(&mut self.dropped).poll_next(cx) {
+                Poll::Ready(Some(Some(conn))) => {
                     conn_decision!(self, readied, conn);
                 }
-                Async::Ready(Some(None)) => {
+                Poll::Ready(Some(None)) => {
                     // someone signaled us that it's exit time
                     close = self.inner.close.load(atomic::Ordering::Acquire);
                     assert!(close);
                     continue;
                 }
-                Async::Ready(None) => {
+                Poll::Ready(None) => {
                     // no more connections are coming -- time to exit!
                     self.inner.close.store(true, atomic::Ordering::Release);
                     self.eof = true;
                     close = true;
                 }
-                Async::NotReady => {
+                Poll::Pending => {
                     // nope -- but let's still make progress on the ones we have
                     break;
                 }
@@ -108,10 +107,10 @@ impl Future for Recycler {
 
         // are any dirty connections ready for us to reclaim?
         loop {
-            match self.cleaning.poll() {
-                Ok(Async::NotReady) | Ok(Async::Ready(None)) => break,
-                Ok(Async::Ready(Some(conn))) => conn_decision!(self, readied, conn),
-                Err(e) => {
+            match Pin::new(&mut self.cleaning).poll_next(cx) {
+                Poll::Pending | Poll::Ready(None) => break,
+                Poll::Ready(Some(Ok(conn))) => conn_decision!(self, readied, conn),
+                Poll::Ready(Some(Err(e))) => {
                     // an error occurred while cleaning a connection.
                     // what do we do? replace it with a new connection?
                     self.discarded += 1;
@@ -123,13 +122,13 @@ impl Future for Recycler {
 
         // are there any torn-down connections for us to deal with?
         loop {
-            match self.discard.poll() {
-                Ok(Async::NotReady) | Ok(Async::Ready(None)) => break,
-                Ok(Async::Ready(Some(()))) => {
+            match Pin::new(&mut self.discard).poll_next(cx) {
+                Poll::Pending | Poll::Ready(None) => break,
+                Poll::Ready(Some(Ok(()))) => {
                     // yes! count it.
                     self.discarded += 1
                 }
-                Err(e) => {
+                Poll::Ready(Some(Err(e))) => {
                     // an error occurred while closing a connection.
                     // what do we do? we still replace it with a new connection..
                     self.discarded += 1;
@@ -177,9 +176,9 @@ impl Future for Recycler {
         if self.inner.closed.load(atomic::Ordering::Acquire) {
             // since there are no more Pools, we also know that no-one is waiting anymore,
             // so we don't have to worry about calling wake more times
-            Ok(Async::Ready(()))
+            Poll::Ready(())
         } else {
-            Ok(Async::NotReady)
+            Poll::Pending
         }
     }
 }
@@ -188,7 +187,7 @@ struct Inner {
     close: atomic::AtomicBool,
     closed: atomic::AtomicBool,
     idle: crossbeam::queue::ArrayQueue<Conn>,
-    wake: crossbeam::queue::SegQueue<Task>,
+    wake: crossbeam::queue::SegQueue<Waker>,
     exist: atomic::AtomicUsize,
     extra_wakeups: atomic::AtomicUsize,
 
@@ -203,7 +202,7 @@ impl Inner {
         }
 
         while let Ok(task) = self.wake.pop() {
-            task.notify();
+            task.wake();
             readied -= 1;
             if readied == 0 {
                 if self.close.load(atomic::Ordering::Acquire) {
@@ -283,12 +282,11 @@ impl Pool {
     }
 
     /// Shortcut for `get_conn` followed by `start_transaction`.
-    pub fn start_transaction(
+    pub async fn start_transaction(
         &self,
         options: TransactionOptions,
-    ) -> impl MyFuture<Transaction<Conn>> {
-        self.get_conn()
-            .and_then(|conn| Queryable::start_transaction(conn, options))
+    ) -> Result<Transaction<Conn>> {
+        Queryable::start_transaction(self.get_conn().await?, options).await
     }
 
     /// Returns future that disconnects this pool from server and resolves to `()`.
@@ -344,13 +342,17 @@ impl Pool {
     }
 
     /// Poll the pool for an available connection.
-    fn poll_new_conn(&mut self) -> Result<Async<GetConn>> {
-        self.poll_new_conn_inner(false)
+    fn poll_new_conn(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<GetConn>> {
+        self.poll_new_conn_inner(false, cx)
     }
 
-    fn poll_new_conn_inner(&mut self, retrying: bool) -> Result<Async<GetConn>> {
+    fn poll_new_conn_inner(
+        mut self: Pin<&mut Self>,
+        retrying: bool,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<GetConn>> {
         if self.inner.close.load(atomic::Ordering::Acquire) {
-            return Err(Error::Driver(DriverError::PoolDisconnected));
+            return Err(Error::Driver(DriverError::PoolDisconnected)).into();
         }
 
         loop {
@@ -362,7 +364,7 @@ impl Pool {
                         continue;
                     }
 
-                    return Ok(Async::Ready(GetConn {
+                    return Poll::Ready(Ok(GetConn {
                         pool: Some(self.clone()),
                         inner: GetConnInner::Done(Some(conn)),
                     }));
@@ -412,25 +414,25 @@ impl Pool {
                     self.drop
                         .try_send(None)
                         .expect("recycler is active as long as any Pool is");
-                    return Err(Error::Driver(DriverError::PoolDisconnected));
+                    return Err(Error::Driver(DriverError::PoolDisconnected)).into();
                 }
 
-                return Ok(Async::Ready(GetConn {
+                return Poll::Ready(Ok(GetConn {
                     pool: Some(self.clone()),
-                    inner: GetConnInner::Connecting(Box::new(Conn::new(self.opts.clone()))),
+                    inner: GetConnInner::Connecting(Box::pin(Conn::new(self.opts.clone()))),
                 }));
             }
 
             let exist = self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
             if exist < self.pool_constraints.max() {
                 // we'd _now_ be allowed to make a connection
-                return self.poll_new_conn_inner(retrying);
+                return self.poll_new_conn_inner(retrying, cx);
             }
         }
 
         if !retrying {
             // no go -- we have to wait
-            self.inner.wake.push(task::current());
+            self.inner.wake.push(cx.waker().clone());
 
             // there's a potential race here -- imagine another task releases a connection after we
             // try to poll .idle or check .exist, but before we push our task onto .wake. In that
@@ -440,7 +442,7 @@ impl Pool {
             // an alternative strategy would be to _always_ push to .wake and then do the checks,
             // but that would lead to a large number of spurious notifications/wakeups, as well as
             // needless contention on .wake.
-            let conn = try_ready!(self.poll_new_conn_inner(true));
+            let conn = ready!(self.as_mut().poll_new_conn_inner(true, cx))?;
 
             // this is a tricky case. we already registered ourselves as wanting to be woken up,
             // but we now have a connection, so we won't be waiting. this means that _if_ we were
@@ -456,9 +458,9 @@ impl Pool {
             // and also waking someone up (perhaps spuriously) in case we have already been
             // notified.
             if let Ok(task) = self.inner.wake.pop() {
-                if task.will_notify_current() {
+                if task.will_wake(cx.waker()) {
                     // phew -- we got out of that one easy!
-                    return Ok(Async::Ready(conn));
+                    return Poll::Ready(Ok(conn));
                 }
 
                 // if we _haven't_ been notified yet, someone else may be deciding who to wake up
@@ -486,16 +488,16 @@ impl Pool {
                 //
                 // in this case, task1 might never be awoken again, which is not okay.
                 // hence:
-                task.notify();
+                task.wake();
             } else {
                 // someone tried to notify us, but also, no-one else is waiting,
                 // so there's no-one to "forward" that wake-up to.
             }
 
-            return Ok(Async::Ready(conn));
+            return Poll::Ready(Ok(conn));
         }
 
-        Ok(Async::NotReady)
+        Poll::Pending
     }
 }
 
@@ -511,217 +513,182 @@ impl Drop for Conn {
 
 #[cfg(test)]
 mod test {
-    use futures::{collect, future, Future};
+    use futures_util::stream::StreamExt;
     use std::sync::atomic;
 
     use crate::{
-        conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL, TransactionOptions,
+        conn::pool::Pool, queryable::Queryable, test_misc::get_opts, PoolConstraints,
+        TransactionOptions,
     };
 
-    /// Same as `tokio::run`, but will panic if future panics and will return the result
-    /// of future execution.
-    fn run<F, T, U>(future: F) -> Result<T, U>
-    where
-        F: Future<Item = T, Error = U> + Send + 'static,
-        T: Send + 'static,
-        U: Send + 'static,
-    {
-        let mut runtime = tokio::runtime::Runtime::new().unwrap();
-        let result = runtime.block_on(future);
-        runtime.shutdown_on_idle().wait().unwrap();
-        result
+    #[tokio::test]
+    async fn should_connect() -> super::Result<()> {
+        let pool = Pool::new(get_opts());
+        pool.get_conn().await?.ping().await?;
+        pool.disconnect().await?;
+        Ok(())
     }
 
-    #[test]
-    fn should_connect() {
-        let pool = Pool::new(&**DATABASE_URL);
-        let fut = pool
-            .get_conn()
-            .and_then(|conn| conn.ping().map(|_| ()))
-            .and_then(|_| pool.disconnect());
-
-        run(fut).unwrap();
-    }
-
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn can_handle_the_pressure() {
-        let mut runtime = tokio::runtime::Runtime::new().unwrap();
-        let pool = Pool::new(&**DATABASE_URL);
-        for _ in 0..10 {
-            use futures::{Sink, Stream};
-            let (tx, rx) = futures::sync::mpsc::unbounded();
+    async fn can_handle_the_pressure() {
+        let pool = Pool::new(get_opts());
+        for _ in 0..10i32 {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             for i in 0..10_000 {
                 let pool = pool.clone();
-                let tx = tx.clone();
-                runtime.spawn(futures::future::lazy(move || {
-                    pool.get_conn()
-                        .map_err(|e| unreachable!("{:?}", e))
-                        .and_then(move |_| tx.send(i).map_err(|e| unreachable!("{:?}", e)))
-                        .map(|_| ())
-                }));
+                let mut tx = tx.clone();
+                tokio::spawn(async move {
+                    let _ = pool.get_conn().await.unwrap();
+                    tx.try_send(i).unwrap();
+                });
             }
             drop(tx);
-            runtime.block_on(rx.fold(0, |_, _i| Ok(0))).unwrap();
+            // see that all the tx's eventually complete
+            while let Some(_) = rx.next().await {}
         }
         drop(pool);
-        runtime.shutdown_on_idle().wait().unwrap();
     }
 
-    #[test]
-    fn should_start_transaction() {
-        let pool = Pool::new(format!("{}?pool_min=1&pool_max=1", &**DATABASE_URL));
-        let fut = pool
+    #[tokio::test]
+    async fn should_start_transaction() -> super::Result<()> {
+        let mut opts = get_opts();
+        opts.pool_constraints(PoolConstraints::new(1, 1));
+        let pool = Pool::new(opts);
+        pool.get_conn()
+            .await?
+            .drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)")
+            .await?;
+        let _ = pool
+            .start_transaction(TransactionOptions::default())
+            .await?
+            .batch_exec("INSERT INTO tmp (id) VALUES (?)", vec![(1,), (2,)])
+            .await?
+            .prep_exec("SELECT * FROM tmp", ())
+            .await?;
+        let row_opt = pool
             .get_conn()
-            .and_then(|conn| conn.drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)"))
-            .and_then({
-                let pool = pool.clone();
-                move |_| pool.start_transaction(TransactionOptions::default())
-            })
-            .and_then(|transaction| {
-                transaction.batch_exec("INSERT INTO tmp (id) VALUES (?)", vec![(1,), (2,)])
-            })
-            .and_then(|transaction| transaction.prep_exec("SELECT * FROM tmp", ()))
-            .map(|_| ())
-            .and_then({
-                let pool = pool.clone();
-                move |_| pool.get_conn()
-            })
-            .and_then(|conn| conn.first("SELECT COUNT(*) FROM tmp"))
-            .and_then(|(_, row_opt)| {
-                assert_eq!(row_opt, Some((0u8,)));
-                pool.get_conn()
-                    .and_then(|conn| conn.drop_query("DROP TABLE tmp"))
-                    .and_then(move |_| pool.disconnect())
-            });
-
-        run(fut).unwrap();
+            .await?
+            .first("SELECT COUNT(*) FROM tmp")
+            .await?
+            .1;
+        assert_eq!(row_opt, Some((0u8,)));
+        pool.get_conn().await?.drop_query("DROP TABLE tmp").await?;
+        pool.disconnect().await?;
+        Ok(())
     }
 
-    #[test]
-    fn should_hold_bounds2() {
+    #[tokio::test]
+    async fn should_hold_bounds2() -> super::Result<()> {
         use std::cmp::min;
 
         const POOL_MIN: usize = 5;
         const POOL_MAX: usize = 10;
 
-        let url = format!(
-            "{}?pool_min={}&pool_max={}",
-            &**DATABASE_URL, POOL_MIN, POOL_MAX
-        );
-
         // Clean
-        let pool = Pool::new(url.clone());
+        let mut opts = get_opts();
+        opts.pool_constraints(PoolConstraints::new(POOL_MIN, POOL_MAX));
+        let pool = Pool::new(opts);
         let pool_clone = pool.clone();
         let conns = (0..POOL_MAX).map(|_| pool.get_conn()).collect::<Vec<_>>();
 
-        let fut = ::futures::future::join_all(conns)
-            .and_then(|conns| {
-                // we want to continuously drop connections
-                // and check that they are _actually_ dropped until we reach POOL_MIN
-                assert_eq!(
-                    pool_clone.inner.exist.load(atomic::Ordering::SeqCst),
-                    POOL_MAX
-                );
+        let mut conns = futures_util::try_future::try_join_all(conns).await?;
 
-                future::loop_fn((pool_clone, conns), move |(pool_clone, mut conns)| {
-                    // first, drop a connection
-                    let _ = conns.pop();
+        // we want to continuously drop connections
+        // and check that they are _actually_ dropped until we reach POOL_MIN
+        assert_eq!(
+            pool_clone.inner.exist.load(atomic::Ordering::SeqCst),
+            POOL_MAX
+        );
 
-                    // then, wait for a bit to let the connection be reclaimed
-                    tokio::timer::Delay::new(
-                        std::time::Instant::now() + std::time::Duration::from_millis(100),
-                    )
-                    .map_err(|e| unimplemented!("{:?}", e))
-                    .map(|_| {
-                        // now check that we have the expected # of connections
-                        // this may look a little funky, but think of it this way:
-                        //
-                        //  - if we hold all 10 connections, we expect 10
-                        //  - if we drop one,  we still expect 10, because POOL_MIN limits
-                        //    the number of _idle_ connections (of which there is only 1)
-                        //  - once we've dropped 5, there are now 5 idle connections. thus,
-                        //    if we drop one more, we _now_ expect there to be only 9
-                        //    connections total (no more connections should be pushed to
-                        //    idle).
-                        let dropped = POOL_MAX - conns.len();
-                        let idle = min(dropped, POOL_MIN);
-                        let expected = conns.len() + idle;
-                        let have = pool_clone.inner.exist.load(atomic::Ordering::SeqCst);
-                        assert_eq!(have, expected);
+        while !conns.is_empty() {
+            // first, drop a connection
+            let _ = conns.pop();
 
-                        if conns.is_empty() {
-                            future::Loop::Break(pool_clone)
-                        } else {
-                            future::Loop::Continue((pool_clone, conns))
-                        }
-                    })
-                })
-            })
-            .and_then(|pool| pool.disconnect());
+            // then, wait for a bit to let the connection be reclaimed
+            tokio::timer::delay(std::time::Instant::now() + std::time::Duration::from_millis(100))
+                .await;
 
-        run(fut).unwrap();
+            // now check that we have the expected # of connections
+            // this may look a little funky, but think of it this way:
+            //
+            //  - if we hold all 10 connections, we expect 10
+            //  - if we drop one,  we still expect 10, because POOL_MIN limits
+            //    the number of _idle_ connections (of which there is only 1)
+            //  - once we've dropped 5, there are now 5 idle connections. thus,
+            //    if we drop one more, we _now_ expect there to be only 9
+            //    connections total (no more connections should be pushed to
+            //    idle).
+            let dropped = POOL_MAX - conns.len();
+            let idle = min(dropped, POOL_MIN);
+            let expected = conns.len() + idle;
+            let have = pool_clone.inner.exist.load(atomic::Ordering::SeqCst);
+            assert_eq!(have, expected);
+        }
+
+        pool.disconnect().await?;
+        Ok(())
     }
 
-    #[test]
-    fn should_hold_bounds1() {
-        let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL));
+    #[tokio::test]
+    async fn should_hold_bounds1() -> super::Result<()> {
+        let mut opts = get_opts();
+        opts.pool_constraints(PoolConstraints::new(1, 2));
+        let pool = Pool::new(opts);
         let pool_clone = pool.clone();
-        let fut = pool
-            .get_conn()
-            .join(pool.get_conn())
-            .and_then(move |(conn1, _conn2)| {
-                let new_conn = pool_clone.get_conn();
-                assert_eq!(
-                    conn1
-                        .inner
-                        .pool
-                        .as_ref()
-                        .unwrap()
-                        .inner
-                        .exist
-                        .load(atomic::Ordering::SeqCst),
-                    2
-                );
-                assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
-                // NOTE: conn1 and conn2 are both dropped here
-                new_conn
-            })
-            .and_then(|conn1| {
-                // only one of conn1 and conn2 should have gone to idle,
-                // and should have immediately been picked up by new_conn (now conn1)
-                assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
-                // NOTE: new_conn (now conn1) is dropped here
-                Ok(())
-            })
-            .and_then(|_| {
-                // the connection should be returned to idle
-                // (but may not have been returned _yet_)
-                assert!(pool.inner.idle.len() <= 1);
-                pool.disconnect()
-            });
 
-        run(fut).unwrap();
+        let (conn1, conn2) = futures_util::try_future::try_join(pool.get_conn(), pool.get_conn())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            conn1
+                .inner
+                .pool
+                .as_ref()
+                .unwrap()
+                .inner
+                .exist
+                .load(atomic::Ordering::SeqCst),
+            2
+        );
+        assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
+
+        drop(conn1);
+        drop(conn2);
+        // only one of conn1 and conn2 should have gone to idle,
+        // and should have immediately been picked up by new_conn (now conn1)
+        let conn1 = pool_clone.get_conn().await?;
+        assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
+
+        drop(conn1);
+
+        // the connection should be returned to idle
+        // (but may not have been returned _yet_)
+        assert!(pool.inner.idle.len() <= 1);
+        pool.disconnect().await?;
+        Ok(())
     }
 
-    #[test]
-    fn should_hold_bounds_on_error() {
-        // Test that connections which err do not count towards the connection count in the pool.
-
-        let mut runtime = tokio::runtime::Runtime::new().unwrap();
-
+    // Test that connections which err do not count towards the connection count in the pool.
+    #[tokio::test]
+    async fn should_hold_bounds_on_error() -> super::Result<()> {
         // Should not be possible to connect to broadcast address.
         let pool = Pool::new(String::from("mysql://255.255.255.255"));
 
-        let result = runtime.block_on(pool.get_conn().join(pool.get_conn()));
-
-        assert!(result.is_err());
+        assert!(
+            futures_util::try_future::try_join(pool.get_conn(), pool.get_conn())
+                .await
+                .is_err()
+        );
         assert_eq!(pool.inner.exist.load(atomic::Ordering::SeqCst), 0);
+        Ok(())
     }
 
+    /*
     #[test]
     fn should_hold_bounds_on_get_conn_drop() {
-        let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", &**DATABASE_URL));
+        let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", get_opts()));
         let mut runtime = tokio::runtime::Runtime::new().unwrap();
 
         // This test is a bit more intricate: we need to poll the connection future once to get the
@@ -745,19 +712,20 @@ mod test {
             }))
             .unwrap();
     }
+    */
 
-    #[test]
-    fn droptest() {
-        let pool = Pool::new(&**DATABASE_URL);
-        run(
-            collect((0..10).map(|_| pool.get_conn()).collect::<Vec<_>>()).map(move |conns| {
-                drop(conns);
-                drop(pool);
-            }),
-        )
-        .unwrap();
+    #[tokio::test]
+    async fn droptest() -> super::Result<()> {
+        let pool = Pool::new(get_opts());
+        let conns = futures_util::try_future::try_join_all((0..10).map(|_| pool.get_conn()))
+            .await
+            .unwrap();
+        drop(conns);
+        drop(pool);
+        Ok(())
     }
 
+    /*
     #[test]
     #[ignore]
     fn should_not_panic_if_dropped_without_tokio_runtime() {
@@ -768,25 +736,28 @@ mod test {
         //  - Runtime::shutdown_now is called
         //
         // none of these are true in this test, which is why it's been ignored
-        let pool = Pool::new(&**DATABASE_URL);
+        let pool = Pool::new(get_opts());
         run(collect(
             (0..10).map(|_| pool.get_conn()).collect::<Vec<_>>(),
         ))
         .unwrap();
         // pool will drop here
     }
+    */
 
     #[cfg(feature = "nightly")]
     mod bench {
-        use futures::Future;
+        use futures_util::try_future::TryFutureExt;
         use tokio::runtime::Runtime;
 
-        use crate::{conn::pool::Pool, queryable::Queryable, test_misc::DATABASE_URL};
+        use crate::prelude::Queryable;
+        use crate::test_misc::get_opts;
+        use crate::Pool;
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
-            let mut runtime = Runtime::new().expect("3");
-            let pool = Pool::new(&**DATABASE_URL);
+            let runtime = Runtime::new().expect("3");
+            let pool = Pool::new(get_opts());
 
             bencher.iter(|| {
                 let fut = pool.get_conn().and_then(|conn| conn.ping());

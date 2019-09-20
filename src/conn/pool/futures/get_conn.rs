@@ -6,19 +6,22 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures::{try_ready, Async, Future, Poll};
+use futures_core::ready;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use crate::{
     conn::{pool::Pool, Conn},
     error::*,
-    MyFuture,
+    BoxFuture,
 };
 
 pub(crate) enum GetConnInner {
     New,
     Done(Option<Conn>),
     // TODO: one day this should be an existential
-    Connecting(Box<dyn MyFuture<Conn>>),
+    Connecting(BoxFuture<Conn>),
 }
 
 impl GetConnInner {
@@ -41,18 +44,20 @@ pub fn new(pool: &Pool) -> GetConn {
     }
 }
 
+// this manual implementation of Future may seem stupid, but we sort
+// of need it to get the dropping behavior we want.
 impl Future for GetConn {
-    type Item = Conn;
-    type Error = Error;
+    type Output = Result<Conn>;
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
             match self.inner {
-                GetConnInner::New => match try_ready!(self
-                    .pool
-                    .as_mut()
-                    .expect("GetConn::poll polled after returning Async::Ready")
-                    .poll_new_conn())
+                GetConnInner::New => match ready!(Pin::new(
+                    self.pool
+                        .as_mut()
+                        .expect("GetConn::poll polled after returning Async::Ready")
+                )
+                .poll_new_conn(cx))?
                 .inner
                 .take()
                 {
@@ -76,18 +81,13 @@ impl Future for GetConn {
                             .take()
                             .expect("GetConn::poll polled after returning Async::Ready"),
                     );
-                    return Ok(Async::Ready(c));
+                    return Poll::Ready(Ok(c));
                 }
                 GetConnInner::Done(None) => {
                     unreachable!("GetConn::poll polled after returning Async::Ready");
                 }
                 GetConnInner::Connecting(ref mut f) => {
-                    let result = match f.poll() {
-                        Ok(Async::NotReady) => return Ok(Async::NotReady),
-                        Ok(Async::Ready(c)) => Ok(c),
-                        Err(e) => Err(e),
-                    };
-
+                    let result = ready!(Pin::new(f).poll(cx));
                     let pool = self
                         .pool
                         .take()
@@ -96,11 +96,11 @@ impl Future for GetConn {
                     return match result {
                         Ok(mut c) => {
                             c.inner.pool = Some(pool);
-                            Ok(Async::Ready(c))
+                            Poll::Ready(Ok(c))
                         }
                         Err(e) => {
                             pool.cancel_connection();
-                            Err(e)
+                            Poll::Ready(Err(e))
                         }
                     };
                 }

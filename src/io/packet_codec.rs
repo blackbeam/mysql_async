@@ -9,7 +9,7 @@
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
 use mysql_common::{constants::MAX_PAYLOAD_LEN, packets::RawPacket};
-use tokio_codec::{Decoder, Encoder};
+use tokio::codec::{Decoder, Encoder};
 
 use std::io;
 

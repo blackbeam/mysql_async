@@ -8,7 +8,6 @@
 
 pub use mysql_common::named_params;
 
-use futures::future::{err, loop_fn, ok, Either::*, Future, IntoFuture, Loop};
 use mysql_common::{
     crypto,
     packets::{
@@ -17,7 +16,7 @@ use mysql_common::{
     },
 };
 
-use std::{fmt, mem, str::FromStr, sync::Arc};
+use std::{fmt, future::Future, mem, pin::Pin, str::FromStr, sync::Arc};
 
 use crate::{
     conn::{pool::Pool, stmt_cache::StmtCache},
@@ -29,7 +28,7 @@ use crate::{
     opts::Opts,
     queryable::{query_result, BinaryProtocol, Queryable, TextProtocol},
     time::SteadyTime,
-    BoxFuture, Column, MyFuture, OptsBuilder,
+    Column, OptsBuilder,
 };
 
 pub mod pool;
@@ -37,9 +36,6 @@ pub mod stmt_cache;
 
 /// Helper function that asynchronously disconnects connection on the default tokio executor.
 fn disconnect(mut conn: Conn) {
-    use tokio::executor::{DefaultExecutor, Executor};
-    let mut executor = DefaultExecutor::current();
-
     let disconnected = conn.inner.disconnected;
 
     // Mark conn as disconnected.
@@ -47,9 +43,13 @@ fn disconnect(mut conn: Conn) {
 
     if !disconnected {
         // Server will report broken connection if spawn fails.
-        let _ = executor.spawn(Box::new(
-            conn.cleanup().and_then(Conn::disconnect).map_err(drop),
-        ));
+        use tokio::executor::Executor;
+        // this might fail if, say, the runtime is shutting down, but we've done what we could
+        let _ = tokio::executor::DefaultExecutor::current().spawn(Box::pin(async move {
+            if let Ok(conn) = conn.cleanup().await {
+                let _ = conn.disconnect().await;
+            }
+        }));
     }
 }
 
@@ -89,6 +89,7 @@ impl fmt::Debug for ConnInner {
             .field("pool", &self.pool)
             .field("has result", &self.has_result.is_some())
             .field("in transaction", &self.in_transaction)
+            .field("stream", &self.stream)
             .field("options", &self.opts)
             .finish()
     }
@@ -144,9 +145,9 @@ impl Conn {
         self.get_affected_rows()
     }
 
-    fn close(mut self) -> impl MyFuture<()> {
+    async fn close(mut self) -> Result<()> {
         self.inner.disconnected = true;
-        self.cleanup().and_then(Conn::disconnect)
+        self.cleanup().await?.disconnect().await
     }
 
     fn is_secure(&self) -> bool {
@@ -182,37 +183,32 @@ impl Conn {
         }
     }
 
-    fn handle_handshake(self) -> impl MyFuture<Conn> {
-        self.read_packet().and_then(move |(mut conn, packet)| {
-            parse_handshake_packet(&*packet.0)
-                .map_err(Error::from)
-                .and_then(|handshake| {
-                    conn.inner.nonce = {
-                        let mut nonce = Vec::from(handshake.scramble_1_ref());
-                        nonce.extend_from_slice(handshake.scramble_2_ref().unwrap_or(&[][..]));
-                        nonce
-                    };
+    async fn handle_handshake(self) -> Result<Conn> {
+        let (mut conn, packet) = self.read_packet().await?;
+        let handshake = parse_handshake_packet(&*packet.0)?;
+        conn.inner.nonce = {
+            let mut nonce = Vec::from(handshake.scramble_1_ref());
+            nonce.extend_from_slice(handshake.scramble_2_ref().unwrap_or(&[][..]));
+            nonce
+        };
 
-                    conn.inner.capabilities =
-                        handshake.capabilities() & conn.inner.opts.get_capabilities();
-                    conn.inner.version = handshake.server_version_parsed().unwrap_or((0, 0, 0));
-                    conn.inner.id = handshake.connection_id();
-                    conn.inner.status = handshake.status_flags();
-                    conn.inner.auth_plugin = match handshake.auth_plugin() {
-                        Some(AuthPlugin::MysqlNativePassword) => AuthPlugin::MysqlNativePassword,
-                        Some(AuthPlugin::CachingSha2Password) => AuthPlugin::CachingSha2Password,
-                        Some(AuthPlugin::Other(ref name)) => {
-                            let name = String::from_utf8_lossy(name).into();
-                            return Err(DriverError::UnknownAuthPlugin { name }.into());
-                        }
-                        None => AuthPlugin::MysqlNativePassword,
-                    };
-                    Ok(conn)
-                })
-        })
+        conn.inner.capabilities = handshake.capabilities() & conn.inner.opts.get_capabilities();
+        conn.inner.version = handshake.server_version_parsed().unwrap_or((0, 0, 0));
+        conn.inner.id = handshake.connection_id();
+        conn.inner.status = handshake.status_flags();
+        conn.inner.auth_plugin = match handshake.auth_plugin() {
+            Some(AuthPlugin::MysqlNativePassword) => AuthPlugin::MysqlNativePassword,
+            Some(AuthPlugin::CachingSha2Password) => AuthPlugin::CachingSha2Password,
+            Some(AuthPlugin::Other(ref name)) => {
+                let name = String::from_utf8_lossy(name).into();
+                return Err(DriverError::UnknownAuthPlugin { name }.into());
+            }
+            None => AuthPlugin::MysqlNativePassword,
+        };
+        Ok(conn)
     }
 
-    fn switch_to_ssl_if_needed(self) -> impl MyFuture<Conn> {
+    async fn switch_to_ssl_if_needed(self) -> Result<Conn> {
         if self
             .inner
             .opts
@@ -220,25 +216,22 @@ impl Conn {
             .contains(CapabilityFlags::CLIENT_SSL)
         {
             let ssl_request = SslRequest::new(self.inner.capabilities);
-            let fut = self.write_packet(ssl_request.as_ref()).and_then(|conn| {
-                let ssl_opts = conn
-                    .get_opts()
-                    .get_ssl_opts()
-                    .cloned()
-                    .expect("unreachable");
-                let domain = conn.get_opts().get_ip_or_hostname().into();
-                let (streamless, stream) = conn.take_stream();
-                stream
-                    .make_secure(domain, ssl_opts)
-                    .map(move |stream| streamless.return_stream(stream))
-            });
-            A(fut)
+            let conn = self.write_packet(ssl_request.as_ref()).await?;
+            let ssl_opts = conn
+                .get_opts()
+                .get_ssl_opts()
+                .cloned()
+                .expect("unreachable");
+            let domain = conn.get_opts().get_ip_or_hostname().into();
+            let (streamless, stream) = conn.take_stream();
+            let stream = stream.make_secure(domain, ssl_opts).await?;
+            Ok(streamless.return_stream(stream))
         } else {
-            B(ok(self))
+            Ok(self)
         }
     }
 
-    fn do_handshake_response(self) -> impl MyFuture<Conn> {
+    async fn do_handshake_response(self) -> Result<Conn> {
         let auth_data = self
             .inner
             .auth_plugin
@@ -253,13 +246,13 @@ impl Conn {
             self.get_capabilities(),
         );
 
-        self.write_packet(handshake_response.as_ref())
+        self.write_packet(handshake_response.as_ref()).await
     }
 
-    fn perform_auth_switch(
+    async fn perform_auth_switch(
         mut self,
         auth_switch_request: AuthSwitchRequest<'_>,
-    ) -> BoxFuture<Conn> {
+    ) -> Result<Conn> {
         if !self.inner.auth_switched {
             self.inner.auth_switched = true;
             self.inner.nonce = auth_switch_request.plugin_data().into();
@@ -269,161 +262,133 @@ impl Conn {
                 .auth_plugin
                 .gen_data(self.inner.opts.get_pass(), &*self.inner.nonce)
                 .unwrap_or_else(Vec::new);
-            let fut = self.write_packet(plugin_data).and_then(Conn::continue_auth);
-            // We'll box it to avoid recursion.
-            Box::new(fut)
+            self.write_packet(plugin_data).await?.continue_auth().await
         } else {
             unreachable!("auth_switched flag should be checked by caller")
         }
     }
 
-    fn continue_auth(self) -> impl MyFuture<Conn> {
-        match self.inner.auth_plugin {
-            AuthPlugin::MysqlNativePassword => A(self.continue_mysql_native_password_auth()),
-            AuthPlugin::CachingSha2Password => B(self.continue_caching_sha2_password_auth()),
-            _ => unreachable!(),
+    fn continue_auth(self) -> Pin<Box<dyn Future<Output = Result<Conn>> + Send>> {
+        // NOTE: we need to box this since it may recurse
+        // see https://github.com/rust-lang/rust/issues/46415#issuecomment-528099782
+        Box::pin(async move {
+            match self.inner.auth_plugin {
+                AuthPlugin::MysqlNativePassword => self.continue_mysql_native_password_auth().await,
+                AuthPlugin::CachingSha2Password => self.continue_caching_sha2_password_auth().await,
+                _ => unreachable!(),
+            }
+        })
+    }
+
+    async fn continue_caching_sha2_password_auth(self) -> Result<Conn> {
+        let (conn, packet) = self.read_packet().await?;
+        match packet.as_ref().get(0) {
+            Some(0x01) => match packet.as_ref().get(1) {
+                Some(0x03) => {
+                    // auth ok
+                    conn.drop_packet().await
+                }
+                Some(0x04) => {
+                    let mut pass = conn
+                        .inner
+                        .opts
+                        .get_pass()
+                        .map(Vec::from)
+                        .unwrap_or_default();
+                    pass.push(0);
+
+                    let conn = if conn.is_secure() {
+                        conn.write_packet(&*pass).await?
+                    } else {
+                        let conn = conn.write_packet(&[0x02][..]).await?;
+                        let (conn, packet) = conn.read_packet().await?;
+                        let key = &packet.as_ref()[1..];
+                        for (i, byte) in pass.iter_mut().enumerate() {
+                            *byte ^= conn.inner.nonce[i % conn.inner.nonce.len()];
+                        }
+                        let encrypted_pass = crypto::encrypt(&*pass, key);
+                        conn.write_packet(&*encrypted_pass).await?
+                    };
+                    conn.drop_packet().await
+                }
+                _ => Err(DriverError::UnexpectedPacket {
+                    payload: packet.as_ref().into(),
+                }
+                .into()),
+            },
+            Some(0xfe) if !conn.inner.auth_switched => {
+                let auth_switch_request = parse_auth_switch_request(packet.as_ref())?.into_owned();
+                conn.perform_auth_switch(auth_switch_request).await
+            }
+            _ => Err(DriverError::UnexpectedPacket {
+                payload: packet.as_ref().into(),
+            }
+            .into()),
         }
     }
 
-    fn continue_caching_sha2_password_auth(self) -> impl MyFuture<Conn> {
-        self.read_packet()
-            .and_then(|(conn, packet)| match packet.as_ref().get(0) {
-                Some(0x01) => match packet.as_ref().get(1) {
-                    Some(0x03) => {
-                        // auth ok
-                        A(conn.drop_packet())
-                    }
-                    Some(0x04) => {
-                        let mut pass = conn
-                            .inner
-                            .opts
-                            .get_pass()
-                            .map(Vec::from)
-                            .unwrap_or_default();
-                        pass.push(0);
-                        let fut = if conn.is_secure() {
-                            A(conn.write_packet(&*pass))
-                        } else {
-                            B(conn
-                                .write_packet(&[0x02][..])
-                                .and_then(Conn::read_packet)
-                                .and_then(move |(conn, packet)| {
-                                    let key = &packet.as_ref()[1..];
-                                    for (i, byte) in pass.iter_mut().enumerate() {
-                                        *byte ^= conn.inner.nonce[i % conn.inner.nonce.len()];
-                                    }
-                                    let encrypted_pass = crypto::encrypt(&*pass, key);
-                                    conn.write_packet(&*encrypted_pass)
-                                }))
-                        };
-                        B(A(fut.and_then(Conn::drop_packet)))
-                    }
-                    _ => B(B(A(err(DriverError::UnexpectedPacket {
-                        payload: packet.as_ref().into(),
-                    }
-                    .into())))),
-                },
-                Some(0xfe) if !conn.inner.auth_switched => {
-                    let fut = parse_auth_switch_request(packet.as_ref())
-                        .map(AuthSwitchRequest::into_owned)
-                        .map_err(Error::from)
-                        .into_future()
-                        .and_then(|auth_switch_request| {
-                            conn.perform_auth_switch(auth_switch_request)
-                        });
-                    B(B(B(A(fut))))
-                }
-                _ => B(B(B(B(err(DriverError::UnexpectedPacket {
-                    payload: packet.as_ref().into(),
-                }
-                .into()))))),
-            })
+    async fn continue_mysql_native_password_auth(self) -> Result<Conn> {
+        let (this, packet) = self.read_packet().await?;
+        match packet.0.get(0) {
+            Some(0x00) => Ok(this),
+            Some(0xfe) if !this.inner.auth_switched => {
+                let auth_switch_request = parse_auth_switch_request(packet.as_ref())?.into_owned();
+                this.perform_auth_switch(auth_switch_request).await
+            }
+            _ => Err(DriverError::UnexpectedPacket { payload: packet.0 }.into()),
+        }
     }
 
-    fn continue_mysql_native_password_auth(self) -> impl MyFuture<Conn> {
-        self.read_packet()
-            .and_then(|(this, packet)| match packet.0.get(0) {
-                Some(0x00) => A(ok(this)),
-                Some(0xfe) if !this.inner.auth_switched => {
-                    let fut = parse_auth_switch_request(packet.as_ref())
-                        .map(AuthSwitchRequest::into_owned)
-                        .map_err(Error::from)
-                        .into_future()
-                        .and_then(|auth_switch_request| {
-                            this.perform_auth_switch(auth_switch_request)
-                        });
-                    B(A(fut))
-                }
-                _ => B(B(err(
-                    DriverError::UnexpectedPacket { payload: packet.0 }.into()
-                ))),
-            })
+    async fn drop_packet(self) -> Result<Conn> {
+        Ok(self.read_packet().await?.0)
     }
 
-    fn drop_packet(self) -> impl MyFuture<Conn> {
-        self.read_packet().map(|(conn, _)| conn)
-    }
+    async fn run_init_commands(self) -> Result<Conn> {
+        let mut init: Vec<_> = self.inner.opts.get_init().iter().cloned().collect();
 
-    fn run_init_commands(self) -> impl MyFuture<Conn> {
-        let init = self
-            .inner
-            .opts
-            .get_init()
-            .iter()
-            .map(Clone::clone)
-            .collect();
-
-        loop_fn(
-            (init, self),
-            |(mut init, conn): (Vec<String>, Conn)| match init.pop() {
-                None => A(ok(Loop::Break(conn))),
-                Some(query) => {
-                    let fut = conn
-                        .drop_query(query)
-                        .map(|conn| Loop::Continue((init, conn)));
-                    B(fut)
-                }
-            },
-        )
+        let mut conn = self;
+        while let Some(query) = init.pop() {
+            conn = conn.drop_query(query).await?;
+        }
+        Ok(conn)
     }
 
     /// Returns future that resolves to `Conn`.
-    pub fn new<T: Into<Opts>>(opts: T) -> impl MyFuture<Conn> {
+    pub async fn new<T: Into<Opts>>(opts: T) -> Result<Conn> {
         let opts = opts.into();
         let mut conn = Conn::empty(opts.clone());
 
         let stream = if let Some(path) = opts.get_socket() {
-            A(Stream::connect_socket(path.to_owned()))
+            Stream::connect_socket(path.to_owned()).await?
         } else {
-            B(Stream::connect_tcp((
-                opts.get_ip_or_hostname(),
-                opts.get_tcp_port(),
-            )))
+            Stream::connect_tcp((opts.get_ip_or_hostname(), opts.get_tcp_port())).await?
         };
 
-        stream
-            .map(move |stream| {
-                conn.inner.stream = Some(stream);
-                conn
-            })
-            .and_then(Conn::setup_stream)
-            .and_then(Conn::handle_handshake)
-            .and_then(Conn::switch_to_ssl_if_needed)
-            .and_then(Conn::do_handshake_response)
-            .and_then(Conn::continue_auth)
-            .and_then(Conn::read_socket)
-            .and_then(Conn::reconnect_via_socket_if_needed)
-            .and_then(Conn::read_max_allowed_packet)
-            .and_then(Conn::read_wait_timeout)
-            .and_then(Conn::run_init_commands)
+        conn.inner.stream = Some(stream);
+        conn.setup_stream()?
+            .handle_handshake()
+            .await?
+            .switch_to_ssl_if_needed()
+            .await?
+            .do_handshake_response()
+            .await?
+            .continue_auth()
+            .await?
+            .read_socket()
+            .await?
+            .reconnect_via_socket_if_needed()
+            .await?
+            .read_max_allowed_packet()
+            .await?
+            .read_wait_timeout()
+            .await?
+            .run_init_commands()
+            .await
     }
 
     /// Returns future that resolves to `Conn`.
-    pub fn from_url<T: AsRef<str>>(url: T) -> impl MyFuture<Conn> {
-        Opts::from_str(url.as_ref())
-            .map_err(Error::from)
-            .into_future()
-            .and_then(Conn::new)
+    pub async fn from_url<T: AsRef<str>>(url: T) -> Result<Conn> {
+        Conn::new(Opts::from_str(url.as_ref())?).await
     }
 
     /// Will try to connect via socket using socket address in `self.inner.socket`.
@@ -431,52 +396,50 @@ impl Conn {
     /// Returns new connection on success or self on error.
     ///
     /// Won't try to reconnect if socket connection is already enforced in `Opts`.
-    fn reconnect_via_socket_if_needed(self) -> Box<dyn MyFuture<Conn>> {
-        if let Some(socket) = self.inner.socket.as_ref() {
-            let opts = self.inner.opts.clone();
-            if opts.get_socket().is_none() {
-                let mut builder = OptsBuilder::from_opts(opts);
-                builder.socket(Some(&**socket));
-                let fut = Conn::new(builder).then(|result| match result {
-                    Ok(conn) => Ok(conn),
-                    Err(_) => Ok(self),
-                });
-                return Box::new(fut);
+    fn reconnect_via_socket_if_needed(self) -> Pin<Box<dyn Future<Output = Result<Conn>> + Send>> {
+        // NOTE: we need to box this since it may recurse
+        // see https://github.com/rust-lang/rust/issues/46415#issuecomment-528099782
+        Box::pin(async move {
+            if let Some(socket) = self.inner.socket.as_ref() {
+                let opts = self.inner.opts.clone();
+                if opts.get_socket().is_none() {
+                    let mut builder = OptsBuilder::from_opts(opts);
+                    builder.socket(Some(&**socket));
+                    match Conn::new(builder).await {
+                        Ok(conn) => return Ok(conn),
+                        Err(_) => return Ok(self),
+                    }
+                }
             }
-        }
-        Box::new(ok(self))
+            Ok(self)
+        })
     }
 
     /// Returns future that resolves to `Conn` with socket address stored in it.
     ///
     /// Do nothing if socket address is already in `Opts` or if `prefer_socket` is `false`.
-    fn read_socket(self) -> impl MyFuture<Self> {
+    async fn read_socket(self) -> Result<Self> {
         if self.inner.opts.get_prefer_socket() && self.inner.socket.is_none() {
-            A(self.first("SELECT @@socket").map(|(mut this, row_opt)| {
-                this.inner.socket = row_opt.unwrap_or((None,)).0;
-                this
-            }))
+            let (mut this, row_opt) = self.first("SELECT @@socket").await?;
+            this.inner.socket = row_opt.unwrap_or((None,)).0;
+            Ok(this)
         } else {
-            B(ok(self))
+            Ok(self)
         }
     }
 
     /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
-    fn read_max_allowed_packet(self) -> impl MyFuture<Self> {
-        self.first("SELECT @@max_allowed_packet")
-            .map(|(mut this, row_opt)| {
-                this.inner.max_allowed_packet = row_opt.unwrap_or((1024 * 1024 * 2,)).0;
-                this
-            })
+    async fn read_max_allowed_packet(self) -> Result<Self> {
+        let (mut this, row_opt) = self.first("SELECT @@max_allowed_packet").await?;
+        this.inner.max_allowed_packet = row_opt.unwrap_or((1024 * 1024 * 2,)).0;
+        Ok(this)
     }
 
     /// Returns future that resolves to `Conn` with `wait_timeout` stored in it.
-    fn read_wait_timeout(self) -> impl MyFuture<Self> {
-        self.first("SELECT @@wait_timeout")
-            .map(|(mut this, row_opt)| {
-                this.inner.wait_timeout = row_opt.unwrap_or((28800,)).0;
-                this
-            })
+    async fn read_wait_timeout(self) -> Result<Self> {
+        let (mut this, row_opt) = self.first("SELECT @@wait_timeout").await?;
+        this.inner.wait_timeout = row_opt.unwrap_or((28800,)).0;
+        Ok(this)
     }
 
     /// Returns true if time since last io exceeds wait_timeout (or conn_ttl if specified in opts).
@@ -491,56 +454,57 @@ impl Conn {
     }
 
     /// Returns future that resolves to a `Conn` with `COM_RESET_CONNECTION` executed on it.
-    pub fn reset(self) -> impl MyFuture<Conn> {
+    pub async fn reset(self) -> Result<Conn> {
         let pool = self.inner.pool.clone();
-        let fut = if self.inner.version > (5, 7, 2) {
-            let fut = self
-                .write_command_data(consts::Command::COM_RESET_CONNECTION, &[])
-                .and_then(|conn| conn.read_packet())
-                .map(|(conn, _)| conn);
-            (ok(pool), A(fut))
+        let mut conn = if self.inner.version > (5, 7, 2) {
+            self.write_command_data(consts::Command::COM_RESET_CONNECTION, &[])
+                .await?
+                .read_packet()
+                .await?
+                .0
         } else {
-            (ok(pool), B(Conn::new(self.inner.opts.clone())))
+            Conn::new(self.inner.opts.clone()).await?
         };
-        fut.into_future().map(|(pool, mut conn)| {
-            conn.inner.stmt_cache.clear();
-            conn.inner.pool = pool;
-            conn
-        })
+
+        conn.inner.stmt_cache.clear();
+        conn.inner.pool = pool;
+        Ok(conn)
     }
 
-    fn rollback_transaction(mut self) -> impl MyFuture<Self> {
+    async fn rollback_transaction(mut self) -> Result<Self> {
         assert!(self.inner.in_transaction);
         self.inner.in_transaction = false;
-        self.drop_query("ROLLBACK")
+        self.drop_query("ROLLBACK").await
     }
 
-    fn drop_result(mut self) -> impl MyFuture<Conn> {
+    async fn drop_result(mut self) -> Result<Conn> {
         match self.inner.has_result.take() {
-            Some((columns, None)) => A(B(query_result::assemble::<_, TextProtocol>(
-                self,
-                Some(columns),
-                None,
-            )
-            .drop_result())),
-            Some((columns, cached)) => A(A(query_result::assemble::<_, BinaryProtocol>(
-                self,
-                Some(columns),
-                cached,
-            )
-            .drop_result())),
-            None => B(ok(self)),
+            Some((columns, None)) => {
+                query_result::assemble::<_, TextProtocol>(self, Some(columns), None)
+                    .drop_result()
+                    .await
+            }
+            Some((columns, cached)) => {
+                query_result::assemble::<_, BinaryProtocol>(self, Some(columns), cached)
+                    .drop_result()
+                    .await
+            }
+            None => Ok(self),
         }
     }
 
-    fn cleanup(self) -> BoxFuture<Conn> {
-        if self.inner.has_result.is_some() {
-            Box::new(self.drop_result().and_then(Self::cleanup))
-        } else if self.inner.in_transaction {
-            Box::new(self.rollback_transaction().and_then(Self::cleanup))
-        } else {
-            Box::new(ok(self))
-        }
+    fn cleanup(self) -> Pin<Box<dyn Future<Output = Result<Conn>> + Send>> {
+        // NOTE: we need to box this since it may recurse
+        // see https://github.com/rust-lang/rust/issues/46415#issuecomment-528099782
+        Box::pin(async move {
+            if self.inner.has_result.is_some() {
+                self.drop_result().await?.cleanup().await
+            } else if self.inner.in_transaction {
+                self.rollback_transaction().await?.cleanup().await
+            } else {
+                Ok(self)
+            }
+        })
     }
 }
 
@@ -656,42 +620,10 @@ impl ConnectionLike for Conn {
 
 #[cfg(test)]
 mod test {
-    use futures::Future;
-
-    #[cfg(feature = "ssl")]
-    use crate::SslOpts;
     use crate::{
-        from_row, params, prelude::*, test_misc::DATABASE_URL, Conn, OptsBuilder,
-        TransactionOptions, WhiteListFsLocalInfileHandler,
+        from_row, params, prelude::*, test_misc::get_opts, Conn, OptsBuilder, TransactionOptions,
+        WhiteListFsLocalInfileHandler,
     };
-
-    /// Same as `tokio::run`, but will panic if future panics and will return the result
-    /// of future execution.
-    fn run<F, T, U>(future: F) -> Result<T, U>
-    where
-        F: Future<Item = T, Error = U> + Send + 'static,
-        T: Send + 'static,
-        U: Send + 'static,
-    {
-        let mut runtime = tokio::runtime::Runtime::new().unwrap();
-        let result = runtime.block_on(future);
-        runtime.shutdown_on_idle().wait().unwrap();
-        result
-    }
-
-    fn get_opts() -> OptsBuilder {
-        let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
-        // to suppress warning on unused mut
-        builder.stmt_cache_size(None);
-        #[cfg(feature = "ssl")]
-        {
-            let mut ssl_opts = SslOpts::default();
-            ssl_opts.set_danger_skip_domain_validation(true);
-            ssl_opts.set_danger_accept_invalid_certs(true);
-            builder.ssl_opts(ssl_opts);
-        }
-        builder
-    }
 
     #[test]
     fn opts_should_satisfy_send_and_sync() {
@@ -699,303 +631,264 @@ mod test {
         A(get_opts());
     }
 
-    #[test]
-    fn should_connect() {
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| Queryable::ping(conn))
-            .and_then(|conn| Queryable::disconnect(conn));
-
-        run(fut).unwrap();
+    #[tokio::test]
+    async fn should_connect() -> super::Result<()> {
+        Conn::new(get_opts())
+            .await?
+            .ping()
+            .await?
+            .disconnect()
+            .await?;
+        Ok(())
     }
 
     #[test]
     fn should_not_panic_if_dropped_without_tokio_runtime() {
         let fut = Conn::new(get_opts());
-        run(fut).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _connection = runtime.block_on(fut).unwrap();
+        runtime.shutdown_on_idle();
         // connection will drop here
     }
 
-    #[test]
-    fn should_execute_init_queries_on_new_connection() {
+    #[tokio::test]
+    async fn should_execute_init_queries_on_new_connection() -> super::Result<()> {
         let mut opts_builder = OptsBuilder::from_opts(get_opts());
         opts_builder.init(vec!["SET @a = 42", "SET @b = 'foo'"]);
-        let fut = Conn::new(opts_builder)
-            .and_then(|conn| Queryable::query(conn, "SELECT @a, @b"))
-            .and_then(|result| result.collect_and_drop::<(u8, String)>())
-            .and_then(|(conn, rows)| Queryable::disconnect(conn).map(|_| rows))
-            .map(|result| assert_eq!(result, vec![(42, "foo".into())]));
-
-        run(fut).unwrap();
+        let (conn, result) = Conn::new(opts_builder)
+            .await?
+            .query("SELECT @a, @b")
+            .await?
+            .collect_and_drop::<(u8, String)>()
+            .await?;
+        conn.disconnect().await?;
+        assert_eq!(result, vec![(42, "foo".into())]);
+        Ok(())
     }
 
-    #[test]
-    fn should_reset_the_connection() {
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| conn.drop_exec("SELECT ?", (1,)))
-            .and_then(|conn| conn.reset())
-            .and_then(|conn| conn.drop_exec("SELECT ?", (1,)))
-            .and_then(|conn| conn.disconnect());
-
-        run(fut).unwrap();
+    #[tokio::test]
+    async fn should_reset_the_connection() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
+        let conn = conn.drop_exec("SELECT ?", (1,)).await?;
+        let conn = conn.reset().await?;
+        let conn = conn.drop_exec("SELECT ?", (1,)).await?;
+        conn.disconnect().await?;
+        Ok(())
     }
 
-    #[test]
-    fn should_not_cache_statements_if_stmt_cache_size_is_zero() {
+    #[tokio::test]
+    async fn should_not_cache_statements_if_stmt_cache_size_is_zero() -> super::Result<()> {
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.stmt_cache_size(0);
-        let fut = Conn::new(opts)
-            .and_then(|conn| conn.drop_exec("DO ?", (1,)))
-            .and_then(|conn| {
-                conn.prepare("DO 2").and_then(|stmt| {
-                    stmt.first::<_, (crate::Value,)>(())
-                        .and_then(|(stmt, _)| stmt.first::<_, (crate::Value,)>(()))
-                        .and_then(|(stmt, _)| stmt.close())
-                })
-            })
-            .and_then(|conn| {
-                conn.prep_exec("DO 3", ())
-                    .and_then(|result| result.drop_result())
-            })
-            .and_then(|conn| conn.batch_exec("DO 4", vec![(), ()]))
-            .and_then(|conn| conn.first_exec::<_, _, (u8,)>("DO 5", ()))
-            .and_then(|(conn, _)| conn.first("SHOW SESSION STATUS LIKE 'Com_stmt_close';"))
-            .and_then(|(conn, row)| {
-                assert_eq!(from_row::<(String, usize)>(row.unwrap()).1, 5);
-                conn.disconnect()
-            });
-
-        run(fut).unwrap();
+        let conn = Conn::new(opts).await?;
+        let conn = conn.drop_exec("DO ?", (1,)).await?;
+        let stmt = conn.prepare("DO 2").await?;
+        let (stmt, _) = stmt.first::<_, (crate::Value,)>(()).await?;
+        let (stmt, _) = stmt.first::<_, (crate::Value,)>(()).await?;
+        let conn = stmt.close().await?;
+        let conn = conn.prep_exec("DO 3", ()).await?.drop_result().await?;
+        let conn = conn.batch_exec("DO 4", vec![(), ()]).await?;
+        let (conn, _) = conn.first_exec::<_, _, (u8,)>("DO 5", ()).await?;
+        let (conn, row) = conn
+            .first("SHOW SESSION STATUS LIKE 'Com_stmt_close';")
+            .await?;
+        assert_eq!(from_row::<(String, usize)>(row.unwrap()).1, 5);
+        conn.disconnect().await?;
+        Ok(())
     }
 
-    #[test]
-    fn should_hold_stmt_cache_size_bound() {
+    #[tokio::test]
+    async fn should_hold_stmt_cache_size_bound() -> super::Result<()> {
         use crate::connection_like::ConnectionLike;
 
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.stmt_cache_size(3);
-        let fut = Conn::new(opts)
-            .and_then(|conn| conn.drop_exec("DO 1", ()))
-            .and_then(|conn| conn.drop_exec("DO 2", ()))
-            .and_then(|conn| conn.drop_exec("DO 3", ()))
-            .and_then(|conn| conn.drop_exec("DO 1", ()))
-            .and_then(|conn| conn.drop_exec("DO 4", ()))
-            .and_then(|conn| conn.drop_exec("DO 3", ()))
-            .and_then(|conn| conn.drop_exec("DO 5", ()))
-            .and_then(|conn| conn.drop_exec("DO 6", ()))
-            .and_then(|conn| conn.first("SHOW SESSION STATUS LIKE 'Com_stmt_close';"))
-            .and_then(|(conn, row_opt)| {
-                let (_, count): (String, usize) = row_opt.unwrap();
-                assert_eq!(count, 3);
-                let order = conn
-                    .stmt_cache_ref()
-                    .iter()
-                    .map(Clone::clone)
-                    .collect::<Vec<String>>();
-                assert_eq!(order, &["DO 3", "DO 5", "DO 6"]);
-                conn.disconnect()
-            });
-
-        run(fut).unwrap();
+        let conn = Conn::new(opts)
+            .await?
+            .drop_exec("DO 1", ())
+            .await?
+            .drop_exec("DO 2", ())
+            .await?
+            .drop_exec("DO 3", ())
+            .await?
+            .drop_exec("DO 1", ())
+            .await?
+            .drop_exec("DO 4", ())
+            .await?
+            .drop_exec("DO 3", ())
+            .await?
+            .drop_exec("DO 5", ())
+            .await?
+            .drop_exec("DO 6", ())
+            .await?;
+        let (conn, row_opt) = conn
+            .first("SHOW SESSION STATUS LIKE 'Com_stmt_close';")
+            .await?;
+        let (_, count): (String, usize) = row_opt.unwrap();
+        assert_eq!(count, 3);
+        let order = conn
+            .stmt_cache_ref()
+            .iter()
+            .map(Clone::clone)
+            .collect::<Vec<String>>();
+        assert_eq!(order, &["DO 3", "DO 5", "DO 6"]);
+        conn.disconnect().await?;
+        Ok(())
     }
 
-    #[test]
-    fn should_perform_queries() {
+    #[tokio::test]
+    async fn should_perform_queries() -> super::Result<()> {
         let long_string = ::std::iter::repeat('A')
             .take(18 * 1024 * 1024)
             .collect::<String>();
-        let long_string_clone = long_string.clone();
-        let fut = Conn::new(get_opts())
-            .and_then(move |conn| {
-                Queryable::query(conn, format!(r"SELECT '{}', 231", long_string_clone))
+        let conn = Conn::new(get_opts()).await?;
+        let result = conn
+            .query(format!(r"SELECT '{}', 231", long_string))
+            .await?;
+        let (conn, result) = result
+            .reduce_and_drop(vec![], move |mut acc, row| {
+                acc.push(from_row(row));
+                acc
             })
-            .and_then(move |result| {
-                result.reduce_and_drop(vec![], move |mut acc, row| {
-                    acc.push(from_row(row));
-                    acc
-                })
-            })
-            .and_then(move |(conn, out)| Queryable::disconnect(conn).map(|_| out))
-            .map(move |result| {
-                assert_eq!((long_string, 231), result[0]);
-            });
-
-        run(fut).unwrap();
+            .await?;
+        conn.disconnect().await?;
+        assert_eq!((long_string, 231), result[0]);
+        Ok(())
     }
 
-    #[test]
-    fn should_drop_query() {
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| {
-                conn.drop_query("CREATE TEMPORARY TABLE tmp (id int DEFAULT 10, name text)")
-            })
-            .and_then(|conn| Queryable::drop_query(conn, "INSERT INTO tmp VALUES (1, 'foo')"))
-            .and_then(|conn| Queryable::first::<_, (u8,)>(conn, "SELECT COUNT(*) FROM tmp"))
-            .and_then(|(conn, row)| conn.disconnect().map(move |_| row))
-            .map(|result| assert_eq!(result, Some((1,))));
-
-        run(fut).unwrap();
+    #[tokio::test]
+    async fn should_drop_query() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
+        let (conn, result) = conn
+            .drop_query("CREATE TEMPORARY TABLE tmp (id int DEFAULT 10, name text)")
+            .await?
+            .drop_query("INSERT INTO tmp VALUES (1, 'foo')")
+            .await?
+            .first::<_, (u8,)>("SELECT COUNT(*) FROM tmp")
+            .await?;
+        conn.disconnect().await?;
+        assert_eq!(result, Some((1,)));
+        Ok(())
     }
 
-    #[test]
-    fn should_try_collect() {
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| {
-                Queryable::query(
-                    conn,
-                    r"SELECT 'hello', 123
+    #[tokio::test]
+    async fn should_try_collect() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
+        let result = conn
+            .query(
+                r"SELECT 'hello', 123
                     UNION ALL
                     SELECT 'world', 'bar'
                     UNION ALL
                     SELECT 'hello', 123
                 ",
-                )
-            })
-            .and_then(|result| result.try_collect::<(String, u8)>())
-            .and_then(|(result, mut rows)| {
-                assert!(rows.pop().unwrap().is_ok());
-                assert!(rows.pop().unwrap().is_err());
-                assert!(rows.pop().unwrap().is_ok());
-                result.drop_result()
-            })
-            .and_then(Conn::disconnect);
-
-        run(fut).unwrap()
+            )
+            .await?;
+        let (result, mut rows) = result.try_collect::<(String, u8)>().await?;
+        assert!(rows.pop().unwrap().is_ok());
+        assert!(rows.pop().unwrap().is_err());
+        assert!(rows.pop().unwrap().is_ok());
+        let conn = result.drop_result().await?;
+        conn.disconnect().await?;
+        Ok(())
     }
 
-    #[test]
-    fn should_try_collect_and_drop() {
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| {
-                Queryable::query(
-                    conn,
-                    r"SELECT 'hello', 123
+    #[tokio::test]
+    async fn should_try_collect_and_drop() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
+        let (conn, mut rows) = conn
+            .query(
+                r"SELECT 'hello', 123
                     UNION ALL
                     SELECT 'world', 'bar'
                     UNION ALL
                     SELECT 'hello', 123;
                     SELECT 'foo', 255;
                 ",
-                )
-            })
-            .and_then(|result| result.try_collect_and_drop::<(String, u8)>())
-            .and_then(|(conn, mut rows)| {
-                assert!(rows.pop().unwrap().is_ok());
-                assert!(rows.pop().unwrap().is_err());
-                assert!(rows.pop().unwrap().is_ok());
-                conn.disconnect()
-            });
-
-        run(fut).unwrap()
+            )
+            .await?
+            .try_collect_and_drop::<(String, u8)>()
+            .await?;
+        assert!(rows.pop().unwrap().is_ok());
+        assert!(rows.pop().unwrap().is_err());
+        assert!(rows.pop().unwrap().is_ok());
+        conn.disconnect().await?;
+        Ok(())
     }
 
-    #[test]
-    fn should_handle_mutliresult_set() {
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| {
-                Queryable::query(
-                    conn,
-                    r"SELECT 'hello', 123
+    #[tokio::test]
+    async fn should_handle_mutliresult_set() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
+        let result = conn
+            .query(
+                r"SELECT 'hello', 123
                     UNION ALL
                     SELECT 'world', 231;
                     SELECT 'foo', 255;
                 ",
-                )
-            })
-            .and_then(|result| result.collect::<(String, u8)>())
-            .and_then(|(result, rows_1)| (result.collect_and_drop(), Ok(rows_1)))
-            .and_then(|((conn, rows_2), rows_1)| {
-                Queryable::disconnect(conn).map(|_| vec![rows_1, rows_2])
-            })
-            .map(|rows_vec| {
-                assert_eq!(rows_vec.len(), 2);
-                for (i, rows) in rows_vec.into_iter().enumerate() {
-                    if i == 0 {
-                        assert_eq!((String::from("hello"), 123), rows[0]);
-                        assert_eq!((String::from("world"), 231), rows[1]);
-                    }
-                    if i == 1 {
-                        assert_eq!((String::from("foo"), 255), rows[0]);
-                    }
-                }
-            });
+            )
+            .await?;
+        let (result, rows_1) = result.collect::<(String, u8)>().await?;
+        let (conn, rows_2) = result.collect_and_drop().await?;
+        conn.disconnect().await?;
 
-        run(fut).unwrap();
+        assert_eq!((String::from("hello"), 123), rows_1[0]);
+        assert_eq!((String::from("world"), 231), rows_1[1]);
+        assert_eq!((String::from("foo"), 255), rows_2[0]);
+        Ok(())
     }
 
-    #[test]
-    fn should_map_resultset() {
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| {
-                Queryable::query(
-                    conn,
-                    r"
+    #[tokio::test]
+    async fn should_map_resultset() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
+        let result = conn
+            .query(
+                r"
                     SELECT 'hello', 123
                     UNION ALL
                     SELECT 'world', 231;
                     SELECT 'foo', 255;
                 ",
-                )
-            })
-            .and_then(|result| result.map(|row| from_row::<(String, u8)>(row)))
-            .and_then(|(result, rows_1)| (result.map_and_drop(from_row), Ok(rows_1)))
-            .and_then(|((conn, rows_2), rows_1)| {
-                Queryable::disconnect(conn).map(|_| vec![rows_1, rows_2])
-            })
-            .map(|rows_vec| {
-                assert_eq!(rows_vec.len(), 2);
-                for (i, rows) in rows_vec.into_iter().enumerate() {
-                    if i == 0 {
-                        assert_eq!((String::from("hello"), 123), rows[0]);
-                        assert_eq!((String::from("world"), 231), rows[1]);
-                    }
-                    if i == 1 {
-                        assert_eq!((String::from("foo"), 255), rows[0]);
-                    }
-                }
-            });
+            )
+            .await?;
 
-        run(fut).unwrap();
+        let (result, rows_1) = result.map(|row| from_row::<(String, u8)>(row)).await?;
+        let (conn, rows_2) = result.map_and_drop(from_row).await?;
+        conn.disconnect().await?;
+
+        assert_eq!((String::from("hello"), 123), rows_1[0]);
+        assert_eq!((String::from("world"), 231), rows_1[1]);
+        assert_eq!((String::from("foo"), 255), rows_2[0]);
+        Ok(())
     }
 
-    #[test]
-    fn should_reduce_resultset() {
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| {
-                Queryable::query(
-                    conn,
-                    r"SELECT 5
+    #[tokio::test]
+    async fn should_reduce_resultset() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
+        let result = conn
+            .query(
+                r"SELECT 5
                     UNION ALL
                     SELECT 6;
                     SELECT 7;",
-                )
+            )
+            .await?;
+        let (result, reduced) = result
+            .reduce(0, |mut acc, row| {
+                acc += from_row::<i32>(row);
+                acc
             })
-            .and_then(|result| {
-                result.reduce(0, |mut acc, row| {
-                    acc += from_row::<i32>(row);
-                    acc
-                })
-            })
-            .and_then(|(result, reduced)| (result.collect_and_drop(), Ok(reduced)))
-            .and_then(|((conn, rows_2), reduced)| {
-                Queryable::disconnect(conn).map(move |_| vec![vec![reduced], rows_2])
-            })
-            .map(|rows_vec| {
-                assert_eq!(rows_vec.len(), 2);
-                for (i, rows) in rows_vec.into_iter().enumerate() {
-                    if i == 0 {
-                        assert_eq!(11, rows[0]);
-                    }
-                    if i == 1 {
-                        assert_eq!(7, rows[0]);
-                    }
-                }
-            });
-
-        run(fut).unwrap();
+            .await?;
+        let (conn, rows_2) = result.collect_and_drop::<i32>().await?;
+        conn.disconnect().await?;
+        assert_eq!(11, reduced);
+        assert_eq!(7, rows_2[0]);
+        Ok(())
     }
 
-    #[test]
-    fn should_handle_multi_result_sets_where_some_results_have_no_output() {
+    #[tokio::test]
+    async fn should_handle_multi_result_sets_where_some_results_have_no_output() -> super::Result<()>
+    {
         const QUERY: &str = r"SELECT 1;
             UPDATE time_zone SET Time_zone_id = 1 WHERE Time_zone_id = 1;
             SELECT 2;
@@ -1004,40 +897,38 @@ mod test {
             UPDATE time_zone SET Time_zone_id = 1 WHERE Time_zone_id = 1;
             SELECT 4;";
 
-        let fut = Conn::new(get_opts())
-            .and_then(|c| {
-                c.start_transaction(TransactionOptions::new())
-                    .and_then(|t| t.drop_query(QUERY))
-                    .and_then(|t| t.query(QUERY).and_then(|r| r.collect_and_drop::<u8>()))
-                    .and_then(|(t, out)| {
-                        assert_eq!(vec![1], out);
-                        t.query(QUERY)
-                            .and_then(|r| r.for_each_and_drop(|x| assert_eq!(from_row::<u8>(x), 1)))
-                    })
-                    .and_then(|t| {
-                        t.query(QUERY)
-                            .and_then(|r| r.map_and_drop(|row| from_row::<u8>(row)))
-                    })
-                    .and_then(|(t, out)| {
-                        assert_eq!(vec![1], out);
-                        t.query(QUERY)
-                            .and_then(|r| r.reduce_and_drop(0u8, |acc, x| acc + from_row::<u8>(x)))
-                    })
-                    .and_then(|(t, out)| {
-                        assert_eq!(1, out);
-                        t.query(QUERY).and_then(|r| r.drop_result())
-                    })
-                    .and_then(|t| t.commit())
-            })
-            .and_then(|c| c.first_exec::<_, _, u8>("SELECT 1", ()))
-            .and_then(|(c, output)| c.disconnect().map(move |_| output))
-            .map(|result| assert_eq!(result, Some(1)));
-
-        run(fut).unwrap();
+        let c = Conn::new(get_opts()).await?;
+        let c = c
+            .drop_query("CREATE TEMPORARY TABLE time_zone (Time_zone_id INT)")
+            .await
+            .unwrap();
+        let t = c.start_transaction(TransactionOptions::new()).await?;
+        let t = t.drop_query(QUERY).await?;
+        let r = t.query(QUERY).await?;
+        let (t, out) = r.collect_and_drop::<u8>().await?;
+        assert_eq!(vec![1], out);
+        let r = t.query(QUERY).await?;
+        let t = r
+            .for_each_and_drop(|x| assert_eq!(from_row::<u8>(x), 1))
+            .await?;
+        let r = t.query(QUERY).await?;
+        let (t, out) = r.map_and_drop(|row| from_row::<u8>(row)).await?;
+        assert_eq!(vec![1], out);
+        let r = t.query(QUERY).await?;
+        let (t, out) = r
+            .reduce_and_drop(0u8, |acc, x| acc + from_row::<u8>(x))
+            .await?;
+        assert_eq!(1, out);
+        let t = t.query(QUERY).await?.drop_result().await?;
+        let c = t.commit().await?;
+        let (c, result) = c.first_exec::<_, _, u8>("SELECT 1", ()).await?;
+        c.disconnect().await?;
+        assert_eq!(result, Some(1));
+        Ok(())
     }
 
-    #[test]
-    fn should_iterate_over_resultset() {
+    #[tokio::test]
+    async fn should_iterate_over_resultset() -> super::Result<()> {
         use std::sync::{
             atomic::{AtomicUsize, Ordering},
             Arc,
@@ -1045,212 +936,174 @@ mod test {
 
         let acc = Arc::new(AtomicUsize::new(0));
 
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| {
-                Queryable::query(
-                    conn,
-                    r"SELECT 2
+        let conn = Conn::new(get_opts()).await?;
+        let result = conn
+            .query(
+                r"SELECT 2
                     UNION ALL
                     SELECT 3;
                     SELECT 5;",
-                )
-            })
-            .and_then({
+            )
+            .await?;
+        let result = result
+            .for_each({
                 let acc = acc.clone();
-                move |result| {
-                    result.for_each({
-                        let acc = acc.clone();
-                        move |row| {
-                            acc.fetch_add(from_row::<usize>(row), Ordering::SeqCst);
-                        }
-                    })
+                move |row| {
+                    acc.fetch_add(from_row::<usize>(row), Ordering::SeqCst);
                 }
             })
-            .and_then({
+            .await?;
+        let conn = result
+            .for_each_and_drop({
                 let acc = acc.clone();
-                move |result| {
-                    result.for_each_and_drop({
-                        let acc = acc.clone();
-                        move |row| {
-                            acc.fetch_add(from_row::<usize>(row), Ordering::SeqCst);
-                        }
-                    })
+                move |row| {
+                    acc.fetch_add(from_row::<usize>(row), Ordering::SeqCst);
                 }
             })
-            .and_then(Queryable::disconnect)
-            .map(move |_| assert_eq!(acc.load(Ordering::SeqCst), 10));
-
-        run(fut).unwrap();
+            .await?;
+        conn.disconnect().await?;
+        assert_eq!(acc.load(Ordering::SeqCst), 10);
+        Ok(())
     }
 
-    #[test]
-    fn should_prepare_statement() {
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| Queryable::prepare(conn, r"SELECT ?"))
-            .and_then(|stmt| stmt.close())
-            .and_then(|conn| conn.disconnect());
+    #[tokio::test]
+    async fn should_prepare_statement() -> super::Result<()> {
+        Conn::new(get_opts())
+            .await?
+            .prepare(r"SELECT ?")
+            .await?
+            .close()
+            .await?
+            .disconnect()
+            .await?;
 
-        run(fut).unwrap();
-
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| Queryable::prepare(conn, r"SELECT :foo"))
-            .and_then(|stmt| stmt.close())
-            .and_then(|conn| conn.disconnect());
-
-        run(fut).unwrap();
+        Conn::new(get_opts())
+            .await?
+            .prepare(r"SELECT :foo")
+            .await?
+            .close()
+            .await?
+            .disconnect()
+            .await?;
+        Ok(())
     }
 
-    #[test]
-    fn should_execute_statement() {
+    #[tokio::test]
+    async fn should_execute_statement() -> super::Result<()> {
         let long_string = ::std::iter::repeat('A')
             .take(18 * 1024 * 1024)
             .collect::<String>();
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| Queryable::prepare(conn, r"SELECT ?"))
-            .and_then({
-                let long_string = long_string.clone();
-                move |stmt| stmt.execute((long_string,))
+        let conn = Conn::new(get_opts()).await?;
+        let stmt = conn.prepare(r"SELECT ?").await?;
+        let result = stmt.execute((&long_string,)).await?;
+        let (stmt, mut mapped) = result
+            .map_and_drop(|row| from_row::<(String,)>(row))
+            .await?;
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped.pop(), Some((long_string,)));
+        let result = stmt.execute((42,)).await?;
+        let (stmt, collected) = result.collect_and_drop::<(u8,)>().await?;
+        assert_eq!(collected, vec![(42u8,)]);
+        let result = stmt.execute((8,)).await?;
+        let (stmt, reduced) = result
+            .reduce_and_drop(2, |mut acc, row| {
+                acc += from_row::<i32>(row);
+                acc
             })
-            .and_then(|result| result.map_and_drop(|row| from_row::<(String,)>(row)))
-            .and_then(|(stmt, mut mapped)| {
-                assert_eq!(mapped.len(), 1);
-                assert_eq!(mapped.pop(), Some((long_string,)));
-                stmt.execute((42,))
-            })
-            .and_then(|result| result.collect_and_drop::<(u8,)>())
-            .and_then(|(stmt, collected)| {
-                assert_eq!(collected, vec![(42u8,)]);
-                stmt.execute((8,))
-            })
-            .and_then(|result| {
-                result.reduce_and_drop(2, |mut acc, row| {
-                    acc += from_row::<i32>(row);
-                    acc
-                })
-            })
-            .and_then(|(stmt, reduced)| {
-                stmt.close()
-                    .and_then(|conn| conn.disconnect())
-                    .map(move |_| reduced)
-            })
-            .map(|output| assert_eq!(output, 10));
+            .await?;
+        stmt.close().await?.disconnect().await?;
+        assert_eq!(reduced, 10);
 
-        run(fut).unwrap();
-
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| Queryable::prepare(conn, r"SELECT :foo, :bar, :foo, 3"))
-            .and_then(|stmt| stmt.execute(params! { "foo" => "quux", "bar" => "baz" }))
-            .and_then(|result| {
-                result.map_and_drop(|row| from_row::<(String, String, String, u8)>(row))
+        let conn = Conn::new(get_opts()).await?;
+        let stmt = conn.prepare(r"SELECT :foo, :bar, :foo, 3").await?;
+        let result = stmt
+            .execute(params! { "foo" => "quux", "bar" => "baz" })
+            .await?;
+        let (stmt, mut mapped) = result
+            .map_and_drop(|row| from_row::<(String, String, String, u8)>(row))
+            .await?;
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(
+            mapped.pop(),
+            Some(("quux".into(), "baz".into(), "quux".into(), 3))
+        );
+        let result = stmt.execute(params! { "foo" => 2, "bar" => 3 }).await?;
+        let (stmt, collected) = result.collect_and_drop::<(u8, u8, u8, u8)>().await?;
+        assert_eq!(collected, vec![(2, 3, 2, 3)]);
+        let result = stmt.execute(params! { "foo" => 2, "bar" => 3 }).await?;
+        let (stmt, reduced) = result
+            .reduce_and_drop(0, |acc, row| {
+                let (a, b, c, d): (u8, u8, u8, u8) = from_row(row);
+                acc + a + b + c + d
             })
-            .and_then(|(stmt, mut mapped)| {
-                assert_eq!(mapped.len(), 1);
-                assert_eq!(
-                    mapped.pop(),
-                    Some(("quux".into(), "baz".into(), "quux".into(), 3))
-                );
-                stmt.execute(params! { "foo" => 2, "bar" => 3 })
-            })
-            .and_then(|result| result.collect_and_drop::<(u8, u8, u8, u8)>())
-            .and_then(|(stmt, collected)| {
-                assert_eq!(collected, vec![(2, 3, 2, 3)]);
-                stmt.execute(params! { "foo" => 2, "bar" => 3 })
-            })
-            .and_then(|result| {
-                result.reduce_and_drop(0, |acc, row| {
-                    let (a, b, c, d): (u8, u8, u8, u8) = from_row(row);
-                    acc + a + b + c + d
-                })
-            })
-            .and_then(|(stmt, reduced)| {
-                stmt.close()
-                    .and_then(|conn| conn.disconnect())
-                    .map(move |_| reduced)
-            })
-            .map(|output| assert_eq!(output, 10));
-
-        run(fut).unwrap();
+            .await?;
+        stmt.close().await?.disconnect().await?;
+        assert_eq!(reduced, 10);
+        Ok(())
     }
 
-    #[test]
-    fn should_prep_exec_statement() {
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| {
-                Queryable::prep_exec(conn, r"SELECT :a, :b, :a", params! { "a" => 2, "b" => 3 })
+    #[tokio::test]
+    async fn should_prep_exec_statement() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
+        let result = conn
+            .prep_exec(r"SELECT :a, :b, :a", params! { "a" => 2, "b" => 3 })
+            .await?;
+        let (conn, output) = result
+            .map_and_drop(|row| {
+                let (a, b, c): (u8, u8, u8) = from_row(row);
+                a * b * c
             })
-            .and_then(|result| {
-                result.map_and_drop(|row| {
-                    let (a, b, c): (u8, u8, u8) = from_row(row);
-                    a * b * c
-                })
-            })
-            .and_then(|(conn, output)| Queryable::disconnect(conn).map(move |_| output[0]))
-            .map(|output| assert_eq!(output, 12u8));
-
-        run(fut).unwrap();
+            .await?;
+        conn.disconnect().await?;
+        assert_eq!(output[0], 12u8);
+        Ok(())
     }
 
-    #[test]
-    fn should_first_exec_statement() {
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| {
-                Queryable::first_exec(
-                    conn,
-                    r"SELECT :a UNION ALL SELECT :b",
-                    params! { "a" => 2, "b" => 3 },
-                )
-            })
-            .and_then(|(conn, row_opt): (_, Option<(u8,)>)| {
-                Queryable::disconnect(conn).map(move |_| row_opt.unwrap())
-            })
-            .map(|output| assert_eq!(output, (2u8,)));
-
-        run(fut).unwrap();
+    #[tokio::test]
+    async fn should_first_exec_statement() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
+        let (conn, output): (_, Option<(u8,)>) = conn
+            .first_exec(
+                r"SELECT :a UNION ALL SELECT :b",
+                params! { "a" => 2, "b" => 3 },
+            )
+            .await?;
+        conn.disconnect().await?;
+        assert_eq!(output.unwrap(), (2u8,));
+        Ok(())
     }
 
-    #[test]
-    fn should_run_transactions() {
-        let fut = Conn::new(get_opts())
-            .and_then(|conn| {
-                Queryable::drop_query(conn, "CREATE TEMPORARY TABLE tmp (id INT, name TEXT)")
-            })
-            .and_then(|conn| Queryable::start_transaction(conn, Default::default()))
-            .and_then(|transaction| {
-                Queryable::drop_query(transaction, "INSERT INTO tmp VALUES (1, 'foo'), (2, 'bar')")
-            })
-            .and_then(|transaction| transaction.commit())
-            .and_then(|conn| Queryable::first(conn, "SELECT COUNT(*) FROM tmp"))
-            .map(|(conn, output_opt)| {
-                assert_eq!(output_opt, Some((2u8,)));
-                conn
-            })
-            .and_then(|conn| Queryable::start_transaction(conn, Default::default()))
-            .and_then(|transaction| {
-                Queryable::drop_query(
-                    transaction,
-                    "INSERT INTO tmp VALUES (3, 'baz'), (4, 'quux')",
-                )
-            })
-            .and_then(|transaction| {
-                Queryable::first_exec(transaction, "SELECT COUNT(*) FROM tmp", ())
-            })
-            .map(|(transaction, output_opt)| {
-                assert_eq!(output_opt, Some((4u8,)));
-                transaction
-            })
-            .and_then(|transaction| transaction.rollback())
-            .and_then(|conn| Queryable::first(conn, "SELECT COUNT(*) FROM tmp"))
-            .map(|(conn, output_opt)| {
-                assert_eq!(output_opt, Some((2u8,)));
-                conn
-            })
-            .and_then(Queryable::disconnect);
-
-        run(fut).unwrap();
+    #[tokio::test]
+    async fn should_run_transactions() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
+        let conn = conn
+            .drop_query("CREATE TEMPORARY TABLE tmp (id INT, name TEXT)")
+            .await?;
+        let transaction = conn.start_transaction(Default::default()).await?;
+        let conn = transaction
+            .drop_query("INSERT INTO tmp VALUES (1, 'foo'), (2, 'bar')")
+            .await?
+            .commit()
+            .await?;
+        let (conn, output_opt) = conn.first("SELECT COUNT(*) FROM tmp").await?;
+        assert_eq!(output_opt, Some((2u8,)));
+        let transaction = conn.start_transaction(Default::default()).await?;
+        let transaction = transaction
+            .drop_query("INSERT INTO tmp VALUES (3, 'baz'), (4, 'quux')")
+            .await?;
+        let (t, output_opt) = transaction
+            .first_exec("SELECT COUNT(*) FROM tmp", ())
+            .await?;
+        assert_eq!(output_opt, Some((4u8,)));
+        let conn = t.rollback().await?;
+        let (conn, output_opt) = conn.first("SELECT COUNT(*) FROM tmp").await?;
+        assert_eq!(output_opt, Some((2u8,)));
+        conn.disconnect().await?;
+        Ok(())
     }
 
-    #[test]
-    fn should_handle_local_infile() {
+    #[tokio::test]
+    async fn should_handle_local_infile() -> super::Result<()> {
         use std::io::Write;
 
         let mut opts = OptsBuilder::from_opts(get_opts());
@@ -1258,55 +1111,56 @@ mod test {
             &["local_infile.txt"][..],
         )));
 
-        let fut = Conn::new(opts)
-            .and_then(|conn| Queryable::drop_query(conn, "CREATE TEMPORARY TABLE tmp (a TEXT);"))
-            .and_then(|conn| {
-                let mut file = ::std::fs::File::create("local_infile.txt").unwrap();
-                let _ = file.write(b"AAAAAA\n");
-                let _ = file.write(b"BBBBBB\n");
-                let _ = file.write(b"CCCCCC\n");
-                Queryable::drop_query(
-                    conn,
-                    "LOAD DATA LOCAL INFILE 'local_infile.txt' INTO TABLE tmp;",
-                )
-            })
-            .and_then(|conn| Queryable::prep_exec(conn, "SELECT * FROM tmp;", ()))
-            .and_then(|result| result.map_and_drop(|row| from_row::<(String,)>(row).0))
-            .and_then(|(conn, result)| {
-                assert_eq!(result.len(), 3);
-                assert_eq!(result[0], "AAAAAA");
-                assert_eq!(result[1], "BBBBBB");
-                assert_eq!(result[2], "CCCCCC");
-                Queryable::disconnect(conn)
-            })
-            .then(|x| {
-                let _ = ::std::fs::remove_file("local_infile.txt");
-                x
-            })
-            .then(|result| match result {
-                Err(err) => match err {
-                    crate::error::Error::Server(ref err) if err.code == 1148 => {
-                        // The used command is not allowed with this MySQL version
-                        Ok(())
-                    }
-                    _ => Err(err),
-                },
-                _ => Ok(()),
-            });
+        let conn = Conn::new(opts).await?;
+        let conn = conn
+            .drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);")
+            .await?;
 
-        run(fut).unwrap();
+        let mut file = ::std::fs::File::create("local_infile.txt").unwrap();
+        let _ = file.write(b"AAAAAA\n");
+        let _ = file.write(b"BBBBBB\n");
+        let _ = file.write(b"CCCCCC\n");
+        let conn = match conn
+            .drop_query("LOAD DATA LOCAL INFILE 'local_infile.txt' INTO TABLE tmp;")
+            .await
+        {
+            Ok(conn) => conn,
+            Err(super::Error::Server(ref err)) if err.code == 1148 => {
+                // The used command is not allowed with this MySQL version
+                return Ok(());
+            }
+            e @ Err(_) => e.unwrap(),
+        };
+        let (conn, result) = conn
+            .prep_exec("SELECT * FROM tmp;", ())
+            .await?
+            .map_and_drop(|row| from_row::<(String,)>(row).0)
+            .await?;
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], "AAAAAA");
+        assert_eq!(result[1], "BBBBBB");
+        assert_eq!(result[2], "CCCCCC");
+        let result = conn.disconnect().await;
+        let _ = ::std::fs::remove_file("local_infile.txt");
+        if let Err(crate::error::Error::Server(ref err)) = result {
+            if err.code == 1148 {
+                // The used command is not allowed with this MySQL version
+                return Ok(());
+            }
+        }
+        result.unwrap();
+        Ok(())
     }
 
     #[cfg(feature = "nightly")]
     mod bench {
-        use futures::Future;
+        use futures_util::try_future::TryFutureExt;
 
-        use super::get_opts;
-        use crate::{conn::Conn, queryable::Queryable};
+        use crate::{conn::Conn, queryable::Queryable, test_misc::get_opts};
 
         #[bench]
         fn simple_exec(bencher: &mut test::Bencher) {
-            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
             let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
 
             bencher.iter(|| {
@@ -1317,12 +1171,12 @@ mod test {
             runtime
                 .block_on(conn_opt.take().unwrap().disconnect())
                 .unwrap();
-            runtime.shutdown_on_idle().wait().unwrap();
+            runtime.shutdown_on_idle();
         }
 
         #[bench]
         fn select_large_string(bencher: &mut test::Bencher) {
-            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
             let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
 
             bencher.iter(|| {
@@ -1337,12 +1191,12 @@ mod test {
             runtime
                 .block_on(conn_opt.take().unwrap().disconnect())
                 .unwrap();
-            runtime.shutdown_on_idle().wait().unwrap();
+            runtime.shutdown_on_idle();
         }
 
         #[bench]
         fn prepared_exec(bencher: &mut test::Bencher) {
-            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
             let mut stmt_opt = Some(
                 runtime
                     .block_on(Conn::new(get_opts()).and_then(|conn| conn.prepare("DO 1")))
@@ -1367,12 +1221,12 @@ mod test {
                         .and_then(|conn| conn.disconnect()),
                 )
                 .unwrap();
-            runtime.shutdown_on_idle().wait().unwrap();
+            runtime.shutdown_on_idle();
         }
 
         #[bench]
         fn prepare_and_exec(bencher: &mut test::Bencher) {
-            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
             let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
 
             bencher.iter(|| {
@@ -1392,7 +1246,7 @@ mod test {
             runtime
                 .block_on(conn_opt.take().unwrap().disconnect())
                 .unwrap();
-            runtime.shutdown_on_idle().wait().unwrap();
+            runtime.shutdown_on_idle();
         }
     }
 }
