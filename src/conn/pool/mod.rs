@@ -174,8 +174,9 @@ impl Future for Recycler {
         self.inner.wake(readied);
 
         if self.inner.closed.load(atomic::Ordering::Acquire) {
-            // since there are no more Pools, we also know that no-one is waiting anymore,
-            // so we don't have to worry about calling wake more times
+            // `DisconnectPool` might still wait to be woken up.
+            self.inner.wake(usize::max_value());
+
             Poll::Ready(())
         } else {
             Poll::Pending
@@ -192,10 +193,25 @@ struct Inner {
     extra_wakeups: atomic::AtomicUsize,
 
     // only used to spawn the recycler the first time we're in async context
-    maker: Mutex<Option<mpsc::UnboundedReceiver<Option<Conn>>>>,
+    maker: Mutex<Option<(mpsc::UnboundedReceiver<Option<Conn>>, usize)>>,
 }
 
 impl Inner {
+    fn spawn_recycler_if_needed(self: Arc<Self>) {
+        let mut lock = self.maker.lock().unwrap();
+        if let Some((dropped, min)) = lock.take() {
+            tokio::spawn(Recycler {
+                inner: self.clone(),
+                discard: FuturesUnordered::new(),
+                discarded: 0,
+                cleaning: FuturesUnordered::new(),
+                dropped,
+                min,
+                eof: false,
+            });
+        }
+    }
+
     fn wake(&self, mut readied: usize) {
         if readied == 0 {
             return;
@@ -263,7 +279,7 @@ impl Pool {
                 wake: crossbeam::queue::SegQueue::new(),
                 exist: 0.into(),
                 extra_wakeups: 0.into(),
-                maker: Mutex::new(Some(rx)),
+                maker: Mutex::new(Some((rx, pool_constraints.min()))),
             }),
             drop: tx,
             pool_constraints,
@@ -302,6 +318,7 @@ impl Pool {
             // no connections to wait for and exit quickly!
             let _ = self.drop.try_send(None).is_ok();
         }
+
         new_disconnect_pool(self)
     }
 
@@ -380,19 +397,7 @@ impl Pool {
             let exist = self.inner.exist.fetch_add(1, atomic::Ordering::AcqRel);
             if exist == 0 {
                 // we may have to start the recycler.
-                let mut lock = self.inner.maker.lock().unwrap();
-                if let Some(dropped) = lock.take() {
-                    // we're the first connection!
-                    tokio::spawn(Recycler {
-                        inner: self.inner.clone(),
-                        discard: FuturesUnordered::new(),
-                        discarded: 0,
-                        cleaning: FuturesUnordered::new(),
-                        dropped,
-                        min: self.pool_constraints.min(),
-                        eof: false,
-                    });
-                }
+                self.inner.clone().spawn_recycler_if_needed();
             }
 
             if exist < self.pool_constraints.max() {
@@ -520,6 +525,24 @@ mod test {
         conn::pool::Pool, queryable::Queryable, test_misc::get_opts, PoolConstraints,
         TransactionOptions,
     };
+
+    #[test]
+    fn should_not_hang() -> super::Result<()> {
+        pub struct Database {
+            pool: Pool,
+        }
+
+        impl Database {
+            pub async fn disconnect(self) -> super::Result<()> {
+                self.pool.disconnect().await?;
+                Ok(())
+            }
+        }
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let database = Database { pool: Pool::new(get_opts()) };
+        runtime.block_on(database.disconnect())
+    }
 
     #[tokio::test]
     async fn should_connect() -> super::Result<()> {
