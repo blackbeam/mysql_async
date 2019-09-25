@@ -35,6 +35,7 @@ impl Future for DisconnectPool {
     type Output = Result<(), Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.pool_inner.clone().spawn_recycler_if_needed();
         self.pool_inner.wake.push(cx.waker().clone());
 
         if self.pool_inner.closed.load(atomic::Ordering::Acquire) {
