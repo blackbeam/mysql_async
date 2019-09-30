@@ -545,6 +545,15 @@ mod test {
     }
 
     #[tokio::test]
+    async fn should_track_conn_if_disconnected_outside_of_a_pool() -> super::Result<()> {
+        let pool = Pool::new(get_opts());
+        let conn = pool.get_conn().await?;
+        conn.disconnect().await?;
+        pool.disconnect().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn should_connect() -> super::Result<()> {
         let pool = Pool::new(get_opts());
         pool.get_conn().await?.ping().await?;

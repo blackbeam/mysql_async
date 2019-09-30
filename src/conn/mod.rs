@@ -614,7 +614,7 @@ impl ConnectionLike for Conn {
     }
 
     fn on_disconnect(&mut self) {
-        self.inner.pool = None;
+        self.inner.disconnected = true;
     }
 }
 
