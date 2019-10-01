@@ -40,7 +40,7 @@ impl<T: ConnectionLike> ReadPacket<T> {
 impl<T: ConnectionLike> Future for ReadPacket<T> {
     type Output = Result<(T, RawPacket)>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let (packet_opt, stream) = ready!(this.fut.poll(cx));
         let packet_opt = packet_opt.transpose()?;
