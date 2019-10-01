@@ -49,7 +49,7 @@ impl Socket {
 
 impl AsyncRead for Socket {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context,
         buf: &mut [u8],
     ) -> Poll<Result<usize, Error>> {
@@ -61,7 +61,7 @@ impl AsyncRead for Socket {
     }
 
     fn poll_read_buf<B>(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context,
         buf: &mut B,
     ) -> Poll<Result<usize, Error>>
@@ -74,16 +74,16 @@ impl AsyncRead for Socket {
 
 impl AsyncWrite for Socket {
     fn poll_write(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<Result<usize, Error>> {
         self.project().inner.poll_write(cx, buf)
     }
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
         self.project().inner.poll_flush(cx)
     }
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
         self.project().inner.poll_shutdown(cx)
     }
 }

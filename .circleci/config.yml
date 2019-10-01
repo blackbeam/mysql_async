@@ -45,19 +45,19 @@ jobs:
       - when:
           condition: << parameters.test-unstable >>
           steps:
-#            - run:
-#                name: Beta
-#                command: |
-#                  rustup toolchain install beta
-#                  cargo +beta test
             - run:
                 name: Nightly
                 command: |
                   rustup toolchain install nightly
                   cargo +nightly test
             - run:
+                name: Beta
+                command: |
+                  rustup toolchain install beta
+                  cargo +beta test
+            - run:
                 name: Nightly SSL
-                command: cargo +nightly test
+                command: cargo +beta test
                 environment:
                   SSL: 1
 

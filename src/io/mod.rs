@@ -127,7 +127,7 @@ impl From<self::async_tls::TlsStream<TcpStream>> for Endpoint {
 impl AsyncRead for Endpoint {
     #[project]
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context,
         buf: &mut [u8],
     ) -> Poll<StdResult<usize, tokio::io::Error>> {
@@ -149,7 +149,7 @@ impl AsyncRead for Endpoint {
 
     #[project]
     fn poll_read_buf<B>(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context,
         buf: &mut B,
     ) -> Poll<StdResult<usize, tokio::io::Error>>
@@ -168,7 +168,7 @@ impl AsyncRead for Endpoint {
 impl AsyncWrite for Endpoint {
     #[project]
     fn poll_write(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<StdResult<usize, tokio::io::Error>> {
@@ -181,10 +181,7 @@ impl AsyncWrite for Endpoint {
     }
 
     #[project]
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context,
-    ) -> Poll<StdResult<(), tokio::io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<StdResult<(), tokio::io::Error>> {
         #[project]
         match self.project() {
             Endpoint::Plain(stream) => stream.poll_flush(cx),
@@ -195,7 +192,7 @@ impl AsyncWrite for Endpoint {
 
     #[project]
     fn poll_shutdown(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context,
     ) -> Poll<StdResult<(), tokio::io::Error>> {
         #[project]

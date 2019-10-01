@@ -39,7 +39,7 @@ impl<T: ConnectionLike> WritePacket<T> {
 impl<T: ConnectionLike> Future for WritePacket<T> {
     type Output = Result<T>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let (stream, seq_id) = ready!(this.fut.poll(cx))?;
         let mut conn_like = this.conn_like.take().unwrap().return_stream(stream);

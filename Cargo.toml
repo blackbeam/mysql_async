@@ -19,21 +19,21 @@ crossbeam = "0.7"
 failure = "0.1"
 failure_derive = "0.1"
 fnv = "1"
-futures-core-preview = "0.3.0-alpha.18"
-futures-util-preview = "0.3.0-alpha.18"
-futures-sink-preview = "0.3.0-alpha.18"
+futures-core-preview = "=0.3.0-alpha.19"
+futures-util-preview = "=0.3.0-alpha.19"
+futures-sink-preview = "=0.3.0-alpha.19"
 mio-named-pipes = "0.1.6"
 mysql_common = "0.18"
 native-tls = "0.2"
 percent-encoding = "2.1.0"
-pin-project = { version = "0.4.0-alpha.11", features = ["project_attr"] }
+pin-project = "0.4.0"
 regex = "1"
 serde = "1"
 serde_json = "1"
 # we only need rt-full for tokio::spawn
-tokio = { version = "0.2.0-alpha.5", default-features = false, features = ["codec", "io", "net", "sync", "fs", "rt-full"] }
-tokio-tls = "0.3.0-alpha.5"
-tokio-net = "0.2.0-alpha.5"
+tokio = { version = "=0.2.0-alpha.6", default-features = false, features = ["codec", "io", "net", "sync", "fs", "rt-full"] }
+tokio-tls = "=0.3.0-alpha.6"
+tokio-net = "=0.2.0-alpha.6"
 twox-hash = "1"
 url = "2.1"
 
