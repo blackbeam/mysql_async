@@ -7,7 +7,6 @@
 // modified, or distributed except according to those terms.
 
 use futures_util::future::Either;
-use mysql_common::packets::RawPacket;
 use mysql_common::row::convert::FromRowError;
 
 use std::marker::PhantomData;
@@ -116,7 +115,7 @@ where
         }
     }
 
-    async fn get_row_raw(self) -> Result<(Self, Option<RawPacket>)> {
+    async fn get_row_raw(self) -> Result<(Self, Option<Vec<u8>>)> {
         if self.is_empty() {
             return Ok((self, None));
         }

@@ -6,25 +6,23 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use bit_vec::BitVec;
 use byteorder::{LittleEndian as LE, ReadBytesExt, WriteBytesExt};
 use futures_util::future::Either;
-use mysql_common::value::serialize_bin_many;
-
-use std::io::Write;
 
 use crate::{
     connection_like::{
         streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
     },
-    consts::{ColumnType, Command},
+    consts::{Command},
     error::*,
     io,
     prelude::FromRow,
     queryable::{query_result::QueryResult, BinaryProtocol},
     Column, Params, Row,
-    Value::{self, *},
+    Value::{self},
 };
+use mysql_common::packets::{ComStmtExecuteRequestBuilder, ComStmtSendLongData};
+use mysql_common::constants::MAX_PAYLOAD_LEN;
 
 /// Inner statement representation.
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -88,65 +86,28 @@ where
         }
     }
 
-    async fn send_long_data_for_index(
-        self,
-        params: Vec<Value>,
-        index: usize,
-    ) -> Result<(Self, Vec<Value>)> {
-        let mut this = self;
-        for chunk in 0.. {
-            let data_cap = crate::consts::MAX_PAYLOAD_LEN - 10;
-            let buf = match params[index] {
-                Bytes(ref x) => {
-                    let statement_id = this.inner.statement_id;
-                    let mut chunks = x.chunks(data_cap);
-                    match chunks.nth(chunk) {
-                        Some(chunk) => {
-                            let mut buf = Vec::with_capacity(chunk.len() + 6);
-                            buf.write_u32::<LE>(statement_id).unwrap();
-                            buf.write_u16::<LE>(index as u16).unwrap();
-                            buf.write_all(chunk).unwrap();
-                            Some(buf)
-                        }
-                        _ => None,
-                    }
-                }
-                _ => unreachable!(),
-            };
-            match buf {
-                Some(buf) => {
-                    let chunk_len = buf.len() - 6;
-                    this = this
-                        .write_command_data(Command::COM_STMT_SEND_LONG_DATA, buf)
-                        .await?;
-                    if chunk_len < data_cap {
-                        break;
-                    }
-                }
-                None => break,
-            }
-        }
-        Ok((this, params))
-    }
-
     async fn send_long_data(
         self,
-        mut params: Vec<Value>,
-        large_bitmap: BitVec<u8>,
-    ) -> Result<(Self, Vec<Value>)> {
-        let mut bits = large_bitmap.into_iter().enumerate();
+        params: Vec<Value>,
+    ) -> Result<Self> {
         let mut this = self;
-        loop {
-            match bits.next() {
-                Some((index, true)) => {
-                    let (this_, params_) = this.send_long_data_for_index(params, index).await?;
-                    this = this_;
-                    params = params_;
+
+        for (i, value) in params.into_iter().enumerate() {
+            if let Value::Bytes(bytes) = value {
+                let chunks = bytes.chunks(MAX_PAYLOAD_LEN - 6);
+                let chunks = chunks.chain(if bytes.is_empty() {
+                    Some(&[][..])
+                } else {
+                    None
+                });
+                for chunk in chunks {
+                    let com = ComStmtSendLongData::new(this.inner.statement_id, i, chunk);
+                    this = this.write_command_raw(com.into()).await?;
                 }
-                Some((_, false)) => {}
-                None => return Ok((this, params)),
             }
         }
+
+        Ok(this)
     }
 
     async fn execute_positional<U>(self, params: U) -> Result<QueryResult<Self, BinaryProtocol>>
@@ -164,24 +125,19 @@ where
             return Err(error);
         }
 
-        let params_def = self.inner.params.as_ref().unwrap();
-        let bin_payload = serialize_bin_many(&*params_def, &*params)?;
-        let (row_data, null_bitmap, large_bitmap) = bin_payload;
-        let (this, params) = self
-            .send_long_data(params.into_iter().collect(), large_bitmap.clone())
-            .await?;
+        let params = params.into_iter().collect::<Vec<_>>();
 
-        let mut data = Vec::new();
-        write_data(
-            &mut data,
-            this.inner.statement_id,
-            row_data,
-            params,
-            this.inner.params.as_ref().unwrap(),
-            null_bitmap,
-        );
+        let (body, as_long_data) = ComStmtExecuteRequestBuilder::new(self.inner.statement_id).build(&*params);
+        let this = if as_long_data {
+            self
+                .send_long_data(params)
+                .await?
+        } else {
+            self
+        };
+
         let this = this
-            .write_command_data(Command::COM_STMT_EXECUTE, data)
+            .write_command_raw(body)
             .await?;
         let this = this.read_result_set(None).await?;
         Ok(this)
@@ -346,34 +302,4 @@ impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Stmt<T> {
             _ => unreachable!(),
         }
     }
-}
-
-fn write_data(
-    writer: &mut Vec<u8>,
-    stmt_id: u32,
-    row_data: Vec<u8>,
-    params: Vec<Value>,
-    params_def: &[Column],
-    null_bitmap: BitVec<u8>,
-) {
-    let capacity = 9 + null_bitmap.storage().len() + 1 + params.len() * 2 + row_data.len();
-    writer.reserve(capacity);
-    writer.write_u32::<LE>(stmt_id).unwrap();
-    writer.write_u8(0u8).unwrap();
-    writer.write_u32::<LE>(1u32).unwrap();
-    writer.write_all(null_bitmap.storage().as_ref()).unwrap();
-    writer.write_u8(1u8).unwrap();
-    for i in 0..params.len() {
-        let result = match params[i] {
-            NULL => writer.write_all(&[params_def[i].column_type() as u8, 0u8]),
-            Bytes(..) => writer.write_all(&[ColumnType::MYSQL_TYPE_VAR_STRING as u8, 0u8]),
-            Int(..) => writer.write_all(&[ColumnType::MYSQL_TYPE_LONGLONG as u8, 0u8]),
-            UInt(..) => writer.write_all(&[ColumnType::MYSQL_TYPE_LONGLONG as u8, 128u8]),
-            Float(..) => writer.write_all(&[ColumnType::MYSQL_TYPE_DOUBLE as u8, 0u8]),
-            Date(..) => writer.write_all(&[ColumnType::MYSQL_TYPE_DATETIME as u8, 0u8]),
-            Time(..) => writer.write_all(&[ColumnType::MYSQL_TYPE_TIME as u8, 0u8]),
-        };
-        result.unwrap();
-    }
-    writer.write_all(row_data.as_ref()).unwrap();
 }

@@ -9,6 +9,7 @@
 pub use mysql_common::named_params;
 
 use mysql_common::{
+    constants::DEFAULT_MAX_ALLOWED_PACKET,
     crypto,
     packets::{
         parse_auth_switch_request, parse_handshake_packet, AuthPlugin, AuthSwitchRequest,
@@ -58,9 +59,7 @@ struct ConnInner {
     stream: Option<Stream>,
     id: u32,
     version: (u16, u16, u16),
-    seq_id: u8,
-    last_command: consts::Command,
-    max_allowed_packet: u64,
+    max_allowed_packet: usize,
     socket: Option<String>,
     capabilities: consts::CapabilityFlags,
     status: consts::StatusFlags,
@@ -99,14 +98,12 @@ impl ConnInner {
     /// Constructs an empty connection.
     fn empty(opts: Opts) -> ConnInner {
         ConnInner {
-            last_command: consts::Command::COM_PING,
             capabilities: opts.get_capabilities(),
             status: consts::StatusFlags::empty(),
             last_insert_id: 0,
             affected_rows: 0,
             stream: None,
-            seq_id: 0,
-            max_allowed_packet: 1024 * 1024,
+            max_allowed_packet: DEFAULT_MAX_ALLOWED_PACKET,
             warnings: 0,
             version: (0, 0, 0),
             id: 0,
@@ -185,7 +182,7 @@ impl Conn {
 
     async fn handle_handshake(self) -> Result<Conn> {
         let (mut conn, packet) = self.read_packet().await?;
-        let handshake = parse_handshake_packet(&*packet.0)?;
+        let handshake = parse_handshake_packet(&*packet)?;
         conn.inner.nonce = {
             let mut nonce = Vec::from(handshake.scramble_1_ref());
             nonce.extend_from_slice(handshake.scramble_2_ref().unwrap_or(&[][..]));
@@ -242,8 +239,9 @@ impl Conn {
             self.inner.version,
             self.inner.opts.get_user(),
             self.inner.opts.get_db_name(),
-            self.inner.auth_plugin.clone(),
+            &self.inner.auth_plugin,
             self.get_capabilities(),
+            &Default::default(), // TODO: Add support
         );
 
         self.write_packet(handshake_response.as_ref()).await
@@ -282,8 +280,8 @@ impl Conn {
 
     async fn continue_caching_sha2_password_auth(self) -> Result<Conn> {
         let (conn, packet) = self.read_packet().await?;
-        match packet.as_ref().get(0) {
-            Some(0x01) => match packet.as_ref().get(1) {
+        match packet.get(0) {
+            Some(0x01) => match packet.get(1) {
                 Some(0x03) => {
                     // auth ok
                     conn.drop_packet().await
@@ -302,7 +300,7 @@ impl Conn {
                     } else {
                         let conn = conn.write_packet(&[0x02][..]).await?;
                         let (conn, packet) = conn.read_packet().await?;
-                        let key = &packet.as_ref()[1..];
+                        let key = &packet[1..];
                         for (i, byte) in pass.iter_mut().enumerate() {
                             *byte ^= conn.inner.nonce[i % conn.inner.nonce.len()];
                         }
@@ -312,16 +310,16 @@ impl Conn {
                     conn.drop_packet().await
                 }
                 _ => Err(DriverError::UnexpectedPacket {
-                    payload: packet.as_ref().into(),
+                    payload: packet.into(),
                 }
                 .into()),
             },
             Some(0xfe) if !conn.inner.auth_switched => {
-                let auth_switch_request = parse_auth_switch_request(packet.as_ref())?.into_owned();
+                let auth_switch_request = parse_auth_switch_request(&*packet)?.into_owned();
                 conn.perform_auth_switch(auth_switch_request).await
             }
             _ => Err(DriverError::UnexpectedPacket {
-                payload: packet.as_ref().into(),
+                payload: packet.into(),
             }
             .into()),
         }
@@ -329,13 +327,13 @@ impl Conn {
 
     async fn continue_mysql_native_password_auth(self) -> Result<Conn> {
         let (this, packet) = self.read_packet().await?;
-        match packet.0.get(0) {
+        match packet.get(0) {
             Some(0x00) => Ok(this),
             Some(0xfe) if !this.inner.auth_switched => {
                 let auth_switch_request = parse_auth_switch_request(packet.as_ref())?.into_owned();
                 this.perform_auth_switch(auth_switch_request).await
             }
-            _ => Err(DriverError::UnexpectedPacket { payload: packet.0 }.into()),
+            _ => Err(DriverError::UnexpectedPacket { payload: packet }.into()),
         }
     }
 
@@ -430,8 +428,10 @@ impl Conn {
 
     /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
     async fn read_max_allowed_packet(self) -> Result<Self> {
-        let (mut this, row_opt) = self.first("SELECT @@max_allowed_packet").await?;
-        this.inner.max_allowed_packet = row_opt.unwrap_or((1024 * 1024 * 2,)).0;
+        let (mut this, row_opt): (Self, _) = self.first("SELECT @@max_allowed_packet").await?;
+        if let Some(stream) = this.inner.stream.as_mut() {
+            stream.set_max_allowed_packet(row_opt.unwrap_or((DEFAULT_MAX_ALLOWED_PACKET,)).0);
+        }
         Ok(this)
     }
 
@@ -545,15 +545,11 @@ impl ConnectionLike for Conn {
         }
     }
 
-    fn get_last_command(&self) -> consts::Command {
-        self.inner.last_command
-    }
-
     fn get_local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>> {
         self.inner.opts.get_local_infile_handler()
     }
 
-    fn get_max_allowed_packet(&self) -> u64 {
+    fn get_max_allowed_packet(&self) -> usize {
         self.inner.max_allowed_packet
     }
 
@@ -563,10 +559,6 @@ impl ConnectionLike for Conn {
 
     fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)> {
         self.inner.has_result.as_ref()
-    }
-
-    fn get_seq_id(&self) -> u8 {
-        self.inner.seq_id
     }
 
     fn get_server_version(&self) -> (u16, u16, u16) {
@@ -585,10 +577,6 @@ impl ConnectionLike for Conn {
         self.inner.in_transaction = in_transaction;
     }
 
-    fn set_last_command(&mut self, last_command: consts::Command) {
-        self.inner.last_command = last_command;
-    }
-
     fn set_last_insert_id(&mut self, last_insert_id: u64) {
         self.inner.last_insert_id = last_insert_id;
     }
@@ -605,8 +593,16 @@ impl ConnectionLike for Conn {
         self.inner.warnings = warnings;
     }
 
-    fn set_seq_id(&mut self, seq_id: u8) {
-        self.inner.seq_id = seq_id;
+    fn reset_seq_id(&mut self) {
+        if let Some(stream) = self.inner.stream.as_mut() {
+            stream.reset_seq_id();
+        }
+    }
+
+    fn sync_seq_id(&mut self) {
+        if let Some(stream) = self.inner.stream.as_mut() {
+            stream.sync_seq_id();
+        }
     }
 
     fn touch(&mut self) {

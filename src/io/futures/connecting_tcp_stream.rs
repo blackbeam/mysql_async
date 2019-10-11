@@ -14,7 +14,7 @@ use std::{io, net::ToSocketAddrs};
 
 use crate::{
     error::*,
-    io::{packet_codec::PacketCodec, Stream},
+    io::{PacketCodec, Stream},
 };
 
 pub async fn new<S>(addr: S) -> Result<Stream>
@@ -38,7 +38,7 @@ where
                     Ok(stream) => {
                         return Ok(Stream {
                             closed: false,
-                            codec: Box::new(Framed::new(stream.into(), PacketCodec::new())).into(),
+                            codec: Box::new(Framed::new(stream.into(), PacketCodec::default())).into(),
                         });
                     }
                 }

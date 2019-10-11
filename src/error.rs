@@ -15,6 +15,7 @@ use mysql_common::{
 };
 
 use std::{io, result};
+use mysql_common::proto::codec::error::PacketCodecError;
 
 /// Result type alias for this library.
 pub type Result<T> = result::Result<T, Error>;
@@ -141,6 +142,12 @@ pub enum DriverError {
 
     #[fail(display = "Unknown authentication plugin `{}'.", name)]
     UnknownAuthPlugin { name: String },
+
+    #[fail(display = "Packet too large.")]
+    PacketTooLarge,
+
+    #[fail(display = "Bad compressed packet header.")]
+    BadCompressedPacketHeader,
 }
 
 impl From<DriverError> for Error {
@@ -241,5 +248,16 @@ impl From<ParseError> for UrlError {
 impl From<ParseError> for Error {
     fn from(err: ParseError) -> Self {
         Error::Url(err.into())
+    }
+}
+
+impl From<PacketCodecError> for Error {
+    fn from(err: PacketCodecError) -> Self {
+        match err {
+            PacketCodecError::Io(err) => err.into(),
+            PacketCodecError::PacketTooLarge => DriverError::PacketTooLarge.into(),
+            PacketCodecError::PacketsOutOfSync => DriverError::PacketOutOfOrder.into(),
+            PacketCodecError::BadCompressedPacketHeader => DriverError::BadCompressedPacketHeader.into(),
+        }
     }
 }
