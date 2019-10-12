@@ -120,12 +120,11 @@ where
             return Ok((self, None));
         }
 
-        let (this, packet) = self.read_packet().await?;
+        let (mut this, packet) = self.read_packet().await?;
         if P::is_last_result_set_packet(&this, &packet) {
-            if this
-                .get_status()
-                .contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS)
+            if this.more_results_exists()
             {
+                this.sync_seq_id();
                 let (inner, cached) = this.into_inner();
                 let this = inner.read_result_set(cached).await?;
                 Ok((this, None))

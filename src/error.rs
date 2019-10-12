@@ -14,8 +14,8 @@ use mysql_common::{
     row::Row, value::Value,
 };
 
-use std::{io, result};
 use mysql_common::proto::codec::error::PacketCodecError;
+use std::{io, result};
 
 /// Result type alias for this library.
 pub type Result<T> = result::Result<T, Error>;
@@ -45,7 +45,7 @@ pub enum Error {
 }
 
 /// This type represents MySql server error.
-#[derive(Debug, Fail)]
+#[derive(Debug, Fail, Clone, Eq, PartialEq)]
 #[fail(display = "ERROR {} ({}): {}", state, code, message)]
 pub struct ServerError {
     pub code: u16,
@@ -54,7 +54,7 @@ pub struct ServerError {
 }
 
 /// This type enumerates connection URL errors.
-#[derive(Debug, Fail)]
+#[derive(Debug, Fail, Clone, Eq, PartialEq)]
 pub enum UrlError {
     #[fail(
         display = "Connection URL parameter `{}' requires feature `{}'",
@@ -88,7 +88,7 @@ pub enum UrlError {
 }
 
 /// This type enumerates driver errors.
-#[derive(Debug, Fail)]
+#[derive(Debug, Fail, Clone, PartialEq)]
 pub enum DriverError {
     #[fail(
         display = "Can't parse server version from string `{}'.",
@@ -257,7 +257,9 @@ impl From<PacketCodecError> for Error {
             PacketCodecError::Io(err) => err.into(),
             PacketCodecError::PacketTooLarge => DriverError::PacketTooLarge.into(),
             PacketCodecError::PacketsOutOfSync => DriverError::PacketOutOfOrder.into(),
-            PacketCodecError::BadCompressedPacketHeader => DriverError::BadCompressedPacketHeader.into(),
+            PacketCodecError::BadCompressedPacketHeader => {
+                DriverError::BadCompressedPacketHeader.into()
+            }
         }
     }
 }

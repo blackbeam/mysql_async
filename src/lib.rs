@@ -143,6 +143,9 @@ pub use self::local_infile_handler::{builtin::WhiteListFsLocalInfileHandler, Inf
 pub use mysql_common::packets::Column;
 
 #[doc(inline)]
+pub use mysql_common::proto::codec::Compression;
+
+#[doc(inline)]
 pub use mysql_common::row::Row;
 
 #[doc(inline)]
@@ -241,6 +244,9 @@ mod test_misc {
             ssl_opts.set_danger_skip_domain_validation(true);
             ssl_opts.set_danger_accept_invalid_certs(true);
             builder.ssl_opts(ssl_opts);
+        }
+        if ["true", "1"].contains(&&*env::var("COMPRESS").unwrap_or("".into())) {
+            builder.compression(crate::Compression::default());
         }
         builder
     }

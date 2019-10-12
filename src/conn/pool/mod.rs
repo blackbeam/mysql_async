@@ -540,7 +540,9 @@ mod test {
         }
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let database = Database { pool: Pool::new(get_opts()) };
+        let database = Database {
+            pool: Pool::new(get_opts()),
+        };
         runtime.block_on(database.disconnect())
     }
 

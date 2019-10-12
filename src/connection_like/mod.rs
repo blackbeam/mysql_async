@@ -36,6 +36,7 @@ pub mod streamless {
     use super::ConnectionLike;
     use crate::io::Stream;
 
+    #[derive(Debug)]
     pub struct Streamless<T>(T);
 
     impl<T: ConnectionLike> Streamless<T> {

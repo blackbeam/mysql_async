@@ -38,7 +38,8 @@ where
                     Ok(stream) => {
                         return Ok(Stream {
                             closed: false,
-                            codec: Box::new(Framed::new(stream.into(), PacketCodec::default())).into(),
+                            codec: Box::new(Framed::new(stream.into(), PacketCodec::default()))
+                                .into(),
                         });
                     }
                 }

@@ -278,6 +278,20 @@ impl Conn {
         })
     }
 
+    fn switch_to_compression(mut self) -> Result<Conn> {
+        if self
+            .get_capabilities()
+            .contains(CapabilityFlags::CLIENT_COMPRESS)
+        {
+            if let Some(compression) = self.inner.opts.get_compression() {
+                if let Some(stream) = self.inner.stream.as_mut() {
+                    stream.compress(compression);
+                }
+            }
+        }
+        Ok(self)
+    }
+
     async fn continue_caching_sha2_password_auth(self) -> Result<Conn> {
         let (conn, packet) = self.read_packet().await?;
         match packet.get(0) {
@@ -372,6 +386,7 @@ impl Conn {
             .await?
             .continue_auth()
             .await?
+            .switch_to_compression()?
             .read_socket()
             .await?
             .reconnect_via_socket_if_needed()
@@ -1102,9 +1117,12 @@ mod test {
     async fn should_handle_local_infile() -> super::Result<()> {
         use std::io::Write;
 
+        let tempdir = tempfile::TempDir::new().unwrap();
+        let file_path = tempdir.path().join("local_infile.txt");
+
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(
-            &["local_infile.txt"][..],
+            &[file_path.as_path()][..],
         )));
 
         let conn = Conn::new(opts).await?;
@@ -1112,12 +1130,15 @@ mod test {
             .drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);")
             .await?;
 
-        let mut file = ::std::fs::File::create("local_infile.txt").unwrap();
+        let mut file = ::std::fs::File::create(file_path.as_path()).unwrap();
         let _ = file.write(b"AAAAAA\n");
         let _ = file.write(b"BBBBBB\n");
         let _ = file.write(b"CCCCCC\n");
         let conn = match conn
-            .drop_query("LOAD DATA LOCAL INFILE 'local_infile.txt' INTO TABLE tmp;")
+            .drop_query(format!(
+                "LOAD DATA LOCAL INFILE '{}' INTO TABLE tmp;",
+                file_path.as_path().display()
+            ))
             .await
         {
             Ok(conn) => conn,
@@ -1137,7 +1158,7 @@ mod test {
         assert_eq!(result[1], "BBBBBB");
         assert_eq!(result[2], "CCCCCC");
         let result = conn.disconnect().await;
-        let _ = ::std::fs::remove_file("local_infile.txt");
+
         if let Err(crate::error::Error::Server(ref err)) = result {
             if err.code == 1148 {
                 // The used command is not allowed with this MySQL version

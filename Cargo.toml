@@ -39,6 +39,7 @@ url = "2.1"
 
 [dev-dependencies]
 lazy_static = "1"
+tempfile = "3.1.0"
 
 [features]
 nightly = []

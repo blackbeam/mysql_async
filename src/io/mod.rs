@@ -8,16 +8,24 @@
 
 use bytes::{BufMut, BytesMut};
 use futures_core::{ready, stream};
+use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::{pin_project, project};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::codec::{FramedParts, Framed, Decoder, Encoder};
+use tokio::codec::{Decoder, Encoder, Framed, FramedParts};
 use tokio::net::TcpStream;
 use tokio::prelude::*;
-use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 
-use std::{fmt, net::ToSocketAddrs, path::Path, time::Duration, fs::File, io::Read, ops::{Deref, DerefMut}};
+use std::{
+    fmt,
+    fs::File,
+    io::Read,
+    net::ToSocketAddrs,
+    ops::{Deref, DerefMut},
+    path::Path,
+    time::Duration,
+};
 
 use crate::{
     error::*,
@@ -313,6 +321,12 @@ impl Stream {
     pub fn set_max_allowed_packet(&mut self, max_allowed_packet: usize) {
         if let Some(codec) = self.codec.as_mut() {
             codec.codec_mut().max_allowed_packet = max_allowed_packet;
+        }
+    }
+
+    pub fn compress(&mut self, level: crate::Compression) {
+        if let Some(codec) = self.codec.as_mut() {
+            codec.codec_mut().compress(level);
         }
     }
 }

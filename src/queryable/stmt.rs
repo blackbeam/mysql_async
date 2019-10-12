@@ -13,7 +13,7 @@ use crate::{
     connection_like::{
         streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
     },
-    consts::{Command},
+    consts::Command,
     error::*,
     io,
     prelude::FromRow,
@@ -21,8 +21,8 @@ use crate::{
     Column, Params, Row,
     Value::{self},
 };
-use mysql_common::packets::{ComStmtExecuteRequestBuilder, ComStmtSendLongData};
 use mysql_common::constants::MAX_PAYLOAD_LEN;
+use mysql_common::packets::{ComStmtExecuteRequestBuilder, ComStmtSendLongData};
 
 /// Inner statement representation.
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -58,6 +58,7 @@ impl InnerStmt {
 }
 
 /// Prepared statement
+#[derive(Debug)]
 pub struct Stmt<T> {
     conn_like: Option<Either<T, Streamless<T>>>,
     inner: InnerStmt,
@@ -86,10 +87,7 @@ where
         }
     }
 
-    async fn send_long_data(
-        self,
-        params: Vec<Value>,
-    ) -> Result<Self> {
+    async fn send_long_data(self, params: Vec<Value>) -> Result<Self> {
         let mut this = self;
 
         for (i, value) in params.into_iter().enumerate() {
@@ -117,30 +115,24 @@ where
         U: Send + 'static,
     {
         if self.inner.num_params as usize != params.len() {
-            let error = DriverError::StmtParamsMismatch {
+            Err(DriverError::StmtParamsMismatch {
                 required: self.inner.num_params,
                 supplied: params.len() as u16,
-            }
-            .into();
-            return Err(error);
+            })?
         }
 
         let params = params.into_iter().collect::<Vec<_>>();
 
-        let (body, as_long_data) = ComStmtExecuteRequestBuilder::new(self.inner.statement_id).build(&*params);
+        let (body, as_long_data) =
+            ComStmtExecuteRequestBuilder::new(self.inner.statement_id).build(&*params);
+
         let this = if as_long_data {
-            self
-                .send_long_data(params)
-                .await?
+            self.send_long_data(params).await?
         } else {
             self
         };
 
-        let this = this
-            .write_command_raw(body)
-            .await?;
-        let this = this.read_result_set(None).await?;
-        Ok(this)
+        this.write_command_raw(body).await?.read_result_set(None).await
     }
 
     async fn execute_named(self, params: Params) -> Result<QueryResult<Self, BinaryProtocol>> {
