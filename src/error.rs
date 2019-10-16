@@ -8,13 +8,13 @@
 
 pub use url::ParseError;
 
-use failure::Fail;
 use mysql_common::{
     named_params::MixedParamsError, packets::ErrPacket, params::MissingNamedParameterError,
     row::Row, value::Value,
 };
+use thiserror::Error;
 
-use std::{io, result};
+use std::{borrow::Cow, io, result};
 
 /// Result type alias for this library.
 pub type Result<T> = result::Result<T, Error>;
@@ -22,30 +22,30 @@ pub type Result<T> = result::Result<T, Error>;
 pub(crate) type StdResult<T, E> = result::Result<T, E>;
 
 /// This type enumerates library errors.
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 pub enum Error {
-    #[fail(display = "Driver error: `{}'", _0)]
-    Driver(#[cause] DriverError),
+    #[error("Driver error: `{}'", _0)]
+    Driver(#[source] DriverError),
 
-    #[fail(display = "Input/output error: {}", _0)]
-    Io(#[cause] io::Error),
+    #[error("Input/output error: {}", _0)]
+    Io(#[source] io::Error),
 
-    #[fail(display = "Other error: {}", _0)]
-    Other(#[cause] failure::Error),
+    #[error("Other error: {}", _0)]
+    Other(Cow<'static, str>),
 
-    #[fail(display = "Server error: `{}'", _0)]
-    Server(#[cause] ServerError),
+    #[error("Server error: `{}'", _0)]
+    Server(#[source] ServerError),
 
-    #[fail(display = "TLS error: `{}'", _0)]
-    Tls(#[cause] native_tls::Error),
+    #[error("TLS error: `{}'", _0)]
+    Tls(#[source] native_tls::Error),
 
-    #[fail(display = "URL error: `{}'", _0)]
-    Url(#[cause] UrlError),
+    #[error("URL error: `{}'", _0)]
+    Url(#[source] UrlError),
 }
 
 /// This type represents MySql server error.
-#[derive(Debug, Fail)]
-#[fail(display = "ERROR {} ({}): {}", state, code, message)]
+#[derive(Debug, Error)]
+#[error("ERROR {} ({}): {}", state, code, message)]
 pub struct ServerError {
     pub code: u16,
     pub message: String,
@@ -53,93 +53,80 @@ pub struct ServerError {
 }
 
 /// This type enumerates connection URL errors.
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 pub enum UrlError {
-    #[fail(
-        display = "Connection URL parameter `{}' requires feature `{}'",
-        param, feature
-    )]
+    #[error("Connection URL parameter `{}' requires feature `{}'", param, feature)]
     FeatureRequired { feature: String, param: String },
 
-    #[fail(display = "Invalid or incomplete connection URL")]
+    #[error("Invalid or incomplete connection URL")]
     Invalid,
 
-    #[fail(
-        display = "Invalid value `{}' for connection URL parameter `{}'",
-        value, param
-    )]
+    #[error("Invalid value `{}' for connection URL parameter `{}'", value, param)]
     InvalidParamValue { param: String, value: String },
 
-    #[fail(
-        display = "Invalid pool constraints: pool_min ({}) > pool_max ({}).",
-        min, max
-    )]
+    #[error("Invalid pool constraints: pool_min ({}) > pool_max ({}).", min, max)]
     InvalidPoolConstraints { min: usize, max: usize },
 
-    #[fail(display = "URL parse error: {}", _0)]
-    Parse(#[cause] ParseError),
+    #[error("URL parse error: {}", _0)]
+    Parse(#[source] ParseError),
 
-    #[fail(display = "Unknown connection URL parameter `{}'", param)]
+    #[error("Unknown connection URL parameter `{}'", param)]
     UnknownParameter { param: String },
 
-    #[fail(display = "Unsupported connection URL scheme `{}'", scheme)]
+    #[error("Unsupported connection URL scheme `{}'", scheme)]
     UnsupportedScheme { scheme: String },
 }
 
 /// This type enumerates driver errors.
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 pub enum DriverError {
-    #[fail(
-        display = "Can't parse server version from string `{}'.",
-        version_string
-    )]
+    #[error("Can't parse server version from string `{}'.", version_string)]
     CantParseServerVersion { version_string: String },
 
-    #[fail(display = "Connection to the server is closed.")]
+    #[error("Connection to the server is closed.")]
     ConnectionClosed,
 
-    #[fail(display = "Error converting from mysql value.")]
+    #[error("Error converting from mysql value.")]
     FromValue { value: Value },
 
-    #[fail(display = "Error converting from mysql row.")]
+    #[error("Error converting from mysql row.")]
     FromRow { row: Row },
 
-    #[fail(display = "Missing named parameter `{}'.", name)]
+    #[error("Missing named parameter `{}'.", name)]
     MissingNamedParam { name: String },
 
-    #[fail(display = "Named and positional parameters mixed in one statement.")]
+    #[error("Named and positional parameters mixed in one statement.")]
     MixedParams,
 
-    #[fail(display = "Named parameters supplied for positional query.")]
+    #[error("Named parameters supplied for positional query.")]
     NamedParamsForPositionalQuery,
 
-    #[fail(display = "Transactions couldn't be nested.")]
+    #[error("Transactions couldn't be nested.")]
     NestedTransaction,
 
-    #[fail(display = "Can't handle local infile request. Handler not specified.")]
+    #[error("Can't handle local infile request. Handler not specified.")]
     NoLocalInfileHandler,
 
-    #[fail(display = "Packet out of order.")]
+    #[error("Packet out of order.")]
     PacketOutOfOrder,
 
-    #[fail(display = "Pool was disconnected.")]
+    #[error("Pool was disconnected.")]
     PoolDisconnected,
 
-    #[fail(
-        display = "`SET TRANSACTION READ (ONLY|WRITE)' is not supported in your MySQL version."
-    )]
+    #[error("`SET TRANSACTION READ (ONLY|WRITE)' is not supported in your MySQL version.")]
     ReadOnlyTransNotSupported,
 
-    #[fail(
-        display = "Statement takes {} parameters but {} was supplied.",
-        required, supplied
+    #[error(
+        "Statement takes {} parameters but {} was supplied.",
+        required,
+        supplied
     )]
     StmtParamsMismatch { required: u16, supplied: u16 },
 
-    #[fail(display = "Unexpected packet.")]
+    #[error("Unexpected packet.")]
     UnexpectedPacket { payload: Vec<u8> },
 
-    #[fail(display = "Unknown authentication plugin `{}'.", name)]
+    #[error("Unknown authentication plugin `{}'.", name)]
     UnknownAuthPlugin { name: String },
 }
 
@@ -222,13 +209,13 @@ impl From<MixedParamsError> for Error {
 
 impl From<String> for Error {
     fn from(err: String) -> Self {
-        Error::Other(failure::Context::new(err).into())
+        Error::Other(Cow::from(err))
     }
 }
 
 impl From<&'static str> for Error {
     fn from(err: &'static str) -> Self {
-        Error::Other(failure::Context::new(err).into())
+        Error::Other(Cow::from(err))
     }
 }
 
