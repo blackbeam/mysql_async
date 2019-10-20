@@ -283,6 +283,10 @@ impl Conn {
     async fn continue_caching_sha2_password_auth(self) -> Result<Conn> {
         let (conn, packet) = self.read_packet().await?;
         match packet.as_ref().get(0) {
+            Some(0x00) => {
+                // ok packet for empty password
+                Ok(conn)
+            }
             Some(0x01) => match packet.as_ref().get(1) {
                 Some(0x03) => {
                     // auth ok
@@ -633,12 +637,33 @@ mod test {
 
     #[tokio::test]
     async fn should_connect() -> super::Result<()> {
-        Conn::new(get_opts())
+        let mut conn: Conn = Conn::new(get_opts())
             .await?
             .ping()
-            .await?
-            .disconnect()
             .await?;
+
+        let variants = [
+            ("caching_sha2_password", "non-empty"),
+            ("caching_sha2_password", ""),
+            ("mysql_native_password", "non-empty"),
+            ("mysql_native_password", "")
+        ];
+
+        for (plug, pass) in variants.iter() {
+            let query = format!("CREATE USER 'user'@'localhost' IDENTIFIED WITH {} BY '{}'", plug, pass);
+            conn = conn.drop_query(query).await.unwrap();
+            // conn = conn.drop_query("FLUSH PRIVILEGES").await?;
+
+            let mut opts = get_opts();
+            opts.user(Some("user")).pass(Some(*pass)).db_name(None::<String>);
+            let result = Conn::new(opts).await;
+
+            conn = conn.drop_query("DROP USER 'user'@'localhost'").await.unwrap();
+
+            result?.disconnect().await?;
+        }
+
+        conn.disconnect().await?;
         Ok(())
     }
 
