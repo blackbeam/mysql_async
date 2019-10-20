@@ -652,7 +652,6 @@ mod test {
         for (plug, pass) in variants.iter() {
             let query = format!("CREATE USER 'user'@'localhost' IDENTIFIED WITH {} BY '{}'", plug, pass);
             conn = conn.drop_query(query).await.unwrap();
-            // conn = conn.drop_query("FLUSH PRIVILEGES").await?;
 
             let mut opts = get_opts();
             opts.user(Some("user")).pass(Some(*pass)).db_name(None::<String>);
