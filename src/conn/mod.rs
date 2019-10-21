@@ -275,7 +275,10 @@ impl Conn {
             match self.inner.auth_plugin {
                 AuthPlugin::MysqlNativePassword => self.continue_mysql_native_password_auth().await,
                 AuthPlugin::CachingSha2Password => self.continue_caching_sha2_password_auth().await,
-                _ => unreachable!(),
+                AuthPlugin::Other(ref name) => unimplemented!(
+                    "Unsupported auth plugin: {}",
+                    String::from_utf8_lossy(name.as_ref())
+                ),
             }
         })
     }
@@ -637,27 +640,40 @@ mod test {
 
     #[tokio::test]
     async fn should_connect() -> super::Result<()> {
-        let mut conn: Conn = Conn::new(get_opts())
+        let conn: Conn = Conn::new(get_opts()).await?.ping().await?;
+
+        let (mut conn, plugins) = conn
+            .query("SHOW PLUGINS")
             .await?
-            .ping()
+            .map_and_drop(|mut row| row.take::<String, _>("Name").unwrap())
             .await?;
 
-        let variants = [
+        let variants = vec![
             ("caching_sha2_password", "non-empty"),
             ("caching_sha2_password", ""),
             ("mysql_native_password", "non-empty"),
-            ("mysql_native_password", "")
-        ];
+            ("mysql_native_password", ""),
+        ]
+        .into_iter()
+        .filter(|variant| plugins.iter().any(|p| p == variant.0));
 
-        for (plug, pass) in variants.iter() {
-            let query = format!("CREATE USER 'user'@'localhost' IDENTIFIED WITH {} BY '{}'", plug, pass);
+        for (plug, pass) in variants {
+            let query = format!(
+                "CREATE USER 'user'@'127.0.0.1' IDENTIFIED WITH {} BY '{}'",
+                plug, pass
+            );
             conn = conn.drop_query(query).await.unwrap();
 
             let mut opts = get_opts();
-            opts.user(Some("user")).pass(Some(*pass)).db_name(None::<String>);
+            opts.user(Some("user"))
+                .pass(Some(pass))
+                .db_name(None::<String>);
             let result = Conn::new(opts).await;
 
-            conn = conn.drop_query("DROP USER 'user'@'localhost'").await.unwrap();
+            conn = conn
+                .drop_query("DROP USER 'user'@'127.0.0.1'")
+                .await
+                .unwrap();
 
             result?.disconnect().await?;
         }
