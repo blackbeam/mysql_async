@@ -659,19 +659,19 @@ mod test {
 
         for (plug, pass) in variants {
             let query = format!(
-                "CREATE USER 'user'@'127.0.0.1' IDENTIFIED WITH {} BY '{}'",
+                "CREATE USER 'test_user'@'%' IDENTIFIED WITH {} BY '{}'",
                 plug, pass
             );
             conn = conn.drop_query(query).await.unwrap();
 
             let mut opts = get_opts();
-            opts.user(Some("user"))
+            opts.user(Some("test_user"))
                 .pass(Some(pass))
                 .db_name(None::<String>);
             let result = Conn::new(opts).await;
 
             conn = conn
-                .drop_query("DROP USER 'user'@'127.0.0.1'")
+                .drop_query("DROP USER 'test_user'@'%'")
                 .await
                 .unwrap();
 
