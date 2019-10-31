@@ -41,12 +41,18 @@ pub struct InnerStmt {
 
 impl InnerStmt {
     // TODO: Consume payload?
-    pub fn new(pld: &[u8], named_params: Option<Vec<String>>) -> Result<InnerStmt> {
-        let mut reader = &pld[1..];
-        let statement_id = reader.read_u32::<LE>()?;
-        let num_columns = reader.read_u16::<LE>()?;
-        let num_params = reader.read_u16::<LE>()?;
-        let warning_count = reader.read_u16::<LE>()?;
+    pub fn new(payload: &[u8], named_params: Option<Vec<String>>) -> Result<InnerStmt> {
+        let mut payload = &payload[..];
+
+        if payload.read_u8()? != 0x00 {
+            panic!("Invalid statement packet status");
+        }
+
+        let statement_id = payload.read_u32::<LE>()?;
+        let num_columns = payload.read_u16::<LE>()?;
+        let num_params = payload.read_u16::<LE>()?;
+        payload.read_u8()?;
+        let warning_count = payload.read_u16::<LE>()?;
         Ok(InnerStmt {
             named_params,
             statement_id,
