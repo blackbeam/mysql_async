@@ -41,18 +41,16 @@ pub struct InnerStmt {
 
 impl InnerStmt {
     // TODO: Consume payload?
-    pub fn new(pld: &[u8], named_params: Option<Vec<String>>) -> Result<InnerStmt> {
-        let mut reader = &pld[1..];
-        let statement_id = reader.read_u32::<LE>()?;
-        let num_columns = reader.read_u16::<LE>()?;
-        let num_params = reader.read_u16::<LE>()?;
-        let warning_count = reader.read_u16::<LE>()?;
+    pub fn new(payload: &[u8], named_params: Option<Vec<String>>) -> Result<InnerStmt> {
+        let packet: mysql_common::packets::StmtPacket =
+            mysql_common::packets::parse_stmt_packet(payload)?;
+
         Ok(InnerStmt {
             named_params,
-            statement_id,
-            num_columns,
-            num_params,
-            warning_count,
+            statement_id: packet.statement_id(),
+            num_columns: packet.num_columns(),
+            num_params: packet.num_params(),
+            warning_count: packet.warning_count(),
             params: None,
             columns: None,
         })
