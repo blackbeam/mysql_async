@@ -547,8 +547,12 @@ impl OptsBuilder {
     /// If not `None`, then client will ask for compression if server supports it
     /// (defaults to `None`).
     ///
-    /// Can be defined using `compression` connection url parameter with values `fast`, `best`, `0`,
-    /// `1`, ..., `9`.
+    /// Can be defined using `compress` connection url parameter with values:
+    /// * `on` | `true` - library defined default compression level;
+    /// * `fast` - library defined fast compression level;
+    /// * `best` - library defined best compression level;
+    /// * `0`, `1`, ..., `9` - explicitly defined compression level where `0` stands for
+    ///   "no compression";
     ///
     /// Note that compression level defined here will affect only outgoing packets.
     pub fn compression<T: Into<Option<crate::Compression>>>(

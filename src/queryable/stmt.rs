@@ -37,14 +37,15 @@ pub struct InnerStmt {
 
 impl InnerStmt {
     // TODO: Consume payload?
-    pub fn new(pld: &[u8], named_params: Option<Vec<String>>) -> Result<InnerStmt> {
-        let stmt_packet = parse_stmt_packet(pld)?;
+    pub fn new(payload: &[u8], named_params: Option<Vec<String>>) -> Result<InnerStmt> {
+        let packet = parse_stmt_packet(payload)?;
+
         Ok(InnerStmt {
             named_params,
-            statement_id: stmt_packet.statement_id(),
-            num_columns: stmt_packet.num_columns(),
-            num_params: stmt_packet.num_params(),
-            warning_count: stmt_packet.warning_count(),
+            statement_id: packet.statement_id(),
+            num_columns: packet.num_columns(),
+            num_params: packet.num_params(),
+            warning_count: packet.warning_count(),
             params: None,
             columns: None,
         })

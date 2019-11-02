@@ -273,7 +273,10 @@ impl Conn {
             match self.inner.auth_plugin {
                 AuthPlugin::MysqlNativePassword => self.continue_mysql_native_password_auth().await,
                 AuthPlugin::CachingSha2Password => self.continue_caching_sha2_password_auth().await,
-                _ => unreachable!(),
+                AuthPlugin::Other(ref name) => unimplemented!(
+                    "Unsupported auth plugin: {}",
+                    String::from_utf8_lossy(name.as_ref())
+                ),
             }
         })
     }
@@ -295,6 +298,10 @@ impl Conn {
     async fn continue_caching_sha2_password_auth(self) -> Result<Conn> {
         let (conn, packet) = self.read_packet().await?;
         match packet.get(0) {
+            Some(0x00) => {
+                // ok packet for empty password
+                Ok(conn)
+            }
             Some(0x01) => match packet.get(1) {
                 Some(0x03) => {
                     // auth ok
@@ -644,12 +651,46 @@ mod test {
 
     #[tokio::test]
     async fn should_connect() -> super::Result<()> {
-        Conn::new(get_opts())
+        let conn: Conn = Conn::new(get_opts()).await?.ping().await?;
+
+        let (mut conn, plugins) = conn
+            .query("SHOW PLUGINS")
             .await?
-            .ping()
-            .await?
-            .disconnect()
+            .map_and_drop(|mut row| row.take::<String, _>("Name").unwrap())
             .await?;
+
+        // Should connect with any combination of supported plugin and emty-nonempy password.
+        let variants = vec![
+            ("caching_sha2_password", "non-empty"),
+            ("caching_sha2_password", ""),
+            ("mysql_native_password", "non-empty"),
+            ("mysql_native_password", ""),
+        ]
+        .into_iter()
+        .filter(|variant| plugins.iter().any(|p| p == variant.0));
+
+        for (plug, pass) in variants {
+            let query = format!(
+                "CREATE USER 'test_user'@'%' IDENTIFIED WITH {} BY '{}'",
+                plug, pass
+            );
+            conn = conn.drop_query(query).await.unwrap();
+
+            let mut opts = get_opts();
+            opts.user(Some("test_user"))
+                .pass(Some(pass))
+                .db_name(None::<String>);
+            let result = Conn::new(opts).await;
+
+            conn = conn
+                .drop_query("DROP USER 'test_user'@'%'")
+                .await
+                .unwrap();
+
+            result?.disconnect().await?;
+        }
+
+        conn.disconnect().await?;
         Ok(())
     }
 
