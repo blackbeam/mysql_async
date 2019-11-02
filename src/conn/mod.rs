@@ -675,7 +675,7 @@ mod test {
             .map_and_drop(|mut row| row.take::<String, _>("Name").unwrap())
             .await?;
 
-        // Should connect with any combination of supported plugin and emty-nonempy password.
+        // Should connect with any combination of supported plugin and empty-nonempty password.
         let variants = vec![
             ("caching_sha2_password", "non-empty"),
             ("caching_sha2_password", ""),
@@ -704,6 +704,14 @@ mod test {
                 .unwrap();
 
             result?.disconnect().await?;
+        }
+
+        if crate::test_misc::test_compression() {
+            assert!(format!("{:?}", conn).contains("Compression"));
+        }
+
+        if crate::test_misc::test_ssl() {
+            assert!(format!("{:?}", conn).contains("Tls"));
         }
 
         conn.disconnect().await?;
