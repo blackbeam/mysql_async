@@ -67,7 +67,7 @@ impl Decoder for PacketCodec {
 }
 
 impl Encoder for PacketCodec {
-    type Item = Vec<Vec<u8>>;
+    type Item = Vec<u8>;
     type Error = Error;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<()> {
