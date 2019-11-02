@@ -10,7 +10,7 @@ pub use url::ParseError;
 
 use mysql_common::{
     named_params::MixedParamsError, packets::ErrPacket, params::MissingNamedParameterError,
-    row::Row, value::Value, proto::codec::error::PacketCodecError,
+    proto::codec::error::PacketCodecError, row::Row, value::Value,
 };
 use thiserror::Error;
 

@@ -38,8 +38,7 @@ impl Future for WritePacket {
 
         if let Some(data) = self.data.take() {
             // to get here, stream must be ready
-            Pin::new(self.stream.as_mut().unwrap().codec.as_mut().unwrap())
-                .start_send(data)?;
+            Pin::new(self.stream.as_mut().unwrap().codec.as_mut().unwrap()).start_send(data)?;
         }
 
         ready!(Pin::new(self.stream.as_mut().unwrap().codec.as_mut().unwrap()).poll_flush(cx))

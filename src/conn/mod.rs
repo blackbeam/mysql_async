@@ -698,10 +698,7 @@ mod test {
                 .db_name(None::<String>);
             let result = Conn::new(opts).await;
 
-            conn = conn
-                .drop_query("DROP USER 'test_user'@'%'")
-                .await
-                .unwrap();
+            conn = conn.drop_query("DROP USER 'test_user'@'%'").await.unwrap();
 
             result?.disconnect().await?;
         }

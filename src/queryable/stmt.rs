@@ -20,7 +20,7 @@ use crate::{
     Value::{self},
 };
 use mysql_common::constants::MAX_PAYLOAD_LEN;
-use mysql_common::packets::{ComStmtExecuteRequestBuilder, ComStmtSendLongData, parse_stmt_packet};
+use mysql_common::packets::{parse_stmt_packet, ComStmtExecuteRequestBuilder, ComStmtSendLongData};
 
 /// Inner statement representation.
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -127,7 +127,10 @@ where
             self
         };
 
-        this.write_command_raw(body).await?.read_result_set(None).await
+        this.write_command_raw(body)
+            .await?
+            .read_result_set(None)
+            .await
     }
 
     async fn execute_named(self, params: Params) -> Result<QueryResult<Self, BinaryProtocol>> {
@@ -159,9 +162,7 @@ where
         }
 
         let (body, _) = ComStmtExecuteRequestBuilder::new(self.inner.statement_id).build(&[]);
-        let this = self
-            .write_command_raw(body)
-            .await?;
+        let this = self.write_command_raw(body).await?;
         this.read_result_set(None).await
     }
 

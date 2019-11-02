@@ -122,8 +122,7 @@ where
 
         let (mut this, packet) = self.read_packet().await?;
         if P::is_last_result_set_packet(&this, &packet) {
-            if this.more_results_exists()
-            {
+            if this.more_results_exists() {
                 this.sync_seq_id();
                 let (inner, cached) = this.into_inner();
                 let this = inner.read_result_set(cached).await?;
