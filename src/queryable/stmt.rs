@@ -6,14 +6,12 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use byteorder::{LittleEndian as LE, ReadBytesExt, WriteBytesExt};
 use futures_util::future::Either;
 
 use crate::{
     connection_like::{
         streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
     },
-    consts::Command,
     error::*,
     io,
     prelude::FromRow,
@@ -22,7 +20,7 @@ use crate::{
     Value::{self},
 };
 use mysql_common::constants::MAX_PAYLOAD_LEN;
-use mysql_common::packets::{ComStmtExecuteRequestBuilder, ComStmtSendLongData};
+use mysql_common::packets::{ComStmtExecuteRequestBuilder, ComStmtSendLongData, parse_stmt_packet};
 
 /// Inner statement representation.
 #[derive(Eq, PartialEq, Clone, Debug)]
@@ -40,17 +38,13 @@ pub struct InnerStmt {
 impl InnerStmt {
     // TODO: Consume payload?
     pub fn new(pld: &[u8], named_params: Option<Vec<String>>) -> Result<InnerStmt> {
-        let mut reader = &pld[1..];
-        let statement_id = reader.read_u32::<LE>()?;
-        let num_columns = reader.read_u16::<LE>()?;
-        let num_params = reader.read_u16::<LE>()?;
-        let warning_count = reader.read_u16::<LE>()?;
+        let stmt_packet = parse_stmt_packet(pld)?;
         Ok(InnerStmt {
             named_params,
-            statement_id,
-            num_columns,
-            num_params,
-            warning_count,
+            statement_id: stmt_packet.statement_id(),
+            num_columns: stmt_packet.num_columns(),
+            num_params: stmt_packet.num_params(),
+            warning_count: stmt_packet.warning_count(),
             params: None,
             columns: None,
         })
@@ -163,13 +157,9 @@ where
             return Err(error);
         }
 
-        let mut data = Vec::with_capacity(4 + 1 + 4);
-        data.write_u32::<LE>(self.inner.statement_id).unwrap();
-        data.write_u8(0u8).unwrap();
-        data.write_u32::<LE>(1u32).unwrap();
-
+        let (body, _) = ComStmtExecuteRequestBuilder::new(self.inner.statement_id).build(&[]);
         let this = self
-            .write_command_data(Command::COM_STMT_EXECUTE, data)
+            .write_command_raw(body)
             .await?;
         this.read_result_set(None).await
     }

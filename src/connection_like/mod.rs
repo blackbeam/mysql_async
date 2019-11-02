@@ -6,11 +6,10 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use byteorder::{ByteOrder, LittleEndian};
 use futures_util::future::ok;
 use mysql_common::{
     io::ReadMysqlExt,
-    packets::{column_from_payload, parse_local_infile_packet, Column},
+    packets::{column_from_payload, parse_local_infile_packet, Column, ComStmtClose},
 };
 use tokio::prelude::*;
 
@@ -325,9 +324,7 @@ pub trait ConnectionLike: Send {
     where
         Self: Sized + 'static,
     {
-        let mut stmt_id = [0; 4];
-        LittleEndian::write_u32(&mut stmt_id[..], statement_id);
-        self.write_command_data(Command::COM_STMT_CLOSE, &stmt_id[..])
+        self.write_command_raw(ComStmtClose::new(statement_id).into())
     }
 
     /// Returns future that reads result set from a server and resolves to `QueryResult`.

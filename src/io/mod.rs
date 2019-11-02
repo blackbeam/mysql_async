@@ -11,8 +11,6 @@ use futures_core::{ready, stream};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::{pin_project, project};
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use tokio::codec::{Decoder, Encoder, Framed, FramedParts};
 use tokio::net::TcpStream;
 use tokio::prelude::*;
@@ -24,6 +22,8 @@ use std::{
     net::ToSocketAddrs,
     ops::{Deref, DerefMut},
     path::Path,
+    pin::Pin,
+    task::{Context, Poll},
     time::Duration,
 };
 
