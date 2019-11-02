@@ -273,10 +273,9 @@ impl Conn {
             match self.inner.auth_plugin {
                 AuthPlugin::MysqlNativePassword => self.continue_mysql_native_password_auth().await,
                 AuthPlugin::CachingSha2Password => self.continue_caching_sha2_password_auth().await,
-                AuthPlugin::Other(ref name) => unimplemented!(
-                    "Unsupported auth plugin: {}",
-                    String::from_utf8_lossy(name.as_ref())
-                ),
+                AuthPlugin::Other(ref name) => Err(DriverError::UnknownAuthPlugin {
+                    name: String::from_utf8_lossy(name.as_ref()).to_string(),
+                })?,
             }
         })
     }
