@@ -650,6 +650,23 @@ mod test {
     }
 
     #[tokio::test]
+    async fn should_connect_without_database() -> super::Result<()> {
+        let mut opts = get_opts();
+
+        // no database name
+        opts.db_name(None::<String>);
+        let conn: Conn = Conn::new(opts.clone()).await?.ping().await?;
+        conn.disconnect().await?;
+
+        // empty database name
+        opts.db_name(Some(""));
+        let conn: Conn = Conn::new(opts).await?.ping().await?;
+        conn.disconnect().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn should_connect() -> super::Result<()> {
         let conn: Conn = Conn::new(get_opts()).await?.ping().await?;
 
