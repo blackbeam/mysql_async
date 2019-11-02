@@ -6,20 +6,26 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use bytes::BufMut;
+use bytes::{BufMut, BytesMut};
 use futures_core::{ready, stream};
-use mysql_common::packets::RawPacket;
+use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::{pin_project, project};
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tokio::codec::Framed;
-use tokio::codec::FramedParts;
+use tokio::codec::{Decoder, Encoder, Framed, FramedParts};
 use tokio::net::TcpStream;
 use tokio::prelude::*;
 
-use std::{fmt, net::ToSocketAddrs, path::Path, time::Duration};
-use std::{fs::File, io::Read};
+use std::{
+    fmt,
+    fs::File,
+    io::Read,
+    net::ToSocketAddrs,
+    ops::{Deref, DerefMut},
+    path::Path,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use crate::{
     error::*,
@@ -32,8 +38,42 @@ use crate::{
 
 mod async_tls;
 pub mod futures;
-mod packet_codec;
 mod socket;
+
+#[derive(Debug, Default)]
+pub struct PacketCodec(PacketCodecInner);
+
+impl Deref for PacketCodec {
+    type Target = PacketCodecInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for PacketCodec {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Decoder for PacketCodec {
+    type Item = Vec<u8>;
+    type Error = Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>> {
+        Ok(self.0.decode(src)?)
+    }
+}
+
+impl Encoder for PacketCodec {
+    type Item = Vec<u8>;
+    type Error = Error;
+
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<()> {
+        Ok(self.0.encode(item, dst)?)
+    }
+}
 
 #[pin_project]
 #[derive(Debug)]
@@ -207,7 +247,7 @@ impl AsyncWrite for Endpoint {
 /// Stream connected to MySql server.
 pub struct Stream {
     closed: bool,
-    codec: Option<Box<Framed<Endpoint, packet_codec::PacketCodec>>>,
+    codec: Option<Box<Framed<Endpoint, PacketCodec>>>,
 }
 
 impl fmt::Debug for Stream {
@@ -226,7 +266,7 @@ impl Stream {
 
         Self {
             closed: false,
-            codec: Box::new(Framed::new(endpoint, packet_codec::PacketCodec::new())).into(),
+            codec: Box::new(Framed::new(endpoint, PacketCodec::default())).into(),
         }
     }
 
@@ -241,8 +281,8 @@ impl Stream {
         Ok(Stream::new(Socket::new(path).await?))
     }
 
-    pub fn write_packet(self, data: Vec<u8>, seq_id: u8) -> WritePacket {
-        new_write_packet(self, data, seq_id)
+    pub fn write_packet(self, data: Vec<u8>) -> WritePacket {
+        new_write_packet(self, data)
     }
 
     pub fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
@@ -265,17 +305,39 @@ impl Stream {
     pub fn is_secure(&self) -> bool {
         self.codec.as_ref().unwrap().get_ref().is_secure()
     }
+
+    pub fn reset_seq_id(&mut self) {
+        if let Some(codec) = self.codec.as_mut() {
+            codec.codec_mut().reset_seq_id();
+        }
+    }
+
+    pub fn sync_seq_id(&mut self) {
+        if let Some(codec) = self.codec.as_mut() {
+            codec.codec_mut().sync_seq_id();
+        }
+    }
+
+    pub fn set_max_allowed_packet(&mut self, max_allowed_packet: usize) {
+        if let Some(codec) = self.codec.as_mut() {
+            codec.codec_mut().max_allowed_packet = max_allowed_packet;
+        }
+    }
+
+    pub fn compress(&mut self, level: crate::Compression) {
+        if let Some(codec) = self.codec.as_mut() {
+            codec.codec_mut().compress(level);
+        }
+    }
 }
 
 impl stream::Stream for Stream {
-    type Item = Result<(RawPacket, u8)>;
+    type Item = Result<Vec<u8>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.closed {
-            Poll::Ready(
-                Ok(ready!(Pin::new(self.codec.as_mut().unwrap()).poll_next(cx)).transpose()?)
-                    .transpose(),
-            )
+            let item = ready!(Pin::new(self.codec.as_mut().unwrap()).poll_next(cx)).transpose()?;
+            Poll::Ready(Ok(item).transpose())
         } else {
             Poll::Ready(None)
         }

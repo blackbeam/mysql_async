@@ -163,6 +163,18 @@ pub struct InnerOpts {
 
     /// Path to unix socket (or named pipe on Windows) (defaults to `None`).
     socket: Option<String>,
+
+    /// If not `None`, then client will ask for compression if server supports it
+    /// (defaults to `None`).
+    ///
+    /// Can be defined using `compress` connection url parameter with values:
+    /// * `fast` - for compression level 1;
+    /// * `best` - for compression level 9;
+    /// * `on`, `true` - for default compression level;
+    /// * `0`, ..., `9`.
+    ///
+    /// Note that compression level defined here will affect only outgoing packets.
+    compression: Option<crate::Compression>,
 }
 
 /// Mysql connection options.
@@ -287,6 +299,20 @@ impl Opts {
         self.inner.socket.as_ref().map(|x| &**x)
     }
 
+    /// If not `None`, then client will ask for compression if server supports it
+    /// (defaults to `None`).
+    ///
+    /// Can be defined using `compress` connection url parameter with values:
+    /// * `fast` - for compression level 1;
+    /// * `best` - for compression level 9;
+    /// * `on`, `true` - for default compression level;
+    /// * `0`, ..., `9`.
+    ///
+    /// Note that compression level defined here will affect only outgoing packets.
+    pub fn get_compression(&self) -> Option<crate::Compression> {
+        self.inner.compression
+    }
+
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
         let mut out = CapabilityFlags::CLIENT_PROTOCOL_41
             | CapabilityFlags::CLIENT_SECURE_CONNECTION
@@ -304,6 +330,9 @@ impl Opts {
         }
         if self.inner.ssl_opts.is_some() {
             out |= CapabilityFlags::CLIENT_SSL;
+        }
+        if self.inner.compression.is_some() {
+            out |= CapabilityFlags::CLIENT_COMPRESS;
         }
 
         out
@@ -328,6 +357,7 @@ impl Default for InnerOpts {
             ssl_opts: None,
             prefer_socket: true,
             socket: None,
+            compression: None,
         }
     }
 }
@@ -516,6 +546,24 @@ impl OptsBuilder {
         self.opts.socket = socket.map(Into::into);
         self
     }
+
+    /// If not `None`, then client will ask for compression if server supports it
+    /// (defaults to `None`).
+    ///
+    /// Can be defined using `compress` connection url parameter with values:
+    /// * `fast` - for compression level 1;
+    /// * `best` - for compression level 9;
+    /// * `on`, `true` - for default compression level;
+    /// * `0`, ..., `9`.
+    ///
+    /// Note that compression level defined here will affect only outgoing packets.
+    pub fn compression<T: Into<Option<crate::Compression>>>(
+        &mut self,
+        compression: T,
+    ) -> &mut Self {
+        self.opts.compression = compression.into();
+        self
+    }
 }
 
 impl From<OptsBuilder> for Opts {
@@ -678,6 +726,23 @@ fn from_url(url: &str) -> std::result::Result<InnerOpts, UrlError> {
             }
         } else if key == "socket" {
             opts.socket = Some(value)
+        } else if key == "compression" {
+            if value == "fast" {
+                opts.compression = Some(crate::Compression::fast());
+            } else if value == "on" || value == "true" {
+                opts.compression = Some(crate::Compression::default());
+            } else if value == "best" {
+                opts.compression = Some(crate::Compression::best());
+            } else if value.len() == 1 && 0x30 <= value.as_bytes()[0] && value.as_bytes()[0] <= 0x39
+            {
+                opts.compression =
+                    Some(crate::Compression::new((value.as_bytes()[0] - 0x30) as u32));
+            } else {
+                return Err(UrlError::InvalidParamValue {
+                    param: "compression".into(),
+                    value: value.to_string(),
+                });
+            }
         } else {
             return Err(UrlError::UnknownParameter { param: key });
         }
@@ -712,6 +777,7 @@ impl<T: AsRef<str> + Sized> From<T> for Opts {
 #[cfg(test)]
 mod test {
     use super::{from_url, InnerOpts, Opts};
+    use crate::error::UrlError::InvalidParamValue;
 
     #[test]
     fn should_convert_url_into_opts() {
@@ -748,5 +814,44 @@ mod test {
     fn should_panic_on_unknown_query_param() {
         let opts = "mysql://localhost/foo?bar=baz";
         let _: Opts = opts.into();
+    }
+
+    #[test]
+    fn should_parse_compression() {
+        let err = Opts::from_url("mysql://localhost/foo?compression=").unwrap_err();
+        assert_eq!(
+            err,
+            InvalidParamValue {
+                param: "compression".into(),
+                value: "".into()
+            }
+        );
+
+        let err = Opts::from_url("mysql://localhost/foo?compression=a").unwrap_err();
+        assert_eq!(
+            err,
+            InvalidParamValue {
+                param: "compression".into(),
+                value: "a".into()
+            }
+        );
+
+        let opts = Opts::from_url("mysql://localhost/foo?compression=fast").unwrap();
+        assert_eq!(opts.get_compression(), Some(crate::Compression::fast()));
+
+        let opts = Opts::from_url("mysql://localhost/foo?compression=on").unwrap();
+        assert_eq!(opts.get_compression(), Some(crate::Compression::default()));
+
+        let opts = Opts::from_url("mysql://localhost/foo?compression=true").unwrap();
+        assert_eq!(opts.get_compression(), Some(crate::Compression::default()));
+
+        let opts = Opts::from_url("mysql://localhost/foo?compression=best").unwrap();
+        assert_eq!(opts.get_compression(), Some(crate::Compression::best()));
+
+        let opts = Opts::from_url("mysql://localhost/foo?compression=0").unwrap();
+        assert_eq!(opts.get_compression(), Some(crate::Compression::new(0)));
+
+        let opts = Opts::from_url("mysql://localhost/foo?compression=9").unwrap();
+        assert_eq!(opts.get_compression(), Some(crate::Compression::new(9)));
     }
 }

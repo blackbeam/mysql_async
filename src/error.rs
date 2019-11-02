@@ -10,7 +10,7 @@ pub use url::ParseError;
 
 use mysql_common::{
     named_params::MixedParamsError, packets::ErrPacket, params::MissingNamedParameterError,
-    row::Row, value::Value,
+    row::Row, value::Value, proto::codec::error::PacketCodecError,
 };
 use thiserror::Error;
 
@@ -44,7 +44,7 @@ pub enum Error {
 }
 
 /// This type represents MySql server error.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, Eq, PartialEq)]
 #[error("ERROR {} ({}): {}", state, code, message)]
 pub struct ServerError {
     pub code: u16,
@@ -53,7 +53,7 @@ pub struct ServerError {
 }
 
 /// This type enumerates connection URL errors.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, Eq, PartialEq)]
 pub enum UrlError {
     #[error("Connection URL parameter `{}' requires feature `{}'", param, feature)]
     FeatureRequired { feature: String, param: String },
@@ -78,7 +78,7 @@ pub enum UrlError {
 }
 
 /// This type enumerates driver errors.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, PartialEq)]
 pub enum DriverError {
     #[error("Can't parse server version from string `{}'.", version_string)]
     CantParseServerVersion { version_string: String },
@@ -128,6 +128,12 @@ pub enum DriverError {
 
     #[error("Unknown authentication plugin `{}'.", name)]
     UnknownAuthPlugin { name: String },
+
+    #[error("Packet too large.")]
+    PacketTooLarge,
+
+    #[error("Bad compressed packet header.")]
+    BadCompressedPacketHeader,
 }
 
 impl From<DriverError> for Error {
@@ -228,5 +234,18 @@ impl From<ParseError> for UrlError {
 impl From<ParseError> for Error {
     fn from(err: ParseError) -> Self {
         Error::Url(err.into())
+    }
+}
+
+impl From<PacketCodecError> for Error {
+    fn from(err: PacketCodecError) -> Self {
+        match err {
+            PacketCodecError::Io(err) => err.into(),
+            PacketCodecError::PacketTooLarge => DriverError::PacketTooLarge.into(),
+            PacketCodecError::PacketsOutOfSync => DriverError::PacketOutOfOrder.into(),
+            PacketCodecError::BadCompressedPacketHeader => {
+                DriverError::BadCompressedPacketHeader.into()
+            }
+        }
     }
 }

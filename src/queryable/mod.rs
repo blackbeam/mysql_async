@@ -7,7 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use mysql_common::{
-    packets::{parse_ok_packet, RawPacket},
+    packets::parse_ok_packet,
     row::new_row,
     value::{read_bin_values, read_text_values},
 };
@@ -23,18 +23,19 @@ use crate::{
     connection_like::ConnectionLike, consts::Command, error::*, prelude::FromRow, BoxFuture,
     Column, Conn, Params, Row,
 };
+use mysql_common::value::ServerSide;
 
 pub mod query_result;
 pub mod stmt;
 pub mod transaction;
 
 pub trait Protocol: Send + 'static {
-    fn read_result_set_row(packet: &RawPacket, columns: Arc<Vec<Column>>) -> Result<Row>;
-    fn is_last_result_set_packet<T>(conn_like: &T, packet: &RawPacket) -> bool
+    fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row>;
+    fn is_last_result_set_packet<T>(conn_like: &T, packet: &[u8]) -> bool
     where
         T: ConnectionLike,
     {
-        parse_ok_packet(&*packet.0, conn_like.get_capabilities()).is_ok()
+        parse_ok_packet(packet, conn_like.get_capabilities()).is_ok()
     }
 }
 
@@ -45,24 +46,25 @@ pub struct TextProtocol;
 pub struct BinaryProtocol;
 
 impl Protocol for TextProtocol {
-    fn read_result_set_row(packet: &RawPacket, columns: Arc<Vec<Column>>) -> Result<Row> {
-        read_text_values(&*packet.0, columns.len())
+    fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row> {
+        read_text_values(packet, columns.len())
             .map(|values| new_row(values, columns))
             .map_err(Into::into)
     }
 }
 impl Protocol for BinaryProtocol {
-    fn read_result_set_row(packet: &RawPacket, columns: Arc<Vec<Column>>) -> Result<Row> {
-        read_bin_values(&*packet.0, &*columns)
+    fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row> {
+        read_bin_values::<ServerSide>(packet, &*columns)
             .map(|values| new_row(values, columns))
             .map_err(Into::into)
     }
 
-    fn is_last_result_set_packet<T>(conn_like: &T, packet: &RawPacket) -> bool
+    fn is_last_result_set_packet<T>(conn_like: &T, packet: &[u8]) -> bool
     where
         T: ConnectionLike,
     {
-        (parse_ok_packet(&*packet.0, conn_like.get_capabilities()).is_ok() && packet.0[0] == 0xFE)
+        (parse_ok_packet(packet, conn_like.get_capabilities()).is_ok()
+            && packet.get(0).cloned() == Some(0xFE))
     }
 }
 

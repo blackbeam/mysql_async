@@ -9,6 +9,7 @@
 pub use mysql_common::named_params;
 
 use mysql_common::{
+    constants::DEFAULT_MAX_ALLOWED_PACKET,
     crypto,
     packets::{
         parse_auth_switch_request, parse_handshake_packet, AuthPlugin, AuthSwitchRequest,
@@ -58,9 +59,7 @@ struct ConnInner {
     stream: Option<Stream>,
     id: u32,
     version: (u16, u16, u16),
-    seq_id: u8,
-    last_command: consts::Command,
-    max_allowed_packet: u64,
+    max_allowed_packet: usize,
     socket: Option<String>,
     capabilities: consts::CapabilityFlags,
     status: consts::StatusFlags,
@@ -99,14 +98,12 @@ impl ConnInner {
     /// Constructs an empty connection.
     fn empty(opts: Opts) -> ConnInner {
         ConnInner {
-            last_command: consts::Command::COM_PING,
             capabilities: opts.get_capabilities(),
             status: consts::StatusFlags::empty(),
             last_insert_id: 0,
             affected_rows: 0,
             stream: None,
-            seq_id: 0,
-            max_allowed_packet: 1024 * 1024,
+            max_allowed_packet: DEFAULT_MAX_ALLOWED_PACKET,
             warnings: 0,
             version: (0, 0, 0),
             id: 0,
@@ -185,7 +182,7 @@ impl Conn {
 
     async fn handle_handshake(self) -> Result<Conn> {
         let (mut conn, packet) = self.read_packet().await?;
-        let handshake = parse_handshake_packet(&*packet.0)?;
+        let handshake = parse_handshake_packet(&*packet)?;
         conn.inner.nonce = {
             let mut nonce = Vec::from(handshake.scramble_1_ref());
             nonce.extend_from_slice(handshake.scramble_2_ref().unwrap_or(&[][..]));
@@ -242,8 +239,9 @@ impl Conn {
             self.inner.version,
             self.inner.opts.get_user(),
             self.inner.opts.get_db_name(),
-            self.inner.auth_plugin.clone(),
+            &self.inner.auth_plugin,
             self.get_capabilities(),
+            &Default::default(), // TODO: Add support
         );
 
         self.write_packet(handshake_response.as_ref()).await
@@ -275,22 +273,35 @@ impl Conn {
             match self.inner.auth_plugin {
                 AuthPlugin::MysqlNativePassword => self.continue_mysql_native_password_auth().await,
                 AuthPlugin::CachingSha2Password => self.continue_caching_sha2_password_auth().await,
-                AuthPlugin::Other(ref name) => unimplemented!(
-                    "Unsupported auth plugin: {}",
-                    String::from_utf8_lossy(name.as_ref())
-                ),
+                AuthPlugin::Other(ref name) => Err(DriverError::UnknownAuthPlugin {
+                    name: String::from_utf8_lossy(name.as_ref()).to_string(),
+                })?,
             }
         })
     }
 
+    fn switch_to_compression(mut self) -> Result<Conn> {
+        if self
+            .get_capabilities()
+            .contains(CapabilityFlags::CLIENT_COMPRESS)
+        {
+            if let Some(compression) = self.inner.opts.get_compression() {
+                if let Some(stream) = self.inner.stream.as_mut() {
+                    stream.compress(compression);
+                }
+            }
+        }
+        Ok(self)
+    }
+
     async fn continue_caching_sha2_password_auth(self) -> Result<Conn> {
         let (conn, packet) = self.read_packet().await?;
-        match packet.as_ref().get(0) {
+        match packet.get(0) {
             Some(0x00) => {
                 // ok packet for empty password
                 Ok(conn)
             }
-            Some(0x01) => match packet.as_ref().get(1) {
+            Some(0x01) => match packet.get(1) {
                 Some(0x03) => {
                     // auth ok
                     conn.drop_packet().await
@@ -309,7 +320,7 @@ impl Conn {
                     } else {
                         let conn = conn.write_packet(&[0x02][..]).await?;
                         let (conn, packet) = conn.read_packet().await?;
-                        let key = &packet.as_ref()[1..];
+                        let key = &packet[1..];
                         for (i, byte) in pass.iter_mut().enumerate() {
                             *byte ^= conn.inner.nonce[i % conn.inner.nonce.len()];
                         }
@@ -319,16 +330,16 @@ impl Conn {
                     conn.drop_packet().await
                 }
                 _ => Err(DriverError::UnexpectedPacket {
-                    payload: packet.as_ref().into(),
+                    payload: packet.into(),
                 }
                 .into()),
             },
             Some(0xfe) if !conn.inner.auth_switched => {
-                let auth_switch_request = parse_auth_switch_request(packet.as_ref())?.into_owned();
+                let auth_switch_request = parse_auth_switch_request(&*packet)?.into_owned();
                 conn.perform_auth_switch(auth_switch_request).await
             }
             _ => Err(DriverError::UnexpectedPacket {
-                payload: packet.as_ref().into(),
+                payload: packet.into(),
             }
             .into()),
         }
@@ -336,13 +347,13 @@ impl Conn {
 
     async fn continue_mysql_native_password_auth(self) -> Result<Conn> {
         let (this, packet) = self.read_packet().await?;
-        match packet.0.get(0) {
+        match packet.get(0) {
             Some(0x00) => Ok(this),
             Some(0xfe) if !this.inner.auth_switched => {
                 let auth_switch_request = parse_auth_switch_request(packet.as_ref())?.into_owned();
                 this.perform_auth_switch(auth_switch_request).await
             }
-            _ => Err(DriverError::UnexpectedPacket { payload: packet.0 }.into()),
+            _ => Err(DriverError::UnexpectedPacket { payload: packet }.into()),
         }
     }
 
@@ -381,6 +392,7 @@ impl Conn {
             .await?
             .continue_auth()
             .await?
+            .switch_to_compression()?
             .read_socket()
             .await?
             .reconnect_via_socket_if_needed()
@@ -437,8 +449,10 @@ impl Conn {
 
     /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
     async fn read_max_allowed_packet(self) -> Result<Self> {
-        let (mut this, row_opt) = self.first("SELECT @@max_allowed_packet").await?;
-        this.inner.max_allowed_packet = row_opt.unwrap_or((1024 * 1024 * 2,)).0;
+        let (mut this, row_opt): (Self, _) = self.first("SELECT @@max_allowed_packet").await?;
+        if let Some(stream) = this.inner.stream.as_mut() {
+            stream.set_max_allowed_packet(row_opt.unwrap_or((DEFAULT_MAX_ALLOWED_PACKET,)).0);
+        }
         Ok(this)
     }
 
@@ -552,15 +566,11 @@ impl ConnectionLike for Conn {
         }
     }
 
-    fn get_last_command(&self) -> consts::Command {
-        self.inner.last_command
-    }
-
     fn get_local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>> {
         self.inner.opts.get_local_infile_handler()
     }
 
-    fn get_max_allowed_packet(&self) -> u64 {
+    fn get_max_allowed_packet(&self) -> usize {
         self.inner.max_allowed_packet
     }
 
@@ -570,10 +580,6 @@ impl ConnectionLike for Conn {
 
     fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)> {
         self.inner.has_result.as_ref()
-    }
-
-    fn get_seq_id(&self) -> u8 {
-        self.inner.seq_id
     }
 
     fn get_server_version(&self) -> (u16, u16, u16) {
@@ -592,10 +598,6 @@ impl ConnectionLike for Conn {
         self.inner.in_transaction = in_transaction;
     }
 
-    fn set_last_command(&mut self, last_command: consts::Command) {
-        self.inner.last_command = last_command;
-    }
-
     fn set_last_insert_id(&mut self, last_insert_id: u64) {
         self.inner.last_insert_id = last_insert_id;
     }
@@ -612,8 +614,16 @@ impl ConnectionLike for Conn {
         self.inner.warnings = warnings;
     }
 
-    fn set_seq_id(&mut self, seq_id: u8) {
-        self.inner.seq_id = seq_id;
+    fn reset_seq_id(&mut self) {
+        if let Some(stream) = self.inner.stream.as_mut() {
+            stream.reset_seq_id();
+        }
+    }
+
+    fn sync_seq_id(&mut self) {
+        if let Some(stream) = self.inner.stream.as_mut() {
+            stream.sync_seq_id();
+        }
     }
 
     fn touch(&mut self) {
@@ -639,6 +649,23 @@ mod test {
     }
 
     #[tokio::test]
+    async fn should_connect_without_database() -> super::Result<()> {
+        let mut opts = get_opts();
+
+        // no database name
+        opts.db_name(None::<String>);
+        let conn: Conn = Conn::new(opts.clone()).await?.ping().await?;
+        conn.disconnect().await?;
+
+        // empty database name
+        opts.db_name(Some(""));
+        let conn: Conn = Conn::new(opts).await?.ping().await?;
+        conn.disconnect().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn should_connect() -> super::Result<()> {
         let conn: Conn = Conn::new(get_opts()).await?.ping().await?;
 
@@ -648,6 +675,7 @@ mod test {
             .map_and_drop(|mut row| row.take::<String, _>("Name").unwrap())
             .await?;
 
+        // Should connect with any combination of supported plugin and empty-nonempty password.
         let variants = vec![
             ("caching_sha2_password", "non-empty"),
             ("caching_sha2_password", ""),
@@ -676,6 +704,14 @@ mod test {
                 .unwrap();
 
             result?.disconnect().await?;
+        }
+
+        if crate::test_misc::test_compression() {
+            assert!(format!("{:?}", conn).contains("Compression"));
+        }
+
+        if crate::test_misc::test_ssl() {
+            assert!(format!("{:?}", conn).contains("Tls"));
         }
 
         conn.disconnect().await?;
@@ -1146,9 +1182,12 @@ mod test {
     async fn should_handle_local_infile() -> super::Result<()> {
         use std::io::Write;
 
+        let tempdir = tempfile::TempDir::new().unwrap();
+        let file_path = tempdir.path().join("local_infile.txt");
+
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(
-            &["local_infile.txt"][..],
+            &[file_path.as_path()][..],
         )));
 
         let conn = Conn::new(opts).await?;
@@ -1156,12 +1195,15 @@ mod test {
             .drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);")
             .await?;
 
-        let mut file = ::std::fs::File::create("local_infile.txt").unwrap();
+        let mut file = ::std::fs::File::create(file_path.as_path()).unwrap();
         let _ = file.write(b"AAAAAA\n");
         let _ = file.write(b"BBBBBB\n");
         let _ = file.write(b"CCCCCC\n");
         let conn = match conn
-            .drop_query("LOAD DATA LOCAL INFILE 'local_infile.txt' INTO TABLE tmp;")
+            .drop_query(format!(
+                "LOAD DATA LOCAL INFILE '{}' INTO TABLE tmp;",
+                file_path.as_path().display()
+            ))
             .await
         {
             Ok(conn) => conn,
@@ -1181,7 +1223,7 @@ mod test {
         assert_eq!(result[1], "BBBBBB");
         assert_eq!(result[2], "CCCCCC");
         let result = conn.disconnect().await;
-        let _ = ::std::fs::remove_file("local_infile.txt");
+
         if let Err(crate::error::Error::Server(ref err)) = result {
             if err.code == 1148 {
                 // The used command is not allowed with this MySQL version

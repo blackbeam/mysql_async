@@ -6,11 +6,10 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use byteorder::{ByteOrder, LittleEndian};
 use futures_util::future::ok;
 use mysql_common::{
     io::ReadMysqlExt,
-    packets::{column_from_payload, parse_local_infile_packet, Column, RawPacket},
+    packets::{column_from_payload, parse_local_infile_packet, Column, ComStmtClose},
 };
 use tokio::prelude::*;
 
@@ -36,6 +35,7 @@ pub mod streamless {
     use super::ConnectionLike;
     use crate::io::Stream;
 
+    #[derive(Debug)]
     pub struct Streamless<T>(T);
 
     impl<T: ConnectionLike> Streamless<T> {
@@ -106,10 +106,6 @@ where
         self.conn_like_ref().get_in_transaction()
     }
 
-    fn get_last_command(&self) -> Command {
-        self.conn_like_ref().get_last_command()
-    }
-
     fn get_last_insert_id(&self) -> Option<u64> {
         self.conn_like_ref().get_last_insert_id()
     }
@@ -118,7 +114,7 @@ where
         self.conn_like_ref().get_local_infile_handler()
     }
 
-    fn get_max_allowed_packet(&self) -> u64 {
+    fn get_max_allowed_packet(&self) -> usize {
         self.conn_like_ref().get_max_allowed_packet()
     }
 
@@ -138,20 +134,12 @@ where
         self.conn_like_ref().get_status()
     }
 
-    fn get_seq_id(&self) -> u8 {
-        self.conn_like_ref().get_seq_id()
-    }
-
     fn set_affected_rows(&mut self, affected_rows: u64) {
         self.conn_like_mut().set_affected_rows(affected_rows);
     }
 
     fn set_in_transaction(&mut self, in_transaction: bool) {
         self.conn_like_mut().set_in_transaction(in_transaction);
-    }
-
-    fn set_last_command(&mut self, last_command: Command) {
-        self.conn_like_mut().set_last_command(last_command);
     }
 
     fn set_last_insert_id(&mut self, last_insert_id: u64) {
@@ -170,8 +158,12 @@ where
         self.conn_like_mut().set_warnings(warnings);
     }
 
-    fn set_seq_id(&mut self, seq_id: u8) {
-        self.conn_like_mut().set_seq_id(seq_id);
+    fn reset_seq_id(&mut self) {
+        self.conn_like_mut().reset_seq_id();
+    }
+
+    fn sync_seq_id(&mut self) {
+        self.conn_like_mut().sync_seq_id();
     }
 
     fn touch(&mut self) {
@@ -193,23 +185,21 @@ pub trait ConnectionLike: Send {
     fn get_affected_rows(&self) -> u64;
     fn get_capabilities(&self) -> CapabilityFlags;
     fn get_in_transaction(&self) -> bool;
-    fn get_last_command(&self) -> Command;
     fn get_last_insert_id(&self) -> Option<u64>;
     fn get_local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>>;
-    fn get_max_allowed_packet(&self) -> u64;
+    fn get_max_allowed_packet(&self) -> usize;
     fn get_opts(&self) -> &Opts;
     fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)>;
     fn get_server_version(&self) -> (u16, u16, u16);
     fn get_status(&self) -> StatusFlags;
-    fn get_seq_id(&self) -> u8;
     fn set_affected_rows(&mut self, affected_rows: u64);
     fn set_in_transaction(&mut self, in_transaction: bool);
-    fn set_last_command(&mut self, last_command: Command);
     fn set_last_insert_id(&mut self, last_insert_id: u64);
     fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>);
     fn set_status(&mut self, status: StatusFlags);
     fn set_warnings(&mut self, warnings: u16);
-    fn set_seq_id(&mut self, seq_id: u8);
+    fn reset_seq_id(&mut self);
+    fn sync_seq_id(&mut self);
     fn touch(&mut self) -> ();
     fn on_disconnect(&mut self);
 
@@ -245,7 +235,7 @@ pub trait ConnectionLike: Send {
     }
 
     /// Returns future that reads packets from a server and resolves to `(Self, Vec<Packet>)`.
-    fn read_packets(self, n: usize) -> BoxFuture<(Self, Vec<RawPacket>)>
+    fn read_packets(self, n: usize) -> BoxFuture<(Self, Vec<Vec<u8>>)>
     where
         Self: Sized + 'static,
     {
@@ -282,13 +272,13 @@ pub trait ConnectionLike: Send {
                             .await?
                             .read_packet()
                             .await?;
-                        let mut inner_stmt = InnerStmt::new(&*packet.0, named_params)?;
+                        let mut inner_stmt = InnerStmt::new(&*packet, named_params)?;
                         let (mut this, packets) =
                             this.read_packets(inner_stmt.num_params as usize).await?;
                         if !packets.is_empty() {
                             let params = packets
                                 .into_iter()
-                                .map(|packet| column_from_payload(packet.0).map_err(Error::from))
+                                .map(|packet| column_from_payload(packet).map_err(Error::from))
                                 .collect::<Result<Vec<Column>>>()?;
                             inner_stmt.params = Some(params);
                         }
@@ -307,7 +297,7 @@ pub trait ConnectionLike: Send {
                         if !packets.is_empty() {
                             let columns = packets
                                 .into_iter()
-                                .map(|packet| column_from_payload(packet.0).map_err(Error::from))
+                                .map(|packet| column_from_payload(packet).map_err(Error::from))
                                 .collect::<Result<Vec<Column>>>()?;
                             inner_stmt.columns = Some(columns);
                         }
@@ -334,9 +324,7 @@ pub trait ConnectionLike: Send {
     where
         Self: Sized + 'static,
     {
-        let mut stmt_id = [0; 4];
-        LittleEndian::write_u32(&mut stmt_id[..], statement_id);
-        self.write_command_data(Command::COM_STMT_CLOSE, &stmt_id[..])
+        self.write_command_raw(ComStmtClose::new(statement_id).into())
     }
 
     /// Returns future that reads result set from a server and resolves to `QueryResult`.
@@ -348,10 +336,10 @@ pub trait ConnectionLike: Send {
     {
         Box::pin(async move {
             let (this, packet) = self.read_packet().await?;
-            match packet.0[0] {
-                0x00 => Ok(query_result::new(this, None, cached)),
-                0xFB => handle_local_infile(this, packet, cached).await,
-                _ => handle_result_set(this, packet, cached).await,
+            match packet.get(0) {
+                Some(0x00) => Ok(query_result::new(this, None, cached)),
+                Some(0xFB) => handle_local_infile(this, &*packet, cached).await,
+                _ => handle_result_set(this, &*packet, cached).await,
             }
         })
     }
@@ -365,24 +353,34 @@ pub trait ConnectionLike: Send {
         WritePacket::new(self, data)
     }
 
-    /// Returns future that writes command to a server end resolves to `Self`.
-    fn write_command_data<T>(mut self, cmd: Command, cmd_data: T) -> WritePacket<Self>
+    /// Returns future that sends full command body to a server and resolves to `Self`.
+    fn write_command_raw(mut self, body: Vec<u8>) -> WritePacket<Self>
+    where
+        Self: Sized + 'static,
+    {
+        assert!(body.len() > 0);
+        self.reset_seq_id();
+        self.write_packet(body)
+    }
+
+    /// Returns future that writes command to a server and resolves to `Self`.
+    fn write_command_data<T>(self, cmd: Command, cmd_data: T) -> WritePacket<Self>
     where
         Self: Sized + 'static,
         T: AsRef<[u8]>,
     {
-        let mut data = Vec::with_capacity(1 + cmd_data.as_ref().len());
-        data.push(cmd as u8);
-        data.extend_from_slice(cmd_data.as_ref());
-        self.set_seq_id(0);
-        self.write_packet(data)
+        let cmd_data = cmd_data.as_ref();
+        let mut body = Vec::with_capacity(1 + cmd_data.len());
+        body.push(cmd as u8);
+        body.extend_from_slice(cmd_data);
+        self.write_command_raw(body)
     }
 }
 
 /// Will handle local infile packet.
 async fn handle_local_infile<T, P>(
     mut this: T,
-    packet: RawPacket,
+    packet: &[u8],
     cached: Option<StmtCacheResult>,
 ) -> Result<QueryResult<T, P>>
 where
@@ -390,7 +388,7 @@ where
     T: ConnectionLike,
     T: Send + Sized + 'static,
 {
-    let local_infile = parse_local_infile_packet(&*packet.0)?;
+    let local_infile = parse_local_infile_packet(&*packet)?;
     let (local_infile, handler) = match this.get_local_infile_handler() {
         Some(handler) => ((local_infile.into_owned(), handler)),
         None => return Err(DriverError::NoLocalInfileHandler.into()),
@@ -414,7 +412,7 @@ where
 /// Will handle result set packet.
 async fn handle_result_set<T, P>(
     this: T,
-    packet: RawPacket,
+    mut packet: &[u8],
     cached: Option<StmtCacheResult>,
 ) -> Result<QueryResult<T, P>>
 where
@@ -423,11 +421,11 @@ where
     T: ConnectionLike,
     T: Send + Sized + 'static,
 {
-    let column_count = (&*packet.0).read_lenenc_int()?;
+    let column_count = packet.read_lenenc_int()?;
     let (mut this, packets) = this.read_packets(column_count as usize).await?;
     let columns = packets
         .into_iter()
-        .map(|packet| column_from_payload(packet.0).map_err(Error::from))
+        .map(|packet| column_from_payload(packet).map_err(Error::from))
         .collect::<Result<Vec<Column>>>()?;
 
     if !this

@@ -143,6 +143,9 @@ pub use self::local_infile_handler::{builtin::WhiteListFsLocalInfileHandler, Inf
 pub use mysql_common::packets::Column;
 
 #[doc(inline)]
+pub use mysql_common::proto::codec::Compression;
+
+#[doc(inline)]
 pub use mysql_common::row::Row;
 
 #[doc(inline)]
@@ -235,13 +238,24 @@ mod test_misc {
         let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
         // to suppress warning on unused mut
         builder.stmt_cache_size(None);
-        if ["true", "1"].contains(&&*env::var("SSL").unwrap_or("".into())) {
+        if test_ssl() {
             builder.prefer_socket(false);
             let mut ssl_opts = SslOpts::default();
             ssl_opts.set_danger_skip_domain_validation(true);
             ssl_opts.set_danger_accept_invalid_certs(true);
             builder.ssl_opts(ssl_opts);
         }
+        if test_compression() {
+            builder.compression(crate::Compression::default());
+        }
         builder
+    }
+
+    pub fn test_compression() -> bool {
+        ["true", "1"].contains(&&*env::var("COMPRESS").unwrap_or("".into()))
+    }
+
+    pub fn test_ssl() -> bool {
+        ["true", "1"].contains(&&*env::var("SSL").unwrap_or("".into()))
     }
 }

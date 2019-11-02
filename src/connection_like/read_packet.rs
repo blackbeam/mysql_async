@@ -8,7 +8,7 @@
 
 use futures_core::ready;
 use futures_util::stream::{StreamExt, StreamFuture};
-use mysql_common::packets::{parse_err_packet, parse_ok_packet, RawPacket};
+use mysql_common::packets::{parse_err_packet, parse_ok_packet};
 use pin_project::pin_project;
 use std::future::Future;
 use std::pin::Pin;
@@ -38,7 +38,7 @@ impl<T: ConnectionLike> ReadPacket<T> {
 }
 
 impl<T: ConnectionLike> Future for ReadPacket<T> {
-    type Output = Result<(T, RawPacket)>;
+    type Output = Result<(T, Vec<u8>)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
@@ -46,20 +46,19 @@ impl<T: ConnectionLike> Future for ReadPacket<T> {
         let packet_opt = packet_opt.transpose()?;
         let mut conn_like = this.conn_like.take().unwrap().return_stream(stream);
         match packet_opt {
-            Some((packet, seq_id)) => {
-                if let Ok(ok_packet) = parse_ok_packet(&*packet.0, conn_like.get_capabilities()) {
+            Some(packet) => {
+                if let Ok(ok_packet) = parse_ok_packet(&*packet, conn_like.get_capabilities()) {
                     conn_like.set_affected_rows(ok_packet.affected_rows());
                     conn_like.set_last_insert_id(ok_packet.last_insert_id().unwrap_or(0));
                     conn_like.set_status(ok_packet.status_flags());
                     conn_like.set_warnings(ok_packet.warnings());
                 } else if let Ok(err_packet) =
-                    parse_err_packet(&*packet.0, conn_like.get_capabilities())
+                    parse_err_packet(&*packet, conn_like.get_capabilities())
                 {
                     return Err(err_packet.into()).into();
                 }
 
                 conn_like.touch();
-                conn_like.set_seq_id(seq_id.wrapping_add(1));
                 Poll::Ready(Ok((conn_like, packet)))
             }
             None => Poll::Ready(Err(DriverError::ConnectionClosed.into())),

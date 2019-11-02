@@ -12,23 +12,21 @@ exclude = ["test/*"]
 edition = "2018"
 
 [dependencies]
-bit-vec = "0.6"
 byteorder = "1"
 bytes = "0.4"
 crossbeam = "0.7"
-thiserror = "1.0.2"
 fnv = "1"
 futures-core-preview = "=0.3.0-alpha.19"
 futures-util-preview = "=0.3.0-alpha.19"
 futures-sink-preview = "=0.3.0-alpha.19"
-mio-named-pipes = "0.1.6"
-mysql_common = "0.18"
+mysql_common = "0.19.2"
 native-tls = "0.2"
 percent-encoding = "2.1.0"
 pin-project = "0.4.0"
 regex = "1"
 serde = "1"
 serde_json = "1"
+thiserror = "1.0.4"
 # we only need rt-full for tokio::spawn
 tokio = { version = "=0.2.0-alpha.6", default-features = false, features = ["codec", "io", "net", "sync", "fs", "rt-full"] }
 tokio-tls = "=0.3.0-alpha.6"
@@ -38,6 +36,7 @@ url = "2.1"
 
 [dev-dependencies]
 lazy_static = "1"
+tempfile = "3.1.0"
 
 [features]
 nightly = []

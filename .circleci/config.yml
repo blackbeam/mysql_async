@@ -56,10 +56,11 @@ jobs:
                   rustup toolchain install beta
                   cargo +beta test
             - run:
-                name: Nightly SSL
+                name: SSL + COMPRESS
                 command: cargo +beta test
                 environment:
                   SSL: 1
+                  COMPRESS: 1
 
 
 workflows:
