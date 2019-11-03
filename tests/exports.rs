@@ -8,7 +8,8 @@ use mysql_async::{
         ToValue,
     },
     time, uuid, BinaryProtocol, BoxFuture, Column, Conn, Deserialized, FromRowError,
-    FromValueError, IsolationLevel, Opts, OptsBuilder, Params, Pool, PoolConstraints, QueryResult,
-    Row, Serialized, SslOpts, Stmt, TextProtocol, Transaction, TransactionOptions, Value,
-    WhiteListFsLocalInfileHandler,
+    FromValueError, IsolationLevel, Opts, OptsBuilder, Params, Pool, PoolConstraints, PoolOptions,
+    QueryResult, Row, Serialized, SslOpts, Stmt, TextProtocol, Transaction, TransactionOptions,
+    Value, WhiteListFsLocalInfileHandler, DEFAULT_INACTIVE_CONNECTION_TTL,
+    DEFAULT_TTL_CHECK_INTERVAL,
 };
