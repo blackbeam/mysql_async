@@ -84,7 +84,7 @@ impl Inner {
 
             // Spawn the ttl check interval if `inactive_connection_ttl` isn't `0`
             if pool_options.inactive_connection_ttl() > Duration::from_secs(0) {
-                tokio::spawn(TtlCheckInterval::new(pool_options, self.clone()).into_future());
+                tokio::spawn(TtlCheckInterval::new(pool_options, self.clone()));
             }
         }
     }
