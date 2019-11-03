@@ -17,7 +17,15 @@ use mysql_common::{
     },
 };
 
-use std::{fmt, future::Future, mem, pin::Pin, str::FromStr, sync::Arc};
+use std::{
+    fmt,
+    future::Future,
+    mem,
+    pin::Pin,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crate::{
     conn::{pool::Pool, stmt_cache::StmtCache},
@@ -28,7 +36,6 @@ use crate::{
     local_infile_handler::LocalInfileHandler,
     opts::Opts,
     queryable::{query_result, BinaryProtocol, Queryable, TextProtocol},
-    time::SteadyTime,
     Column, OptsBuilder,
 };
 
@@ -70,8 +77,8 @@ struct ConnInner {
     has_result: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>,
     in_transaction: bool,
     opts: Opts,
-    last_io: SteadyTime,
-    wait_timeout: u32,
+    last_io: Instant,
+    wait_timeout: Duration,
     stmt_cache: StmtCache,
     nonce: Vec<u8>,
     auth_plugin: AuthPlugin<'static>,
@@ -110,8 +117,8 @@ impl ConnInner {
             has_result: None,
             pool: None,
             in_transaction: false,
-            last_io: SteadyTime::now(),
-            wait_timeout: 0,
+            last_io: Instant::now(),
+            wait_timeout: Duration::from_secs(0),
             stmt_cache: StmtCache::new(opts.get_stmt_cache_size()),
             socket: opts.get_socket().map(Into::into),
             opts,
@@ -459,19 +466,24 @@ impl Conn {
     /// Returns future that resolves to `Conn` with `wait_timeout` stored in it.
     async fn read_wait_timeout(self) -> Result<Self> {
         let (mut this, row_opt) = self.first("SELECT @@wait_timeout").await?;
-        this.inner.wait_timeout = row_opt.unwrap_or((28800,)).0;
+        let wait_timeout_secs = row_opt.unwrap_or((28800,)).0;
+        this.inner.wait_timeout = Duration::from_secs(wait_timeout_secs);
         Ok(this)
     }
 
     /// Returns true if time since last io exceeds wait_timeout (or conn_ttl if specified in opts).
     fn expired(&self) -> bool {
-        let idle_duration = SteadyTime::now() - self.inner.last_io;
         let ttl = self
             .inner
             .opts
             .get_conn_ttl()
             .unwrap_or(self.inner.wait_timeout);
-        idle_duration.num_milliseconds() > i64::from(ttl) * 1000
+        self.idling() > ttl
+    }
+
+    /// Returns duration since last io.
+    fn idling(&self) -> Duration {
+        self.inner.last_io.elapsed()
     }
 
     /// Returns future that resolves to a `Conn` with `COM_RESET_CONNECTION` executed on it.
@@ -627,7 +639,7 @@ impl ConnectionLike for Conn {
     }
 
     fn touch(&mut self) {
-        self.inner.last_io = SteadyTime::now();
+        self.inner.last_io = Instant::now();
     }
 
     fn on_disconnect(&mut self) {

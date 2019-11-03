@@ -134,7 +134,10 @@ pub use self::conn::pool::Pool;
 pub use self::queryable::transaction::IsolationLevel;
 
 #[doc(inline)]
-pub use self::opts::{Opts, OptsBuilder, PoolConstraints, SslOpts};
+pub use self::opts::{
+    Opts, OptsBuilder, PoolConstraints, PoolOptions, SslOpts, DEFAULT_INACTIVE_CONNECTION_TTL,
+    DEFAULT_TTL_CHECK_INTERVAL,
+};
 
 #[doc(inline)]
 pub use self::local_infile_handler::{builtin::WhiteListFsLocalInfileHandler, InfileHandlerFuture};
