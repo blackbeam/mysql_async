@@ -7,10 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use futures_core::ready;
-use futures_util::future::{ready, FutureExt};
-use futures_util::stream::StreamExt;
 use tokio::sync::mpsc;
-use tokio::timer::Interval;
 
 use std::{
     fmt,
@@ -34,6 +31,7 @@ use crate::{
 mod recycler;
 // this is a really unfortunate name for a module
 pub mod futures;
+mod ttl_check_inerval;
 
 /// Connection that is idling in the pool.
 #[derive(Debug)]
@@ -76,57 +74,17 @@ impl Inner {
     /// This function will spawn the recycler for this pool
     /// as well as the ttl check interval if `inactive_connection_ttl` isn't `0`.
     fn spawn_futures_if_needed(self: Arc<Self>) {
+        use recycler::Recycler;
+        use ttl_check_inerval::TtlCheckInterval;
+
         let mut lock = self.maker.lock().unwrap();
         if let Some((dropped, pool_options)) = lock.take() {
             // Spawn the Recycler.
-            tokio::spawn(recycler::Recycler::new(
-                pool_options.clone(),
-                self.clone(),
-                dropped,
-            ));
+            tokio::spawn(Recycler::new(pool_options.clone(), self.clone(), dropped));
 
-            // Spawn the ttl check interval
-            // The purpose of this interval is to remove idling connections that both:
-            // * overflows min bound of the pool;
-            // * idles longer then `inactive_connection_ttl`.
+            // Spawn the ttl check interval if `inactive_connection_ttl` isn't `0`
             if pool_options.inactive_connection_ttl() > Duration::from_secs(0) {
-                let inner = self.clone();
-                tokio::spawn(
-                    Interval::new_interval(pool_options.ttl_check_interval()).for_each(move |_| {
-                        let num_idling = inner.idle.len();
-                        let mut num_to_drop =
-                            num_idling.saturating_sub(pool_options.constraints().min());
-                        let mut num_returned = 0;
-
-                        for _ in 0..num_idling {
-                            match inner.idle.pop() {
-                                Ok(idling_conn) => {
-                                    if idling_conn.elapsed()
-                                        > pool_options.inactive_connection_ttl()
-                                    {
-                                        tokio::spawn(idling_conn.conn.disconnect().map(drop));
-                                        inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
-                                        if num_to_drop == 1 {
-                                            break;
-                                        } else {
-                                            num_to_drop -= 1;
-                                        }
-                                    } else {
-                                        inner.push_to_idle(idling_conn);
-                                        num_returned += 1;
-                                    }
-                                }
-                                Err(_) => break,
-                            }
-                        }
-
-                        if num_returned > 0 {
-                            inner.wake(num_returned);
-                        }
-
-                        ready(())
-                    }),
-                );
+                tokio::spawn(TtlCheckInterval::new(pool_options, self.clone()).into_future());
             }
         }
     }
