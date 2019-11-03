@@ -31,7 +31,7 @@ const_assert!(
 );
 const DEFAULT_STMT_CACHE_SIZE: usize = 10;
 
-/// Default `inactive_connection_timeout` of a pool.
+/// Default `inactive_connection_ttl` of a pool.
 ///
 /// `0` value means, that connection will be dropped immediately
 /// if it is outside of the pool's lower bound.
@@ -488,7 +488,7 @@ pub struct PoolConstraints {
 impl PoolConstraints {
     /// Creates new `PoolConstraints` if constraints are valid (`min <= max`).
     ///
-    /// `inactive_connection_timeout` will have the default value.
+    /// `inactive_connection_ttl` will have the default value.
     pub fn new(min: usize, max: usize) -> Option<PoolConstraints> {
         if min <= max {
             Some(PoolConstraints { min, max })
