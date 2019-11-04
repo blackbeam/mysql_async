@@ -1189,30 +1189,30 @@ mod test {
 
     #[tokio::test]
     async fn should_handle_local_infile() -> super::Result<()> {
-        use std::io::Write;
+        use std::{io::Write, path::Path};
 
-        let tempdir = tempfile::TempDir::new().unwrap();
-        let file_path = tempdir.path().join("local_infile.txt");
+        let file_path = tempfile::Builder::new().tempfile_in("").unwrap();
+        let file_path = file_path.path();
+        let file_name = Path::new(file_path.file_name().unwrap());
 
         let mut opts = OptsBuilder::from_opts(get_opts());
-        opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(
-            &[file_path.as_path()][..],
-        )));
+        opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[file_name][..])));
 
-        let conn = Conn::new(opts).await?;
+        let conn = Conn::new(opts).await.unwrap();
         let conn = conn
             .drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);")
-            .await?;
+            .await
+            .unwrap();
 
-        let mut file = ::std::fs::File::create(file_path.as_path()).unwrap();
+        let mut file = ::std::fs::File::create(file_name).unwrap();
         let _ = file.write(b"AAAAAA\n");
         let _ = file.write(b"BBBBBB\n");
         let _ = file.write(b"CCCCCC\n");
         let conn = match conn
-            .drop_query(format!(
-                "LOAD DATA LOCAL INFILE '{}' INTO TABLE tmp;",
-                file_path.as_path().display()
-            ))
+            .drop_query(dbg!(format!(
+                r#"LOAD DATA LOCAL INFILE "{}" INTO TABLE tmp;"#,
+                file_name.display()
+            )))
             .await
         {
             Ok(conn) => conn,
@@ -1224,9 +1224,11 @@ mod test {
         };
         let (conn, result) = conn
             .prep_exec("SELECT * FROM tmp;", ())
-            .await?
+            .await
+            .unwrap()
             .map_and_drop(|row| from_row::<(String,)>(row).0)
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(result.len(), 3);
         assert_eq!(result[0], "AAAAAA");
         assert_eq!(result[1], "BBBBBB");
