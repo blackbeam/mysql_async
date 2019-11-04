@@ -149,8 +149,8 @@ impl PoolOptions {
     }
 
     /// Returns `constrains` value.
-    pub fn constraints(&self) -> &PoolConstraints {
-        &self.constraints
+    pub fn constraints(&self) -> PoolConstraints {
+        self.constraints
     }
 
     /// Pool will recycle inactive connection if it outside of the lower bound of a pool
@@ -479,7 +479,7 @@ impl Default for InnerOpts {
 /// Connection pool constraints.
 ///
 /// This type stores `min` and `max` constraints for [`crate::Pool`] and ensures that `min <= max`.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct PoolConstraints {
     min: usize,
     max: usize,
