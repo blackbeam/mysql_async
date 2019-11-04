@@ -687,7 +687,8 @@ mod test {
 
         use crate::prelude::Queryable;
         use crate::test_misc::get_opts;
-        use crate::{Pool, PoolConstraints};
+        use crate::{Pool, PoolConstraints, PoolOptions};
+        use std::time::Duration;
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
@@ -707,7 +708,9 @@ mod test {
             let runtime = Runtime::new().unwrap();
 
             let mut opts = get_opts();
-            opts.pool_constraints(PoolConstraints::new(0, 1));
+            let mut pool_opts = PoolOptions::with_constraints(PoolConstraints::new(0, 1).unwrap());
+            pool_opts.set_inactive_connection_ttl(Duration::from_secs(1));
+            opts.pool_options(pool_opts);
 
             let pool = Pool::new(opts);
 
