@@ -378,7 +378,7 @@ impl Conn {
         Ok(conn)
     }
 
-    /// Returns future that resolves to `Conn`.
+    /// Returns future that resolves to [`Conn`].
     pub async fn new<T: Into<Opts>>(opts: T) -> Result<Conn> {
         let opts = opts.into();
         let mut conn = Conn::empty(opts.clone());
@@ -412,7 +412,7 @@ impl Conn {
             .await
     }
 
-    /// Returns future that resolves to `Conn`.
+    /// Returns future that resolves to [`Conn`].
     pub async fn from_url<T: AsRef<str>>(url: T) -> Result<Conn> {
         Conn::new(Opts::from_str(url.as_ref())?).await
     }
@@ -421,7 +421,7 @@ impl Conn {
     ///
     /// Returns new connection on success or self on error.
     ///
-    /// Won't try to reconnect if socket connection is already enforced in `Opts`.
+    /// Won't try to reconnect if socket connection is already enforced in [`Opts`].
     fn reconnect_via_socket_if_needed(self) -> Pin<Box<dyn Future<Output = Result<Conn>> + Send>> {
         // NOTE: we need to box this since it may recurse
         // see https://github.com/rust-lang/rust/issues/46415#issuecomment-528099782
@@ -441,9 +441,9 @@ impl Conn {
         })
     }
 
-    /// Returns future that resolves to `Conn` with socket address stored in it.
+    /// Returns future that resolves to [`Conn`] with socket address stored in it.
     ///
-    /// Do nothing if socket address is already in `Opts` or if `prefer_socket` is `false`.
+    /// Do nothing if socket address is already in [`Opts`] or if `prefer_socket` is `false`.
     async fn read_socket(self) -> Result<Self> {
         if self.inner.opts.get_prefer_socket() && self.inner.socket.is_none() {
             let (mut this, row_opt) = self.first("SELECT @@socket").await?;
@@ -454,7 +454,7 @@ impl Conn {
         }
     }
 
-    /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
+    /// Returns future that resolves to [`Conn`] with `max_allowed_packet` stored in it.
     async fn read_max_allowed_packet(self) -> Result<Self> {
         let (mut this, row_opt): (Self, _) = self.first("SELECT @@max_allowed_packet").await?;
         if let Some(stream) = this.inner.stream.as_mut() {
@@ -463,7 +463,7 @@ impl Conn {
         Ok(this)
     }
 
-    /// Returns future that resolves to `Conn` with `wait_timeout` stored in it.
+    /// Returns future that resolves to [`Conn`] with `wait_timeout` stored in it.
     async fn read_wait_timeout(self) -> Result<Self> {
         let (mut this, row_opt) = self.first("SELECT @@wait_timeout").await?;
         let wait_timeout_secs = row_opt.unwrap_or((28800,)).0;
@@ -486,7 +486,7 @@ impl Conn {
         self.inner.last_io.elapsed()
     }
 
-    /// Returns future that resolves to a `Conn` with `COM_RESET_CONNECTION` executed on it.
+    /// Returns future that resolves to a [`Conn`] with `COM_RESET_CONNECTION` executed on it.
     pub async fn reset(self) -> Result<Conn> {
         let pool = self.inner.pool.clone();
         let mut conn = if self.inner.version > (5, 7, 2) {

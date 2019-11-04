@@ -14,7 +14,7 @@ use std::task::{Context, Poll};
 
 use crate::{error::*, io::Stream};
 
-/// Future that writes packet to a `Stream` and resolves to a pair of `Stream` and MySql's sequence
+/// Future that writes packet to a [`Stream`] and resolves to a pair of [`Stream`] and MySql's sequence
 /// id.
 pub struct WritePacket {
     data: Option<Vec<u8>>,

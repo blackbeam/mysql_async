@@ -31,7 +31,7 @@ impl GetConnInner {
     }
 }
 
-/// This future will take connection from a pool and resolve to `Conn`.
+/// This future will take connection from a pool and resolve to [`Conn`].
 pub struct GetConn {
     pub(crate) pool: Option<Pool>,
     pub(crate) inner: GetConnInner,

@@ -121,7 +121,7 @@ pub struct PoolOptions {
 }
 
 impl PoolOptions {
-    /// Creates `PoolOptions`.
+    /// Creates [`PoolOptions`].
     pub const fn new(
         constraints: PoolConstraints,
         inactive_connection_ttl: Duration,
@@ -134,7 +134,7 @@ impl PoolOptions {
         }
     }
 
-    /// Creates default `PoolOptions` with given constraints.
+    /// Creates default [`PoolOptions`] with given constraints.
     pub const fn with_constraints(constraints: PoolConstraints) -> Self {
         Self {
             constraints,
@@ -154,9 +154,9 @@ impl PoolOptions {
     }
 
     /// Pool will recycle inactive connection if it outside of the lower bound of a pool
-    /// and if it is idling longer than this value (defaults to `DEFAULT_INACTIVE_CONNECTION_TTL`).
+    /// and if it is idling longer than this value (defaults to [`DEFAULT_INACTIVE_CONNECTION_TTL`]).
     ///
-    /// Note that it may, actually, idle longer because of `ttl_check_interval`.
+    /// Note that it may, actually, idle longer because of [`PoolOptions::ttl_check_interval`].
     pub fn set_inactive_connection_ttl(&mut self, ttl: Duration) {
         self.inactive_connection_ttl = ttl;
     }
@@ -167,9 +167,9 @@ impl PoolOptions {
     }
 
     /// Pool will check idling connection for expiration with this interval
-    /// (defaults to `DEFAULT_TTL_CHECK_INTERVAL`).
+    /// (defaults to [`DEFAULT_TTL_CHECK_INTERVAL`]).
     ///
-    /// If `interval` is less than one second, then `DEFAULT_TTL_CHECK_INTERVAL` will be used.
+    /// If `interval` is less than one second, then [`DEFAULT_TTL_CHECK_INTERVAL`] will be used.
     pub fn set_ttl_check_interval(&mut self, interval: Duration) {
         if interval < Duration::from_secs(1) {
             self.ttl_check_interval = DEFAULT_TTL_CHECK_INTERVAL
@@ -188,10 +188,10 @@ impl PoolOptions {
     /// This value controls how many connections will be returned to an idle queue of a pool.
     ///
     /// Active bound is either:
-    /// * `min` bound of the pool constraints, if this `PoolOptions` defines
+    /// * `min` bound of the pool constraints, if this [`PoolOptions`] defines
     ///   `inactive_connection_ttl` to be `0`. This means, that pool will hold no more than `min`
     ///   number of idling connection and other connection will be immediately disconnected.
-    /// * `max` bound of the pool constraints, if this `PoolOptions` defines
+    /// * `max` bound of the pool constraints, if this [`PoolOptions`] defines
     ///   `inactive_connection_ttl` to be non-zero. This means, that pool will hold up to `max`
     ///   number of idling connections and this number will be eventually reduced to `min`
     ///   by a handler of `ttl_check_interval`.
@@ -216,7 +216,7 @@ impl Default for PoolOptions {
 
 /// Mysql connection options.
 ///
-/// Build one with [`OptsBuilder`](struct.OptsBuilder.html).
+/// Build one with [`OptsBuilder`].
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct InnerOpts {
     /// Address of mysql server (defaults to `127.0.0.1`). Host names should also work.
@@ -246,7 +246,7 @@ pub struct InnerOpts {
     /// Local infile handler
     local_infile_handler: Option<LocalInfileHandlerObject>,
 
-    /// Connection pool options (defaults to `PoolOptions::default()`).
+    /// Connection pool options (defaults to [`PoolOptions::default`]).
     pool_options: PoolOptions,
 
     /// Pool will close connection if time since last IO exceeds this number of seconds
@@ -293,7 +293,7 @@ pub struct InnerOpts {
 
 /// Mysql connection options.
 ///
-/// Build one with [`OptsBuilder`](struct.OptsBuilder.html).
+/// Build one with [`OptsBuilder`].
 #[derive(Clone, Eq, PartialEq, Debug, Default)]
 pub struct Opts {
     inner: Arc<InnerOpts>,
@@ -367,7 +367,7 @@ impl Opts {
             .map(|x| x.clone_inner())
     }
 
-    /// Connection pool options (defaults to `PoolOptions::default()`).
+    /// Connection pool options (defaults to [`Default::default`]).
     pub fn get_pool_options(&self) -> &PoolOptions {
         &self.inner.pool_options
     }
@@ -478,7 +478,7 @@ impl Default for InnerOpts {
 
 /// Connection pool constraints.
 ///
-/// This type stores `min` and `max` constraints for `Pool` and ensures that `min <= max`.
+/// This type stores `min` and `max` constraints for [`crate::Pool`] and ensures that `min <= max`.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct PoolConstraints {
     min: usize,
@@ -486,7 +486,7 @@ pub struct PoolConstraints {
 }
 
 impl PoolConstraints {
-    /// Creates new `PoolConstraints` if constraints are valid (`min <= max`).
+    /// Creates new [`PoolConstraints`] if constraints are valid (`min <= max`).
     ///
     /// `inactive_connection_ttl` will have the default value.
     pub fn new(min: usize, max: usize) -> Option<PoolConstraints> {
@@ -521,7 +521,7 @@ impl From<PoolConstraints> for (usize, usize) {
     }
 }
 
-/// Provides a way to build [`Opts`](struct.Opts.html).
+/// Provides a way to build [`Opts`].
 ///
 /// ```ignore
 /// // You can create new default builder

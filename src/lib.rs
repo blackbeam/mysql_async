@@ -198,7 +198,7 @@ pub mod prelude {
     pub trait ConnectionLike: crate::connection_like::ConnectionLike {}
     impl<T: crate::connection_like::ConnectionLike> ConnectionLike for T {}
 
-    /// Trait for protocol markers [`TextProtocol`] and [`BinaryProtocol`].
+    /// Trait for protocol markers [`crate::TextProtocol`] and [`crate::BinaryProtocol`].
     pub trait Protocol: crate::queryable::Protocol {}
     impl<T: crate::queryable::Protocol> Protocol for T {}
 
