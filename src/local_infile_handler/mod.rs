@@ -19,7 +19,7 @@ pub mod builtin;
 /// Trait used to handle local infile requests.
 ///
 /// Be aware of security issues with [LOAD DATA LOCAL](https://dev.mysql.com/doc/refman/8.0/en/load-data-local.html).
-/// Using [`WhiteListFsLocalInfileHandler`] is advised.
+/// Using [`crate::WhiteListFsLocalInfileHandler`] is advised.
 ///
 /// Simple handler example:
 ///
@@ -76,7 +76,6 @@ pub mod builtin;
 /// # }
 /// ```
 ///
-/// [`WhiteListFsLocalInfileHandler`]: ../struct.WhiteListFsLocalInfileHandler.html
 pub trait LocalInfileHandler: Sync + Send {
     /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
     /// query.

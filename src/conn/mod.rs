@@ -17,7 +17,15 @@ use mysql_common::{
     },
 };
 
-use std::{fmt, future::Future, mem, pin::Pin, str::FromStr, sync::Arc};
+use std::{
+    fmt,
+    future::Future,
+    mem,
+    pin::Pin,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crate::{
     conn::{pool::Pool, stmt_cache::StmtCache},
@@ -28,7 +36,6 @@ use crate::{
     local_infile_handler::LocalInfileHandler,
     opts::Opts,
     queryable::{query_result, BinaryProtocol, Queryable, TextProtocol},
-    time::SteadyTime,
     Column, OptsBuilder,
 };
 
@@ -70,8 +77,8 @@ struct ConnInner {
     has_result: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>,
     in_transaction: bool,
     opts: Opts,
-    last_io: SteadyTime,
-    wait_timeout: u32,
+    last_io: Instant,
+    wait_timeout: Duration,
     stmt_cache: StmtCache,
     nonce: Vec<u8>,
     auth_plugin: AuthPlugin<'static>,
@@ -110,8 +117,8 @@ impl ConnInner {
             has_result: None,
             pool: None,
             in_transaction: false,
-            last_io: SteadyTime::now(),
-            wait_timeout: 0,
+            last_io: Instant::now(),
+            wait_timeout: Duration::from_secs(0),
             stmt_cache: StmtCache::new(opts.get_stmt_cache_size()),
             socket: opts.get_socket().map(Into::into),
             opts,
@@ -371,7 +378,7 @@ impl Conn {
         Ok(conn)
     }
 
-    /// Returns future that resolves to `Conn`.
+    /// Returns future that resolves to [`Conn`].
     pub async fn new<T: Into<Opts>>(opts: T) -> Result<Conn> {
         let opts = opts.into();
         let mut conn = Conn::empty(opts.clone());
@@ -405,7 +412,7 @@ impl Conn {
             .await
     }
 
-    /// Returns future that resolves to `Conn`.
+    /// Returns future that resolves to [`Conn`].
     pub async fn from_url<T: AsRef<str>>(url: T) -> Result<Conn> {
         Conn::new(Opts::from_str(url.as_ref())?).await
     }
@@ -414,7 +421,7 @@ impl Conn {
     ///
     /// Returns new connection on success or self on error.
     ///
-    /// Won't try to reconnect if socket connection is already enforced in `Opts`.
+    /// Won't try to reconnect if socket connection is already enforced in [`Opts`].
     fn reconnect_via_socket_if_needed(self) -> Pin<Box<dyn Future<Output = Result<Conn>> + Send>> {
         // NOTE: we need to box this since it may recurse
         // see https://github.com/rust-lang/rust/issues/46415#issuecomment-528099782
@@ -434,9 +441,9 @@ impl Conn {
         })
     }
 
-    /// Returns future that resolves to `Conn` with socket address stored in it.
+    /// Returns future that resolves to [`Conn`] with socket address stored in it.
     ///
-    /// Do nothing if socket address is already in `Opts` or if `prefer_socket` is `false`.
+    /// Do nothing if socket address is already in [`Opts`] or if `prefer_socket` is `false`.
     async fn read_socket(self) -> Result<Self> {
         if self.inner.opts.get_prefer_socket() && self.inner.socket.is_none() {
             let (mut this, row_opt) = self.first("SELECT @@socket").await?;
@@ -447,7 +454,7 @@ impl Conn {
         }
     }
 
-    /// Returns future that resolves to `Conn` with `max_allowed_packet` stored in it.
+    /// Returns future that resolves to [`Conn`] with `max_allowed_packet` stored in it.
     async fn read_max_allowed_packet(self) -> Result<Self> {
         let (mut this, row_opt): (Self, _) = self.first("SELECT @@max_allowed_packet").await?;
         if let Some(stream) = this.inner.stream.as_mut() {
@@ -456,25 +463,30 @@ impl Conn {
         Ok(this)
     }
 
-    /// Returns future that resolves to `Conn` with `wait_timeout` stored in it.
+    /// Returns future that resolves to [`Conn`] with `wait_timeout` stored in it.
     async fn read_wait_timeout(self) -> Result<Self> {
         let (mut this, row_opt) = self.first("SELECT @@wait_timeout").await?;
-        this.inner.wait_timeout = row_opt.unwrap_or((28800,)).0;
+        let wait_timeout_secs = row_opt.unwrap_or((28800,)).0;
+        this.inner.wait_timeout = Duration::from_secs(wait_timeout_secs);
         Ok(this)
     }
 
     /// Returns true if time since last io exceeds wait_timeout (or conn_ttl if specified in opts).
     fn expired(&self) -> bool {
-        let idle_duration = SteadyTime::now() - self.inner.last_io;
         let ttl = self
             .inner
             .opts
             .get_conn_ttl()
             .unwrap_or(self.inner.wait_timeout);
-        idle_duration.num_milliseconds() > i64::from(ttl) * 1000
+        self.idling() > ttl
     }
 
-    /// Returns future that resolves to a `Conn` with `COM_RESET_CONNECTION` executed on it.
+    /// Returns duration since last io.
+    fn idling(&self) -> Duration {
+        self.inner.last_io.elapsed()
+    }
+
+    /// Returns future that resolves to a [`Conn`] with `COM_RESET_CONNECTION` executed on it.
     pub async fn reset(self) -> Result<Conn> {
         let pool = self.inner.pool.clone();
         let mut conn = if self.inner.version > (5, 7, 2) {
@@ -627,7 +639,7 @@ impl ConnectionLike for Conn {
     }
 
     fn touch(&mut self) {
-        self.inner.last_io = SteadyTime::now();
+        self.inner.last_io = Instant::now();
     }
 
     fn on_disconnect(&mut self) {
@@ -1177,30 +1189,30 @@ mod test {
 
     #[tokio::test]
     async fn should_handle_local_infile() -> super::Result<()> {
-        use std::io::Write;
+        use std::{io::Write, path::Path};
 
-        let tempdir = tempfile::TempDir::new().unwrap();
-        let file_path = tempdir.path().join("local_infile.txt");
+        let file_path = tempfile::Builder::new().tempfile_in("").unwrap();
+        let file_path = file_path.path();
+        let file_name = Path::new(file_path.file_name().unwrap());
 
         let mut opts = OptsBuilder::from_opts(get_opts());
-        opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(
-            &[file_path.as_path()][..],
-        )));
+        opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[file_name][..])));
 
-        let conn = Conn::new(opts).await?;
+        let conn = Conn::new(opts).await.unwrap();
         let conn = conn
             .drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);")
-            .await?;
+            .await
+            .unwrap();
 
-        let mut file = ::std::fs::File::create(file_path.as_path()).unwrap();
+        let mut file = ::std::fs::File::create(file_name).unwrap();
         let _ = file.write(b"AAAAAA\n");
         let _ = file.write(b"BBBBBB\n");
         let _ = file.write(b"CCCCCC\n");
         let conn = match conn
-            .drop_query(format!(
-                "LOAD DATA LOCAL INFILE '{}' INTO TABLE tmp;",
-                file_path.as_path().display()
-            ))
+            .drop_query(dbg!(format!(
+                r#"LOAD DATA LOCAL INFILE "{}" INTO TABLE tmp;"#,
+                file_name.display()
+            )))
             .await
         {
             Ok(conn) => conn,
@@ -1212,9 +1224,11 @@ mod test {
         };
         let (conn, result) = conn
             .prep_exec("SELECT * FROM tmp;", ())
-            .await?
+            .await
+            .unwrap()
             .map_and_drop(|row| from_row::<(String,)>(row).0)
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(result.len(), 3);
         assert_eq!(result[0], "AAAAAA");
         assert_eq!(result[1], "BBBBBB");

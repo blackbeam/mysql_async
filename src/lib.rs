@@ -134,7 +134,10 @@ pub use self::conn::pool::Pool;
 pub use self::queryable::transaction::IsolationLevel;
 
 #[doc(inline)]
-pub use self::opts::{Opts, OptsBuilder, PoolConstraints, SslOpts};
+pub use self::opts::{
+    Opts, OptsBuilder, PoolConstraints, PoolOptions, SslOpts, DEFAULT_INACTIVE_CONNECTION_TTL,
+    DEFAULT_TTL_CHECK_INTERVAL,
+};
 
 #[doc(inline)]
 pub use self::local_infile_handler::{builtin::WhiteListFsLocalInfileHandler, InfileHandlerFuture};
@@ -195,7 +198,7 @@ pub mod prelude {
     pub trait ConnectionLike: crate::connection_like::ConnectionLike {}
     impl<T: crate::connection_like::ConnectionLike> ConnectionLike for T {}
 
-    /// Trait for protocol markers [`TextProtocol`] and [`BinaryProtocol`].
+    /// Trait for protocol markers [`crate::TextProtocol`] and [`crate::BinaryProtocol`].
     pub trait Protocol: crate::queryable::Protocol {}
     impl<T: crate::queryable::Protocol> Protocol for T {}
 

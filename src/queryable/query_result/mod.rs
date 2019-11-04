@@ -214,7 +214,7 @@ where
     /// # Panic
     ///
     /// It'll panic if any row isn't convertible to `R` (i.e. programmer error or unknown schema).
-    /// * In case of programmer error see `FromRow` docs;
+    /// * In case of programmer error see [`FromRow`] docs;
     /// * In case of unknown schema use [`QueryResult::try_collect`].
     pub async fn collect<R>(self) -> Result<(Self, Vec<R>)>
     where
@@ -245,7 +245,7 @@ where
     }
 
     /// Returns future that collects result set of a query result and drops everything else.
-    /// It will resolve to a pair of wrapped `Queryable` and collected result set.
+    /// It will resolve to a pair of wrapped [`crate::prelude::Queryable`] and collected result set.
     ///
     /// # Panic
     ///
@@ -263,7 +263,7 @@ where
     }
 
     /// Returns future that collects result set of a query result and drops everything else.
-    /// It will resolve to a pair of wrapped `Queryable` and collected result set.
+    /// It will resolve to a pair of wrapped [`crate::prelude::Queryable`] and collected result set.
     ///
     /// It works the same way as [`QueryResult::collect_and_drop`] but won't panic
     /// if row isn't convertible to `R`.

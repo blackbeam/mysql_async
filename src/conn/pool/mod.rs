@@ -6,210 +6,93 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures_core::{ready, stream::Stream};
-use futures_util::stream::futures_unordered::FuturesUnordered;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
-
+use futures_core::ready;
 use tokio::sync::mpsc;
 
 use std::{
     fmt,
+    pin::Pin,
     str::FromStr,
     sync::{atomic, Arc, Mutex},
+    task::{Context, Poll, Waker},
+    time::{Duration, Instant},
 };
 
 use crate::{
     conn::{pool::futures::*, Conn},
     error::*,
-    opts::{Opts, PoolConstraints},
+    opts::{Opts, PoolOptions},
     queryable::{
         transaction::{Transaction, TransactionOptions},
         Queryable,
     },
-    BoxFuture,
 };
 
+mod recycler;
 // this is a really unfortunate name for a module
 pub mod futures;
+mod ttl_check_inerval;
 
-struct Recycler {
-    inner: Arc<Inner>,
-    discard: FuturesUnordered<BoxFuture<()>>,
-    discarded: usize,
-    cleaning: FuturesUnordered<BoxFuture<Conn>>,
-
-    // Option<Conn> so that we have a way to send a "I didn't make a Conn after all" signal
-    dropped: mpsc::UnboundedReceiver<Option<Conn>>,
-    min: usize,
-    eof: bool,
+/// Connection that is idling in the pool.
+#[derive(Debug)]
+struct IdlingConn {
+    /// The connection is idling since this `Instant`.
+    since: Instant,
+    /// Idling connection.
+    conn: Conn,
 }
 
-impl Future for Recycler {
-    type Output = ();
+impl IdlingConn {
+    /// Returns duration elapsed since this connection is idling.
+    fn elapsed(&self) -> Duration {
+        self.since.elapsed()
+    }
+}
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut readied = 0;
-        let mut close = self.inner.close.load(atomic::Ordering::Acquire);
-
-        macro_rules! conn_decision {
-            ($self:ident, $readied:ident, $conn:ident) => {
-                if $conn.inner.stream.is_none() || $conn.inner.disconnected {
-                    // drop unestablished connection
-                    $self.discard.push(Box::pin(::futures_util::future::ok(())));
-                } else if $conn.inner.in_transaction || $conn.inner.has_result.is_some() {
-                    $self.cleaning.push(Box::pin($conn.cleanup()));
-                } else if $conn.expired() || $self.inner.idle.len() >= $self.min || close {
-                    $self.discard.push(Box::pin($conn.close()));
-                } else {
-                    $self
-                        .inner
-                        .idle
-                        .push($conn)
-                        .expect("more connections than max");
-                    $readied += 1;
-                }
-            };
-        }
-
-        while !self.eof {
-            // see if there are more connections for us to recycle
-            match Pin::new(&mut self.dropped).poll_next(cx) {
-                Poll::Ready(Some(Some(conn))) => {
-                    conn_decision!(self, readied, conn);
-                }
-                Poll::Ready(Some(None)) => {
-                    // someone signaled us that it's exit time
-                    close = self.inner.close.load(atomic::Ordering::Acquire);
-                    assert!(close);
-                    continue;
-                }
-                Poll::Ready(None) => {
-                    // no more connections are coming -- time to exit!
-                    self.inner.close.store(true, atomic::Ordering::Release);
-                    self.eof = true;
-                    close = true;
-                }
-                Poll::Pending => {
-                    // nope -- but let's still make progress on the ones we have
-                    break;
-                }
-            }
-        }
-
-        // if we've been asked to close, reclaim any idle connections
-        if close {
-            while let Ok(conn) = self.inner.idle.pop() {
-                conn_decision!(self, readied, conn);
-            }
-        }
-
-        // are any dirty connections ready for us to reclaim?
-        loop {
-            match Pin::new(&mut self.cleaning).poll_next(cx) {
-                Poll::Pending | Poll::Ready(None) => break,
-                Poll::Ready(Some(Ok(conn))) => conn_decision!(self, readied, conn),
-                Poll::Ready(Some(Err(e))) => {
-                    // an error occurred while cleaning a connection.
-                    // what do we do? replace it with a new connection?
-                    self.discarded += 1;
-                    // NOTE: we're discarding the error here
-                    let _ = e;
-                }
-            }
-        }
-
-        // are there any torn-down connections for us to deal with?
-        loop {
-            match Pin::new(&mut self.discard).poll_next(cx) {
-                Poll::Pending | Poll::Ready(None) => break,
-                Poll::Ready(Some(Ok(()))) => {
-                    // yes! count it.
-                    self.discarded += 1
-                }
-                Poll::Ready(Some(Err(e))) => {
-                    // an error occurred while closing a connection.
-                    // what do we do? we still replace it with a new connection..
-                    self.discarded += 1;
-                    // NOTE: we're discarding the error here
-                    let _ = e;
-                }
-            }
-        }
-
-        if self.discarded != 0 {
-            // we need to open up slots for new connctions to be established!
-            self.inner
-                .exist
-                .fetch_sub(self.discarded, atomic::Ordering::AcqRel);
-            readied += self.discarded;
-            self.discarded = 0;
-        }
-
-        // NOTE: we are asserting here that no more connections will ever be returned to
-        // us. see the explanation in Pool::poll_new_conn for why this is okay, even during
-        // races on .exist
-        let effectively_eof = close && self.inner.exist.load(atomic::Ordering::Acquire) == 0;
-
-        if (self.eof || effectively_eof) && self.cleaning.is_empty() && self.discard.is_empty() {
-            // we know that all Pool handles have been dropped (self.dropped.poll returned None).
-
-            // if this assertion fails, where are the remaining connections?
-            assert_eq!(self.inner.idle.len(), 0);
-            assert_eq!(self.inner.exist.load(atomic::Ordering::Acquire), 0);
-
-            // NOTE: it is _necessary_ that we set this _before_ we call .wake
-            // otherwise, the following may happen to the DisconnectPool future:
-            //
-            //  - We wake all in .wake
-            //  - DisconnectPool::poll adds to .wake
-            //  - DisconnectPool::poll reads .closed == false
-            //  - We set .closed = true
-            //
-            // At this point, DisconnectPool::poll will never be notified again.
-            self.inner.closed.store(true, atomic::Ordering::Release);
-        }
-
-        self.inner.wake(readied);
-
-        if self.inner.closed.load(atomic::Ordering::Acquire) {
-            // `DisconnectPool` might still wait to be woken up.
-            self.inner.wake(usize::max_value());
-
-            Poll::Ready(())
-        } else {
-            Poll::Pending
+impl From<Conn> for IdlingConn {
+    fn from(conn: Conn) -> Self {
+        Self {
+            since: Instant::now(),
+            conn,
         }
     }
 }
 
-struct Inner {
+pub struct Inner {
     close: atomic::AtomicBool,
     closed: atomic::AtomicBool,
-    idle: crossbeam::queue::ArrayQueue<Conn>,
+    idle: crossbeam::queue::ArrayQueue<IdlingConn>,
     wake: crossbeam::queue::SegQueue<Waker>,
     exist: atomic::AtomicUsize,
     extra_wakeups: atomic::AtomicUsize,
 
     // only used to spawn the recycler the first time we're in async context
-    maker: Mutex<Option<(mpsc::UnboundedReceiver<Option<Conn>>, usize)>>,
+    maker: Mutex<Option<(mpsc::UnboundedReceiver<Option<Conn>>, PoolOptions)>>,
 }
 
 impl Inner {
-    fn spawn_recycler_if_needed(self: Arc<Self>) {
+    /// This function will spawn the recycler for this pool
+    /// as well as the ttl check interval if `inactive_connection_ttl` isn't `0`.
+    fn spawn_futures_if_needed(self: Arc<Self>) {
+        use recycler::Recycler;
+        use ttl_check_inerval::TtlCheckInterval;
+
         let mut lock = self.maker.lock().unwrap();
-        if let Some((dropped, min)) = lock.take() {
-            tokio::spawn(Recycler {
-                inner: self.clone(),
-                discard: FuturesUnordered::new(),
-                discarded: 0,
-                cleaning: FuturesUnordered::new(),
-                dropped,
-                min,
-                eof: false,
-            });
+        if let Some((dropped, pool_options)) = lock.take() {
+            // Spawn the Recycler.
+            tokio::spawn(Recycler::new(pool_options.clone(), self.clone(), dropped));
+
+            // Spawn the ttl check interval if `inactive_connection_ttl` isn't `0`
+            if pool_options.inactive_connection_ttl() > Duration::from_secs(0) {
+                tokio::spawn(TtlCheckInterval::new(pool_options, self.clone()));
+            }
         }
+    }
+
+    fn push_to_idle<T: Into<IdlingConn>>(&self, conn: T) {
+        self.idle
+            .push(conn.into())
+            .expect("more connections than max")
     }
 
     fn wake(&self, mut readied: usize) {
@@ -251,16 +134,12 @@ impl Inner {
 pub struct Pool {
     opts: Opts,
     inner: Arc<Inner>,
-    pool_constraints: PoolConstraints,
     drop: mpsc::UnboundedSender<Option<Conn>>,
 }
 
 impl fmt::Debug for Pool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Pool")
-            .field("opts", &self.opts)
-            .field("pool_constraints", &self.pool_constraints)
-            .finish()
+        f.debug_struct("Pool").field("opts", &self.opts).finish()
     }
 }
 
@@ -268,21 +147,20 @@ impl Pool {
     /// Creates new pool of connections.
     pub fn new<O: Into<Opts>>(opts: O) -> Pool {
         let opts = opts.into();
-        let pool_constraints = opts.get_pool_constraints().clone();
+        let pool_options = opts.get_pool_options().clone();
         let (tx, rx) = mpsc::unbounded_channel();
         Pool {
             opts,
             inner: Arc::new(Inner {
                 close: false.into(),
                 closed: false.into(),
-                idle: crossbeam::queue::ArrayQueue::new(pool_constraints.max()),
+                idle: crossbeam::queue::ArrayQueue::new(pool_options.constraints().max()),
                 wake: crossbeam::queue::SegQueue::new(),
                 exist: 0.into(),
                 extra_wakeups: 0.into(),
-                maker: Mutex::new(Some((rx, pool_constraints.min()))),
+                maker: Mutex::new(Some((rx, pool_options))),
             }),
             drop: tx,
-            pool_constraints,
         }
     }
 
@@ -334,12 +212,9 @@ impl Pool {
             && !conn.inner.in_transaction
             && conn.inner.has_result.is_none()
             && !self.inner.close.load(atomic::Ordering::Acquire)
-            && self.inner.idle.len() < self.pool_constraints.min()
+            && self.inner.idle.len() < self.opts.get_pool_options().active_bound()
         {
-            self.inner
-                .idle
-                .push(conn)
-                .expect("more connections than max");
+            self.inner.push_to_idle(conn);
             self.inner.wake(1);
         } else {
             self.drop
@@ -375,7 +250,7 @@ impl Pool {
         loop {
             match self.inner.idle.pop() {
                 Err(crossbeam::queue::PopError) => break,
-                Ok(conn) => {
+                Ok(IdlingConn { conn, .. }) => {
                     if conn.expired() {
                         self.return_conn(conn);
                         continue;
@@ -392,15 +267,15 @@ impl Pool {
         // we didn't _immediately_ get one -- try to make one
         // we first try to just do a load so we don't do an unnecessary add then sub
         let exist = self.inner.exist.load(atomic::Ordering::Acquire);
-        if exist < self.pool_constraints.max() {
+        if exist < self.opts.get_pool_options().constraints().max() {
             // we may be allowed to make a new one!
             let exist = self.inner.exist.fetch_add(1, atomic::Ordering::AcqRel);
             if exist == 0 {
                 // we may have to start the recycler.
-                self.inner.clone().spawn_recycler_if_needed();
+                self.inner.clone().spawn_futures_if_needed();
             }
 
-            if exist < self.pool_constraints.max() {
+            if exist < self.opts.get_pool_options().constraints().max() {
                 // we're allowed to make a new connection
 
                 // note, however, that there is a race here:
@@ -429,7 +304,7 @@ impl Pool {
             }
 
             let exist = self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
-            if exist < self.pool_constraints.max() {
+            if exist < self.opts.get_pool_options().constraints().max() {
                 // we'd _now_ be allowed to make a connection
                 return self.poll_new_conn_inner(retrying, cx);
             }
@@ -519,11 +394,13 @@ impl Drop for Conn {
 #[cfg(test)]
 mod test {
     use futures_util::stream::StreamExt;
+
     use std::sync::atomic;
+    use std::time::Duration;
 
     use crate::{
-        conn::pool::Pool, queryable::Queryable, test_misc::get_opts, PoolConstraints,
-        TransactionOptions,
+        conn::pool::Pool, opts::PoolOptions, queryable::Queryable, test_misc::get_opts,
+        PoolConstraints, TransactionOptions,
     };
 
     #[test]
@@ -587,7 +464,9 @@ mod test {
     #[tokio::test]
     async fn should_start_transaction() -> super::Result<()> {
         let mut opts = get_opts();
-        opts.pool_constraints(PoolConstraints::new(1, 1));
+        opts.pool_options(PoolOptions::with_constraints(
+            PoolConstraints::new(1, 1).unwrap(),
+        ));
         let pool = Pool::new(opts);
         pool.get_conn()
             .await?
@@ -618,10 +497,17 @@ mod test {
 
         const POOL_MIN: usize = 5;
         const POOL_MAX: usize = 10;
+        const INACTIVE_CONNECTION_TTL: Duration = Duration::from_millis(500);
+        const TTL_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+        let constraints = PoolConstraints::new(POOL_MIN, POOL_MAX).unwrap();
+        let pool_options =
+            PoolOptions::new(constraints, INACTIVE_CONNECTION_TTL, TTL_CHECK_INTERVAL);
 
         // Clean
         let mut opts = get_opts();
-        opts.pool_constraints(PoolConstraints::new(POOL_MIN, POOL_MAX));
+        opts.pool_options(pool_options);
+
         let pool = Pool::new(opts);
         let pool_clone = pool.clone();
         let conns = (0..POOL_MAX).map(|_| pool.get_conn()).collect::<Vec<_>>();
@@ -640,7 +526,7 @@ mod test {
             let _ = conns.pop();
 
             // then, wait for a bit to let the connection be reclaimed
-            tokio::timer::delay(std::time::Instant::now() + std::time::Duration::from_millis(100))
+            tokio::timer::delay(std::time::Instant::now() + std::time::Duration::from_millis(50))
                 .await;
 
             // now check that we have the expected # of connections
@@ -656,6 +542,18 @@ mod test {
             let dropped = POOL_MAX - conns.len();
             let idle = min(dropped, POOL_MIN);
             let expected = conns.len() + idle;
+
+            if dropped > POOL_MIN {
+                // check that connection is still in the pool because of inactive_connection_ttl
+                let have = pool_clone.inner.exist.load(atomic::Ordering::SeqCst);
+                assert_eq!(have, expected + 1);
+
+                // then, wait for ttl_check_interval
+                tokio::timer::delay(std::time::Instant::now() + std::time::Duration::from_secs(1))
+                    .await;
+            }
+
+            // check that we have the expected number of connections
             let have = pool_clone.inner.exist.load(atomic::Ordering::SeqCst);
             assert_eq!(have, expected);
         }
@@ -667,7 +565,9 @@ mod test {
     #[tokio::test]
     async fn should_hold_bounds1() -> super::Result<()> {
         let mut opts = get_opts();
-        opts.pool_constraints(PoolConstraints::new(1, 2));
+        opts.pool_options(PoolOptions::with_constraints(
+            PoolConstraints::new(1, 2).unwrap(),
+        ));
         let pool = Pool::new(opts);
         let pool_clone = pool.clone();
 
@@ -781,21 +681,42 @@ mod test {
 
     #[cfg(feature = "nightly")]
     mod bench {
+        use futures_util::future::FutureExt;
         use futures_util::try_future::TryFutureExt;
         use tokio::runtime::Runtime;
 
         use crate::prelude::Queryable;
         use crate::test_misc::get_opts;
-        use crate::Pool;
+        use crate::{Pool, PoolConstraints, PoolOptions};
+        use std::time::Duration;
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
-            let runtime = Runtime::new().expect("3");
+            let runtime = Runtime::new().unwrap();
             let pool = Pool::new(get_opts());
 
             bencher.iter(|| {
                 let fut = pool.get_conn().and_then(|conn| conn.ping());
-                runtime.block_on(fut).expect("1");
+                runtime.block_on(fut).unwrap();
+            });
+
+            runtime.block_on(pool.disconnect()).unwrap();
+        }
+
+        #[bench]
+        fn new_conn_on_pool_soft_boundary(bencher: &mut test::Bencher) {
+            let runtime = Runtime::new().unwrap();
+
+            let mut opts = get_opts();
+            let mut pool_opts = PoolOptions::with_constraints(PoolConstraints::new(0, 1).unwrap());
+            pool_opts.set_inactive_connection_ttl(Duration::from_secs(1));
+            opts.pool_options(pool_opts);
+
+            let pool = Pool::new(opts);
+
+            bencher.iter(|| {
+                let fut = pool.get_conn().map(drop);
+                runtime.block_on(fut);
             });
 
             runtime.block_on(pool.disconnect()).unwrap();
