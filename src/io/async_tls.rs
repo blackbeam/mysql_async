@@ -18,6 +18,8 @@ use tokio::io::Error as IoError;
 use tokio::prelude::*;
 use tokio_tls::{self};
 
+use std::mem::MaybeUninit;
+
 /// A wrapper around an underlying raw stream which implements the TLS or SSL
 /// protocol.
 ///
@@ -52,7 +54,7 @@ where
         self.project().inner.poll_read(cx, buf)
     }
 
-    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [u8]) -> bool {
+    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
         self.inner.prepare_uninitialized_buffer(buf)
     }
 

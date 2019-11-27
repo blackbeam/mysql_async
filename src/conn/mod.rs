@@ -51,13 +51,12 @@ fn disconnect(mut conn: Conn) {
 
     if !disconnected {
         // Server will report broken connection if spawn fails.
-        use tokio::executor::Executor;
         // this might fail if, say, the runtime is shutting down, but we've done what we could
-        let _ = tokio::executor::DefaultExecutor::current().spawn(Box::pin(async move {
+        tokio::spawn(async move {
             if let Ok(conn) = conn.cleanup().await {
                 let _ = conn.disconnect().await;
             }
-        }));
+        });
     }
 }
 
@@ -730,9 +729,10 @@ mod test {
     #[test]
     fn should_not_panic_if_dropped_without_tokio_runtime() {
         let fut = Conn::new(get_opts());
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let _connection = runtime.block_on(fut).unwrap();
-        runtime.shutdown_on_idle();
+        let mut runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            fut.await.unwrap();
+        });
         // connection will drop here
     }
 

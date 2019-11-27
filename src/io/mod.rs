@@ -11,14 +11,15 @@ use futures_core::{ready, stream};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::{pin_project, project};
-use tokio::codec::{Decoder, Encoder, Framed, FramedParts};
 use tokio::net::TcpStream;
 use tokio::prelude::*;
+use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 
 use std::{
     fmt,
     fs::File,
     io::Read,
+    mem::MaybeUninit,
     net::ToSocketAddrs,
     ops::{Deref, DerefMut},
     path::Path,
@@ -62,7 +63,12 @@ impl Decoder for PacketCodec {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>> {
-        Ok(self.0.decode(src)?)
+        // TODO: Remove once `mysql_common` switched to a newer `bytes` crate!
+        let mut old_src = old_bytes::BytesMut::from(src.as_ref());
+        let res = self.0.decode(&mut old_src)?;
+        let new_src = BytesMut::from(old_src.as_ref());
+        *src = new_src;
+        Ok(res)
     }
 }
 
@@ -71,7 +77,11 @@ impl Encoder for PacketCodec {
     type Error = Error;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<()> {
-        Ok(self.0.encode(item, dst)?)
+        // TODO: Remove once `mysql_common` switched to a newer `bytes` crate!
+        let mut old_dst = old_bytes::BytesMut::with_capacity(dst.capacity());
+        self.0.encode(item, &mut old_dst)?;
+        dst.extend_from_slice(old_dst.as_ref());
+        Ok(())
     }
 }
 
@@ -179,7 +189,7 @@ impl AsyncRead for Endpoint {
         }
     }
 
-    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [u8]) -> bool {
+    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
         match self {
             Endpoint::Plain(stream) => stream.prepare_uninitialized_buffer(buf),
             Endpoint::Secure(stream) => stream.prepare_uninitialized_buffer(buf),

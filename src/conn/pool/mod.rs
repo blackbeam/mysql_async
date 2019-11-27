@@ -187,14 +187,14 @@ impl Pool {
     ///
     /// Active connections taken from this pool should be disconnected manually.
     /// Also all pending and new `GetConn`'s will resolve to error.
-    pub fn disconnect(mut self) -> DisconnectPool {
+    pub fn disconnect(self) -> DisconnectPool {
         let was_closed = self.inner.close.swap(true, atomic::Ordering::AcqRel);
         if !was_closed {
             // make sure we wake up the Recycler.
             //
             // note the lack of an .expect() here, because the Recycler may decide that there are
             // no connections to wait for and exit quickly!
-            let _ = self.drop.try_send(None).is_ok();
+            let _ = self.drop.send(None).is_ok();
         }
 
         new_disconnect_pool(self)
@@ -218,7 +218,7 @@ impl Pool {
             self.inner.wake(1);
         } else {
             self.drop
-                .try_send(Some(conn))
+                .send(Some(conn))
                 .expect("recycler is active as long as any Pool is");
         }
     }
@@ -292,7 +292,7 @@ impl Pool {
                     self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
                     // make sure we notify the Recycler in case it was waiting for our +1
                     self.drop
-                        .try_send(None)
+                        .send(None)
                         .expect("recycler is active as long as any Pool is");
                     return Err(Error::Driver(DriverError::PoolDisconnected)).into();
                 }
@@ -394,6 +394,7 @@ impl Drop for Conn {
 #[cfg(test)]
 mod test {
     use futures_util::stream::StreamExt;
+    use futures_util::{future::try_join_all, try_join};
 
     use std::sync::atomic;
     use std::time::Duration;
@@ -416,7 +417,7 @@ mod test {
             }
         }
 
-        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut runtime = tokio::runtime::Runtime::new().unwrap();
         let database = Database {
             pool: Pool::new(get_opts()),
         };
@@ -448,10 +449,10 @@ mod test {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             for i in 0..10_000 {
                 let pool = pool.clone();
-                let mut tx = tx.clone();
+                let tx = tx.clone();
                 tokio::spawn(async move {
                     let _ = pool.get_conn().await.unwrap();
-                    tx.try_send(i).unwrap();
+                    tx.send(i).unwrap();
                 });
             }
             drop(tx);
@@ -512,7 +513,7 @@ mod test {
         let pool_clone = pool.clone();
         let conns = (0..POOL_MAX).map(|_| pool.get_conn()).collect::<Vec<_>>();
 
-        let mut conns = futures_util::try_future::try_join_all(conns).await?;
+        let mut conns = try_join_all(conns).await?;
 
         // we want to continuously drop connections
         // and check that they are _actually_ dropped until we reach POOL_MIN
@@ -526,8 +527,7 @@ mod test {
             let _ = conns.pop();
 
             // then, wait for a bit to let the connection be reclaimed
-            tokio::timer::delay(std::time::Instant::now() + std::time::Duration::from_millis(50))
-                .await;
+            tokio::time::delay_for(std::time::Duration::from_millis(50)).await;
 
             // now check that we have the expected # of connections
             // this may look a little funky, but think of it this way:
@@ -549,8 +549,7 @@ mod test {
                 assert_eq!(have, expected + 1);
 
                 // then, wait for ttl_check_interval
-                tokio::timer::delay(std::time::Instant::now() + std::time::Duration::from_secs(1))
-                    .await;
+                tokio::time::delay_for(std::time::Duration::from_secs(1)).await;
             }
 
             // check that we have the expected number of connections
@@ -571,9 +570,7 @@ mod test {
         let pool = Pool::new(opts);
         let pool_clone = pool.clone();
 
-        let (conn1, conn2) = futures_util::try_future::try_join(pool.get_conn(), pool.get_conn())
-            .await
-            .unwrap();
+        let (conn1, conn2) = try_join!(pool.get_conn(), pool.get_conn()).unwrap();
 
         assert_eq!(
             conn1
@@ -610,11 +607,7 @@ mod test {
         // Should not be possible to connect to broadcast address.
         let pool = Pool::new(String::from("mysql://255.255.255.255"));
 
-        assert!(
-            futures_util::try_future::try_join(pool.get_conn(), pool.get_conn())
-                .await
-                .is_err()
-        );
+        assert!(try_join!(pool.get_conn(), pool.get_conn()).is_err());
         assert_eq!(pool.inner.exist.load(atomic::Ordering::SeqCst), 0);
         Ok(())
     }
@@ -651,7 +644,7 @@ mod test {
     #[tokio::test]
     async fn droptest() -> super::Result<()> {
         let pool = Pool::new(get_opts());
-        let conns = futures_util::try_future::try_join_all((0..10).map(|_| pool.get_conn()))
+        let conns = try_join_all((0..10).map(|_| pool.get_conn()))
             .await
             .unwrap();
         drop(conns);
@@ -692,7 +685,7 @@ mod test {
 
         #[bench]
         fn connect(bencher: &mut test::Bencher) {
-            let runtime = Runtime::new().unwrap();
+            let mut runtime = Runtime::new().unwrap();
             let pool = Pool::new(get_opts());
 
             bencher.iter(|| {

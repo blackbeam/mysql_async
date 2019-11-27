@@ -7,8 +7,8 @@
 // modified, or distributed except according to those terms.
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use tokio::codec::Framed;
 use tokio::net::TcpStream;
+use tokio_util::codec::Framed;
 
 use std::{io, net::ToSocketAddrs};
 

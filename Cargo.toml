@@ -12,23 +12,23 @@ exclude = ["test/*"]
 edition = "2018"
 
 [dependencies]
-bytes = "0.4"
+bytes = "0.5"
+old_bytes = { version = "0.4", package = "bytes" }
 crossbeam = "0.7"
-futures-core-preview = "=0.3.0-alpha.19"
-futures-util-preview = "=0.3.0-alpha.19"
-futures-sink-preview = "=0.3.0-alpha.19"
+futures-core = "0.3"
+futures-util = "0.3"
+futures-sink = "0.3"
 mio-named-pipes = "0.1.6"
 mysql_common = "0.19.2"
 native-tls = "0.2"
 percent-encoding = "2.1.0"
-pin-project = "0.4.0"
+pin-project = "0.4.6"
 serde = "1"
 serde_json = "1"
 thiserror = "1.0.4"
-# we only need rt-full for tokio::spawn
-tokio = { version = "=0.2.0-alpha.6", default-features = false, features = ["codec", "io", "net", "sync", "fs", "rt-full"] }
-tokio-tls = "=0.3.0-alpha.6"
-tokio-net = "=0.2.0-alpha.6"
+tokio = { version = "0.2", features = ["io-util", "net", "sync", "fs", "rt-core", "time", "stream", "macros"] }
+tokio-util = { version = "0.2", features = ["codec"] }
+tokio-tls = "0.3"
 twox-hash = "1"
 url = "2.1"
 
