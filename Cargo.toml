@@ -12,14 +12,13 @@ exclude = ["test/*"]
 edition = "2018"
 
 [dependencies]
-bytes = "0.5"
-old_bytes = { version = "0.4", package = "bytes" }
+bytes = "0.5.2"
 crossbeam = "0.7"
 futures-core = "0.3"
 futures-util = "0.3"
 futures-sink = "0.3"
 mio-named-pipes = "0.1.6"
-mysql_common = "0.19.2"
+mysql_common = "0.20.0"
 native-tls = "0.2"
 percent-encoding = "2.1.0"
 pin-project = "0.4.6"

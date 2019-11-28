@@ -63,12 +63,7 @@ impl Decoder for PacketCodec {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>> {
-        // TODO: Remove once `mysql_common` switched to a newer `bytes` crate!
-        let mut old_src = old_bytes::BytesMut::from(src.as_ref());
-        let res = self.0.decode(&mut old_src)?;
-        let new_src = BytesMut::from(old_src.as_ref());
-        *src = new_src;
-        Ok(res)
+        Ok(self.0.decode(src)?)
     }
 }
 
@@ -77,11 +72,7 @@ impl Encoder for PacketCodec {
     type Error = Error;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<()> {
-        // TODO: Remove once `mysql_common` switched to a newer `bytes` crate!
-        let mut old_dst = old_bytes::BytesMut::with_capacity(dst.capacity());
-        self.0.encode(item, &mut old_dst)?;
-        dst.extend_from_slice(old_dst.as_ref());
-        Ok(())
+        Ok(self.0.encode(item, dst)?)
     }
 }
 
