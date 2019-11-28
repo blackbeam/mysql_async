@@ -680,7 +680,7 @@ mod test {
     async fn should_connect() -> super::Result<()> {
         let conn: Conn = Conn::new(get_opts()).await?.ping().await?;
 
-        let (mut conn, plugins) = conn
+        let (mut conn, plugins): (Conn, _) = conn
             .query("SHOW PLUGINS")
             .await?
             .map_and_drop(|mut row| row.take::<String, _>("Name").unwrap())
@@ -688,20 +688,34 @@ mod test {
 
         // Should connect with any combination of supported plugin and empty-nonempty password.
         let variants = vec![
-            ("caching_sha2_password", "non-empty"),
-            ("caching_sha2_password", ""),
-            ("mysql_native_password", "non-empty"),
-            ("mysql_native_password", ""),
+            ("caching_sha2_password", 2, "non-empty"),
+            ("caching_sha2_password", 2, ""),
+            ("mysql_native_password", 0, "non-empty"),
+            ("mysql_native_password", 0, ""),
         ]
         .into_iter()
         .filter(|variant| plugins.iter().any(|p| p == variant.0));
 
-        for (plug, pass) in variants {
-            let query = format!(
-                "CREATE USER 'test_user'@'%' IDENTIFIED WITH {} BY '{}'",
-                plug, pass
-            );
+        for (plug, val, pass) in variants {
+            let query = format!("CREATE USER 'test_user'@'%' IDENTIFIED WITH {}", plug);
             conn = conn.drop_query(query).await.unwrap();
+
+            conn = if (8, 0, 11) <= conn.inner.version && conn.inner.version <= (9, 0, 0) {
+                conn.drop_query(format!("SET PASSWORD FOR 'test_user'@'%' = '{}'", pass))
+                    .await
+                    .unwrap()
+            } else {
+                conn = conn
+                    .drop_query(format!("SET old_passwords = {}", val))
+                    .await
+                    .unwrap();
+                conn.drop_query(format!(
+                    "SET PASSWORD FOR 'test_user'@'%' = PASSWORD('{}')",
+                    pass
+                ))
+                .await
+                .unwrap()
+            };
 
             let mut opts = get_opts();
             opts.user(Some("test_user"))
