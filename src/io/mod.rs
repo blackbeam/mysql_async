@@ -11,14 +11,15 @@ use futures_core::{ready, stream};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::{pin_project, project};
-use tokio::codec::{Decoder, Encoder, Framed, FramedParts};
 use tokio::net::TcpStream;
 use tokio::prelude::*;
+use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 
 use std::{
     fmt,
     fs::File,
     io::Read,
+    mem::MaybeUninit,
     net::ToSocketAddrs,
     ops::{Deref, DerefMut},
     path::Path,
@@ -179,7 +180,7 @@ impl AsyncRead for Endpoint {
         }
     }
 
-    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [u8]) -> bool {
+    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
         match self {
             Endpoint::Plain(stream) => stream.prepare_uninitialized_buffer(buf),
             Endpoint::Secure(stream) => stream.prepare_uninitialized_buffer(buf),

@@ -13,7 +13,7 @@ use std::task::{Context, Poll};
 use tokio::io::Error;
 use tokio::prelude::*;
 
-use std::{io, path::Path};
+use std::{io, mem::MaybeUninit, path::Path};
 
 /// Unix domain socket connection on unix, or named pipe connection on windows.
 #[pin_project]
@@ -21,10 +21,10 @@ use std::{io, path::Path};
 pub struct Socket {
     #[pin]
     #[cfg(unix)]
-    inner: tokio::net::unix::UnixStream,
+    inner: tokio::net::UnixStream,
     #[pin]
     #[cfg(windows)]
-    inner: tokio_net::util::PollEvented<mio_named_pipes::NamedPipe>,
+    inner: tokio::io::PollEvented<mio_named_pipes::NamedPipe>,
 }
 
 impl Socket {
@@ -32,7 +32,7 @@ impl Socket {
     #[cfg(unix)]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Socket, io::Error> {
         Ok(Socket {
-            inner: tokio::net::unix::UnixStream::connect(path).await?,
+            inner: tokio::net::UnixStream::connect(path).await?,
         })
     }
 
@@ -42,7 +42,7 @@ impl Socket {
         let pipe = mio_named_pipes::NamedPipe::new(path.as_ref())?;
         pipe.connect()?;
         Ok(Socket {
-            inner: tokio_net::util::PollEvented::new(pipe),
+            inner: tokio::io::PollEvented::new(pipe)?,
         })
     }
 }
@@ -56,7 +56,7 @@ impl AsyncRead for Socket {
         self.project().inner.poll_read(cx, buf)
     }
 
-    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [u8]) -> bool {
+    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
         self.inner.prepare_uninitialized_buffer(buf)
     }
 

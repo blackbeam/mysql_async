@@ -9,7 +9,7 @@
 use futures_util::future::FutureExt;
 use futures_util::stream::{StreamExt, StreamFuture};
 use pin_project::pin_project;
-use tokio::timer::Interval;
+use tokio::time::{self, Interval};
 
 use std::future::Future;
 use std::sync::atomic::Ordering;
@@ -18,8 +18,7 @@ use std::sync::Arc;
 use super::Inner;
 use crate::prelude::Queryable;
 use crate::PoolOptions;
-use futures_core::task::Context;
-use futures_core::Poll;
+use futures_core::task::{Context, Poll};
 use std::pin::Pin;
 
 /// Idling connections TTL check interval.
@@ -38,7 +37,7 @@ pub struct TtlCheckInterval {
 impl TtlCheckInterval {
     /// Creates new `TtlCheckInterval`.
     pub fn new(pool_options: PoolOptions, inner: Arc<Inner>) -> Self {
-        let interval = Interval::new_interval(pool_options.ttl_check_interval()).into_future();
+        let interval = time::interval(pool_options.ttl_check_interval()).into_future();
         Self {
             inner,
             interval,
