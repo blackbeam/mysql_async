@@ -8,7 +8,7 @@ jobs:
         type: string
       flavor:
         type: string
-      test-unstable:
+      test-all:
         type: boolean
         default: false
     docker:
@@ -31,19 +31,15 @@ jobs:
             - /usr/local/cargo/registry/index
       - restore_cache:
           key: deps-<< parameters.rust >>-{{ checksum "Cargo.lock" }}
-#      - run: cargo test
-#      - when:
-#          condition: << parameters.test-ssl >>
-#          steps:
-#            - run: cargo test --features ssl
-#      - run: rustup component add rustfmt
-#      - run: cargo fmt -- --check
+      - run: rustup component add rustfmt
+      - run: cargo fmt -- --check
+      - run: cargo test
       - save_cache:
           key: deps-<< parameters.rust >>-{{ checksum "Cargo.lock" }}
           paths:
             - /usr/local/cargo/registry/cache
       - when:
-          condition: << parameters.test-unstable >>
+          condition: << parameters.test-all >>
           steps:
             - run:
                 name: Nightly
@@ -56,8 +52,8 @@ jobs:
                   rustup toolchain install beta
                   cargo +beta test
             - run:
-                name: SSL + COMPRESS
-                command: cargo +beta test
+                name: Stable + SSL + COMPRESS
+                command: cargo test
                 environment:
                   SSL: 1
                   COMPRESS: 1
@@ -66,35 +62,34 @@ jobs:
 workflows:
   test:
     jobs:
-#      - linux:
-#          name: stable-mysql-5.6
-#          rust: latest
-#          flavor: mysql
-#          version: "5.6"
-#      - linux:
-#          name: stable-mysql-5.7
-#          rust: latest
-#          flavor: mysql
-#          version: "5.7"
-#          test-ssl: true
+      - linux:
+          name: stable-mysql-5.6
+          rust: latest
+          flavor: mysql
+          version: "5.6"
+      - linux:
+          name: stable-mysql-5.7
+          rust: latest
+          flavor: mysql
+          version: "5.7"
       - linux:
           name: stable-mysql-8.0
           rust: latest
           flavor: mysql
           version: "8.0"
-          test-unstable: true
-#      - linux:
-#          name: stable-mariadb-5.5
-#          rust: latest
-#          flavor: mariadb
-#          version: "5.5"
-#      - linux:
-#          name: stable-mariadb-10.3
-#          rust: latest
-#          flavor: mariadb
-#          version: "10.3"
-#      - linux:
-#          name: stable-mariadb-10.4
-#          rust: latest
-#          flavor: mariadb
-#          version: "10.4"
+          test-all: true
+      - linux:
+          name: stable-mariadb-5.5
+          rust: latest
+          flavor: mariadb
+          version: "5.5"
+      - linux:
+          name: stable-mariadb-10.3
+          rust: latest
+          flavor: mariadb
+          version: "10.3"
+      - linux:
+          name: stable-mariadb-10.4
+          rust: latest
+          flavor: mariadb
+          version: "10.4"
