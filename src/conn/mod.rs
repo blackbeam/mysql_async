@@ -42,24 +42,6 @@ use crate::{
 pub mod pool;
 pub mod stmt_cache;
 
-/// Helper function that asynchronously disconnects connection on the default tokio executor.
-fn disconnect(mut conn: Conn) {
-    let disconnected = conn.inner.disconnected;
-
-    // Mark conn as disconnected.
-    conn.inner.disconnected = true;
-
-    if !disconnected {
-        // Server will report broken connection if spawn fails.
-        // this might fail if, say, the runtime is shutting down, but we've done what we could
-        tokio::spawn(async move {
-            if let Ok(conn) = conn.cleanup().await {
-                let _ = conn.disconnect().await;
-            }
-        });
-    }
-}
-
 /// Mysql connection
 struct ConnInner {
     stream: Option<Stream>,

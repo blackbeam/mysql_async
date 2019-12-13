@@ -385,8 +385,6 @@ impl Drop for Conn {
     fn drop(&mut self) {
         if let Some(mut pool) = self.inner.pool.take() {
             pool.return_conn(self.take());
-        } else if self.inner.stream.is_some() && !self.inner.disconnected {
-            crate::conn::disconnect(self.take());
         }
     }
 }
