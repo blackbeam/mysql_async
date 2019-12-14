@@ -385,6 +385,8 @@ impl Drop for Conn {
     fn drop(&mut self) {
         if let Some(mut pool) = self.inner.pool.take() {
             pool.return_conn(self.take());
+        } else if self.inner.stream.is_some() && !self.inner.disconnected {
+            crate::conn::disconnect(self.take());
         }
     }
 }
@@ -648,6 +650,31 @@ mod test {
         drop(conns);
         drop(pool);
         Ok(())
+    }
+
+    #[test]
+    fn drop_impl_for_conn_should_not_panic_within_unwind() {
+        use tokio::runtime;
+
+        const PANIC_MESSAGE: &str = "ORIGINAL_PANIC";
+
+        let result = std::panic::catch_unwind(|| {
+            runtime::Builder::new()
+                .basic_scheduler()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let pool = Pool::new(get_opts());
+                    let _conn = pool.get_conn().await.unwrap();
+                    panic!(PANIC_MESSAGE);
+                });
+        });
+
+        assert_eq!(
+            *result.unwrap_err().downcast::<&str>().unwrap(),
+            PANIC_MESSAGE,
+        );
     }
 
     /*
