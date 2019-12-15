@@ -42,7 +42,7 @@ use crate::{
 pub mod pool;
 pub mod stmt_cache;
 
-/// Helper function that asynchronously disconnects connection on the default tokio executor.
+/// Helper that asynchronously disconnects connection on the default tokio executor.
 fn disconnect(mut conn: Conn) {
     let disconnected = conn.inner.disconnected;
 
@@ -50,6 +50,11 @@ fn disconnect(mut conn: Conn) {
     conn.inner.disconnected = true;
 
     if !disconnected {
+        // We shouldn't call tokio::spawn if unwinding
+        if std::thread::panicking() {
+            return;
+        }
+
         // Server will report broken connection if spawn fails.
         // this might fail if, say, the runtime is shutting down, but we've done what we could
         tokio::spawn(async move {

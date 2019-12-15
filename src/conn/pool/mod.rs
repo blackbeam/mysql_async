@@ -652,6 +652,31 @@ mod test {
         Ok(())
     }
 
+    #[test]
+    fn drop_impl_for_conn_should_not_panic_within_unwind() {
+        use tokio::runtime;
+
+        const PANIC_MESSAGE: &str = "ORIGINAL_PANIC";
+
+        let result = std::panic::catch_unwind(|| {
+            runtime::Builder::new()
+                .basic_scheduler()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let pool = Pool::new(get_opts());
+                    let _conn = pool.get_conn().await.unwrap();
+                    panic!(PANIC_MESSAGE);
+                });
+        });
+
+        assert_eq!(
+            *result.unwrap_err().downcast::<&str>().unwrap(),
+            PANIC_MESSAGE,
+        );
+    }
+
     /*
     #[test]
     #[ignore]
