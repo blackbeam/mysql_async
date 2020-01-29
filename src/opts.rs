@@ -741,10 +741,10 @@ fn from_url_basic(
     }
     let user = get_opts_user_from_url(&url);
     let pass = get_opts_pass_from_url(&url);
-    let ip_or_hostname = url
-        .host_str()
-        .map(String::from)
-        .unwrap_or_else(|| "127.0.0.1".into());
+    let ip_or_hostname = match url.socket_addrs(|| Some(3306)) {
+        Ok(_a) if !_a.is_empty() => _a[0].ip().to_string(),
+        _ => "127.0.0.1".to_string(),
+    };
     let tcp_port = url.port().unwrap_or(3306);
     let db_name = get_opts_db_name_from_url(&url);
 
@@ -928,6 +928,54 @@ mod test {
                 pass: Some("pw".to_string()),
                 ip_or_hostname: "192.168.1.1".to_string(),
                 tcp_port: 3309,
+                db_name: Some("dbname".to_string()),
+                ..InnerOpts::default()
+            },
+            from_url(opts).unwrap(),
+        );
+        let opts = "mysql://usr:pw@[::1]:3309/dbname";
+        assert_eq!(
+            InnerOpts {
+                user: Some("usr".to_string()),
+                pass: Some("pw".to_string()),
+                ip_or_hostname: "::1".to_string(),
+                tcp_port: 3309,
+                db_name: Some("dbname".to_string()),
+                ..InnerOpts::default()
+            },
+            from_url(opts).unwrap(),
+        );
+        let opts = "mysql://[::1]/dbname";
+        assert_eq!(
+            InnerOpts {
+                user: None,
+                pass: None,
+                ip_or_hostname: "::1".to_string(),
+                tcp_port: 3306,
+                db_name: Some("dbname".to_string()),
+                ..InnerOpts::default()
+            },
+            from_url(opts).unwrap(),
+        );
+        let opts = "mysql://non-existent-domain:3307/dbname";
+        assert_eq!(
+            InnerOpts {
+                user: None,
+                pass: None,
+                ip_or_hostname: "127.0.0.1".to_string(),
+                tcp_port: 3307,
+                db_name: Some("dbname".to_string()),
+                ..InnerOpts::default()
+            },
+            from_url(opts).unwrap(),
+        );
+        let opts = "mysql://non-existent-domain/dbname";
+        assert_eq!(
+            InnerOpts {
+                user: None,
+                pass: None,
+                ip_or_hostname: "127.0.0.1".to_string(),
+                tcp_port: 3306,
                 db_name: Some("dbname".to_string()),
                 ..InnerOpts::default()
             },
