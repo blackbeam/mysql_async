@@ -6,10 +6,10 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures_core::ready;
 use tokio::sync::mpsc;
 
 use std::{
+    collections::VecDeque,
     fmt,
     pin::Pin,
     str::FromStr,
@@ -58,75 +58,40 @@ impl From<Conn> for IdlingConn {
     }
 }
 
-pub struct Inner {
-    close: atomic::AtomicBool,
-    closed: atomic::AtomicBool,
-    idle: crossbeam::queue::ArrayQueue<IdlingConn>,
-    wake: crossbeam::queue::SegQueue<Waker>,
-    exist: atomic::AtomicUsize,
-    extra_wakeups: atomic::AtomicUsize,
-
+/// The exchange is where we track all connections as they come and go.
+///
+/// It is held under a single, non-asynchronous lock.
+/// This is fine as long as we never do expensive work while holding the lock!
+struct Exchange {
+    waiting: VecDeque<Waker>,
+    available: VecDeque<IdlingConn>,
+    exist: usize,
     // only used to spawn the recycler the first time we're in async context
-    maker: Mutex<Option<(mpsc::UnboundedReceiver<Option<Conn>>, PoolOptions)>>,
+    recycler: Option<(mpsc::UnboundedReceiver<Option<Conn>>, PoolOptions)>,
 }
 
-impl Inner {
+impl Exchange {
     /// This function will spawn the recycler for this pool
     /// as well as the ttl check interval if `inactive_connection_ttl` isn't `0`.
-    fn spawn_futures_if_needed(self: Arc<Self>) {
+    fn spawn_futures_if_needed(&mut self, inner: &Arc<Inner>) {
         use recycler::Recycler;
         use ttl_check_inerval::TtlCheckInterval;
-
-        let mut lock = self.maker.lock().unwrap();
-        if let Some((dropped, pool_options)) = lock.take() {
+        if let Some((dropped, pool_options)) = self.recycler.take() {
             // Spawn the Recycler.
-            tokio::spawn(Recycler::new(pool_options.clone(), self.clone(), dropped));
+            tokio::spawn(Recycler::new(pool_options.clone(), inner.clone(), dropped));
 
             // Spawn the ttl check interval if `inactive_connection_ttl` isn't `0`
             if pool_options.inactive_connection_ttl() > Duration::from_secs(0) {
-                tokio::spawn(TtlCheckInterval::new(pool_options, self.clone()));
+                tokio::spawn(TtlCheckInterval::new(pool_options, inner.clone()));
             }
         }
     }
+}
 
-    fn push_to_idle<T: Into<IdlingConn>>(&self, conn: T) {
-        self.idle
-            .push(conn.into())
-            .expect("more connections than max")
-    }
-
-    fn wake(&self, mut readied: usize) {
-        if readied == 0 {
-            return;
-        }
-
-        while let Ok(task) = self.wake.pop() {
-            task.wake();
-            readied -= 1;
-            if readied == 0 {
-                if self.close.load(atomic::Ordering::Acquire) {
-                    // wake up as many as we can -- they should all error
-                    readied = usize::max_value();
-                    continue;
-                }
-
-                // no point in waking up more, since we don't have anything for them
-                // there _may_ be some tasks that weren't _really_ waiting though, and we need to
-                // make sure that those notifications go to someone who cares about them.
-                let extra = self.extra_wakeups.swap(0, atomic::Ordering::AcqRel);
-                if extra == 0 {
-                    break;
-                }
-
-                // one thing is worth noting here -- if there aren't enough waiting tasks in .wake
-                // to account for the value in extra, that is _okay_. those extra tasks we "would
-                // have" notified will instead see that they can proceed directly when they call
-                // .poll_new_conn(), or alternatively will be woken up directly by the place that
-                // increments .extra_wakeups in the first place
-                readied = extra;
-            }
-        }
-    }
+pub struct Inner {
+    close: atomic::AtomicBool,
+    closed: atomic::AtomicBool,
+    exchange: Mutex<Exchange>,
 }
 
 #[derive(Clone)]
@@ -154,11 +119,12 @@ impl Pool {
             inner: Arc::new(Inner {
                 close: false.into(),
                 closed: false.into(),
-                idle: crossbeam::queue::ArrayQueue::new(pool_options.constraints().max()),
-                wake: crossbeam::queue::SegQueue::new(),
-                exist: 0.into(),
-                extra_wakeups: 0.into(),
-                maker: Mutex::new(Some((rx, pool_options))),
+                exchange: Mutex::new(Exchange {
+                    available: VecDeque::with_capacity(pool_options.constraints().max()),
+                    waiting: VecDeque::new(),
+                    exist: 0,
+                    recycler: Some((rx, pool_options)),
+                }),
             }),
             drop: tx,
         }
@@ -212,15 +178,20 @@ impl Pool {
             && !conn.inner.in_transaction
             && conn.inner.has_result.is_none()
             && !self.inner.close.load(atomic::Ordering::Acquire)
-            && self.inner.idle.len() < self.opts.get_pool_options().active_bound()
         {
-            self.inner.push_to_idle(conn);
-            self.inner.wake(1);
-        } else {
-            self.drop
-                .send(Some(conn))
-                .expect("recycler is active as long as any Pool is");
+            let mut exchange = self.inner.exchange.lock().unwrap();
+            if exchange.available.len() < self.opts.get_pool_options().active_bound() {
+                exchange.available.push_back(conn.into());
+                if let Some(w) = exchange.waiting.pop_front() {
+                    w.wake();
+                }
+                return;
+            }
         }
+
+        self.drop
+            .send(Some(conn))
+            .expect("recycler is active as long as any Pool is");
     }
 
     /// Indicate that a connection failed to be created and release it.
@@ -228,155 +199,52 @@ impl Pool {
     /// Decreases the exist counter since a broken or dropped connection should not count towards
     /// the total.
     fn cancel_connection(&self) {
-        let prev = self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
-        // NB: Wrapping around here would only be due to a programming error.
-        assert!(prev > 0, "exist must not wrap around");
+        let mut exchange = self.inner.exchange.lock().unwrap();
+        exchange.exist -= 1;
+        // we just enabled the creation of a new connection!
+        if let Some(w) = exchange.waiting.pop_front() {
+            w.wake();
+        }
     }
 
     /// Poll the pool for an available connection.
     fn poll_new_conn(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<GetConn>> {
-        self.poll_new_conn_inner(false, cx)
+        self.poll_new_conn_inner(cx)
     }
 
-    fn poll_new_conn_inner(
-        mut self: Pin<&mut Self>,
-        retrying: bool,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<GetConn>> {
+    fn poll_new_conn_inner(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<GetConn>> {
+        let mut exchange = self.inner.exchange.lock().unwrap();
+
+        // NOTE: this load must happen while we hold the lock,
+        // otherwise the recycler may choose to exit, see that .exist == 0, and then exit,
+        // and then we decide to create a new connection, which would then never be torn down.
         if self.inner.close.load(atomic::Ordering::Acquire) {
             return Err(Error::Driver(DriverError::PoolDisconnected)).into();
         }
 
-        loop {
-            match self.inner.idle.pop() {
-                Err(crossbeam::queue::PopError) => break,
-                Ok(IdlingConn { conn, .. }) => {
-                    if conn.expired() {
-                        self.return_conn(conn);
-                        continue;
-                    }
+        exchange.spawn_futures_if_needed(&self.inner);
 
-                    return Poll::Ready(Ok(GetConn {
-                        pool: Some(self.clone()),
-                        inner: GetConnInner::Done(Some(conn)),
-                    }));
-                }
-            }
+        if let Some(IdlingConn { conn, .. }) = exchange.available.pop_back() {
+            return Poll::Ready(Ok(GetConn {
+                pool: Some(self.clone()),
+                inner: GetConnInner::Done(Some(conn)),
+            }));
         }
 
         // we didn't _immediately_ get one -- try to make one
         // we first try to just do a load so we don't do an unnecessary add then sub
-        let exist = self.inner.exist.load(atomic::Ordering::Acquire);
-        if exist < self.opts.get_pool_options().constraints().max() {
-            // we may be allowed to make a new one!
-            let exist = self.inner.exist.fetch_add(1, atomic::Ordering::AcqRel);
-            if exist == 0 {
-                // we may have to start the recycler.
-                self.inner.clone().spawn_futures_if_needed();
-            }
+        if exchange.exist < self.opts.get_pool_options().constraints().max() {
+            // we are allowed to make a new connection, so we will!
+            exchange.exist += 1;
 
-            if exist < self.opts.get_pool_options().constraints().max() {
-                // we're allowed to make a new connection
-
-                // note, however, that there is a race here:
-                // imagine that Pool::disconnect was _just_ called. that is, after we checked at
-                // the start of this method. the Recycler checks .exist right _before_ we increment
-                // it, and notices that it is 0, and thus believes it is allowed to exit. if we
-                // continue to make a new connection here, that connection would not have a way to
-                // be dropped as part of the pool.
-                //
-                // so, we check .close again here (after the increment). if it is now true, we know
-                // that the Recycler may have exited, and we give up. if it is false, we _know_
-                // that the Recyler _must_ see our +1 before it decides to exit.
-                if self.inner.close.load(atomic::Ordering::Acquire) {
-                    self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
-                    // make sure we notify the Recycler in case it was waiting for our +1
-                    self.drop
-                        .send(None)
-                        .expect("recycler is active as long as any Pool is");
-                    return Err(Error::Driver(DriverError::PoolDisconnected)).into();
-                }
-
-                return Poll::Ready(Ok(GetConn {
-                    pool: Some(self.clone()),
-                    inner: GetConnInner::Connecting(Box::pin(Conn::new(self.opts.clone()))),
-                }));
-            }
-
-            let exist = self.inner.exist.fetch_sub(1, atomic::Ordering::AcqRel);
-            if exist < self.opts.get_pool_options().constraints().max() {
-                // we'd _now_ be allowed to make a connection
-                return self.poll_new_conn_inner(retrying, cx);
-            }
+            return Poll::Ready(Ok(GetConn {
+                pool: Some(self.clone()),
+                inner: GetConnInner::Connecting(Box::pin(Conn::new(self.opts.clone()))),
+            }));
         }
 
-        if !retrying {
-            // no go -- we have to wait
-            self.inner.wake.push(cx.waker().clone());
-
-            // there's a potential race here -- imagine another task releases a connection after we
-            // try to poll .idle or check .exist, but before we push our task onto .wake. In that
-            // case, we might never be woken up again! so, we need to make those checks again here
-            // after we've scheduled ourselves for wakeup.
-            //
-            // an alternative strategy would be to _always_ push to .wake and then do the checks,
-            // but that would lead to a large number of spurious notifications/wakeups, as well as
-            // needless contention on .wake.
-            let conn = ready!(self.as_mut().poll_new_conn_inner(true, cx))?;
-
-            // this is a tricky case. we already registered ourselves as wanting to be woken up,
-            // but we now have a connection, so we won't be waiting. this means that _if_ we were
-            // to be woken up, that notification _really_ should have gone to some _other_ task,
-            // which now _won't_ be woken up.
-            //
-            // thew way we're going to fix that is to deal with both possible cases:
-            //
-            //  - someone _will_ try to wake us up
-            //  - someone has _already_ tried to wake us up
-            //
-            // we do this by requesting an "extra" wakeup next time someone is waking people up,
-            // and also waking someone up (perhaps spuriously) in case we have already been
-            // notified.
-            if let Ok(task) = self.inner.wake.pop() {
-                if task.will_wake(cx.waker()) {
-                    // phew -- we got out of that one easy!
-                    return Poll::Ready(Ok(conn));
-                }
-
-                // if we _haven't_ been notified yet, someone else may be deciding who to wake up
-                // _right now_. if they choose us, that's wasted. so, let's make sure they wake up
-                // at least one other task.
-                self.inner
-                    .extra_wakeups
-                    .fetch_add(1, atomic::Ordering::AcqRel);
-
-                // if someone has not yet notified us, the +1 above will make sure that they wake
-                // up at least one task that's not us. that candidate set has to include the task
-                // we just pulled off the queue.
-                self.inner.wake.push(task.clone());
-
-                // if someone _did_ already choose to notify us, we want to pass that on.
-                // but we also need to notify the task we took for a more subtle reason.
-                // consider this task0, and two other tasks, task1 and task2:
-                //
-                //  - task1 pushed to wake queue
-                //  - task0 pushed to wake queue
-                //  - task0 pops task1 from wake queue
-                //  - task0 increments extra_wakeups
-                //  - task2 tries to do a wakeup -- wakes only task0 (task1 not on the queue yet)
-                //  - task0 pushes task1 onto the queue
-                //
-                // in this case, task1 might never be awoken again, which is not okay.
-                // hence:
-                task.wake();
-            } else {
-                // someone tried to notify us, but also, no-one else is waiting,
-                // so there's no-one to "forward" that wake-up to.
-            }
-
-            return Poll::Ready(Ok(conn));
-        }
-
+        // no go -- we have to wait
+        exchange.waiting.push_back(cx.waker().clone());
         Poll::Pending
     }
 }
@@ -396,13 +264,24 @@ mod test {
     use futures_util::stream::StreamExt;
     use futures_util::{future::try_join_all, try_join};
 
-    use std::sync::atomic;
     use std::time::Duration;
 
     use crate::{
         conn::pool::Pool, opts::PoolOptions, queryable::Queryable, test_misc::get_opts,
         PoolConstraints, TransactionOptions,
     };
+
+    macro_rules! conn_ex_field {
+        ($conn:expr, $field:tt) => {
+            ex_field!($conn.inner.pool.as_ref().unwrap(), $field)
+        };
+    }
+
+    macro_rules! ex_field {
+        ($pool:expr, $field:tt) => {
+            $pool.inner.exchange.lock().unwrap().$field
+        };
+    }
 
     #[test]
     fn should_not_hang() -> super::Result<()> {
@@ -517,10 +396,7 @@ mod test {
 
         // we want to continuously drop connections
         // and check that they are _actually_ dropped until we reach POOL_MIN
-        assert_eq!(
-            pool_clone.inner.exist.load(atomic::Ordering::SeqCst),
-            POOL_MAX
-        );
+        assert_eq!(ex_field!(pool_clone, exist), POOL_MAX);
 
         while !conns.is_empty() {
             // first, drop a connection
@@ -545,7 +421,7 @@ mod test {
 
             if dropped > POOL_MIN {
                 // check that connection is still in the pool because of inactive_connection_ttl
-                let have = pool_clone.inner.exist.load(atomic::Ordering::SeqCst);
+                let have = ex_field!(pool_clone, exist);
                 assert_eq!(have, expected + 1);
 
                 // then, wait for ttl_check_interval
@@ -553,7 +429,7 @@ mod test {
             }
 
             // check that we have the expected number of connections
-            let have = pool_clone.inner.exist.load(atomic::Ordering::SeqCst);
+            let have = ex_field!(pool_clone, exist);
             assert_eq!(have, expected);
         }
 
@@ -572,31 +448,21 @@ mod test {
 
         let (conn1, conn2) = try_join!(pool.get_conn(), pool.get_conn()).unwrap();
 
-        assert_eq!(
-            conn1
-                .inner
-                .pool
-                .as_ref()
-                .unwrap()
-                .inner
-                .exist
-                .load(atomic::Ordering::SeqCst),
-            2
-        );
-        assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
+        assert_eq!(conn_ex_field!(conn1, exist), 2);
+        assert_eq!(conn_ex_field!(conn1, available).len(), 0);
 
         drop(conn1);
         drop(conn2);
         // only one of conn1 and conn2 should have gone to idle,
         // and should have immediately been picked up by new_conn (now conn1)
         let conn1 = pool_clone.get_conn().await?;
-        assert_eq!(conn1.inner.pool.as_ref().unwrap().inner.idle.len(), 0);
+        assert_eq!(conn_ex_field!(conn1, available).len(), 0);
 
         drop(conn1);
 
         // the connection should be returned to idle
         // (but may not have been returned _yet_)
-        assert!(pool.inner.idle.len() <= 1);
+        assert!(ex_field!(pool, available).len() <= 1);
         pool.disconnect().await?;
         Ok(())
     }
@@ -608,7 +474,7 @@ mod test {
         let pool = Pool::new(String::from("mysql://255.255.255.255"));
 
         assert!(try_join!(pool.get_conn(), pool.get_conn()).is_err());
-        assert_eq!(pool.inner.exist.load(atomic::Ordering::SeqCst), 0);
+        assert_eq!(ex_field!(pool, exist), 0);
         Ok(())
     }
 
