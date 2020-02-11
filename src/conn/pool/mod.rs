@@ -96,6 +96,9 @@ pub struct Inner {
 
 #[derive(Clone)]
 /// Asynchronous pool of MySql connections.
+///
+/// Note that you will probably want to await `Pool::disconnect` before dropping the runtime, as
+/// otherwise you may end up with a number of connections that are not cleanly terminated.
 pub struct Pool {
     opts: Opts,
     inner: Arc<Inner>,
@@ -189,9 +192,20 @@ impl Pool {
             }
         }
 
-        self.drop
-            .send(Some(conn))
-            .expect("recycler is active as long as any Pool is");
+        if let Err(conn) = self.drop.send(Some(conn)) {
+            let conn = conn.0.unwrap();
+
+            // This _probably_ means that the Runtime is shutting down, and that the Recycler was
+            // dropped rather than allowed to exit cleanly.
+            if !self.inner.closed.load(atomic::Ordering::SeqCst) {
+                // Yup, Recycler was forcibly dropped!
+                // All we can do here is try the non-pool drop path for Conn.
+                assert!(conn.inner.pool.is_none());
+                drop(conn);
+            } else {
+                unreachable!("Recycler exited while connections still exist");
+            }
+        }
     }
 
     /// Indicate that a connection failed to be created and release it.
@@ -541,6 +555,46 @@ mod test {
             *result.unwrap_err().downcast::<&str>().unwrap(),
             PANIC_MESSAGE,
         );
+    }
+
+    #[test]
+    fn should_not_panic_on_unclean_shutdown() {
+        // run more than once to trigger different drop orders
+        for _ in 0..10 {
+            let mut rt = tokio::runtime::Runtime::new().unwrap();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            rt.block_on(async move {
+                let pool = Pool::new(get_opts());
+                let c = pool.get_conn().await.unwrap();
+                tokio::spawn(async move {
+                    let _ = rx.await;
+                    let _ = c.drop_query("SELECT 1").await;
+                });
+            });
+            drop(rt);
+            // c is still active here, so if anything it's been forcibly dropped
+            let _ = tx.send(());
+        }
+    }
+
+    #[test]
+    fn should_perform_clean_shutdown() {
+        // run more than once to trigger different drop orders
+        for _ in 0..10 {
+            let mut rt = tokio::runtime::Runtime::new().unwrap();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let jh = rt.spawn(async move {
+                let pool = Pool::new(get_opts());
+                let c = pool.get_conn().await.unwrap();
+                tokio::spawn(async move {
+                    let _ = rx.await;
+                    let _ = c.drop_query("SELECT 1").await;
+                });
+                let _ = pool.disconnect().await;
+            });
+            let _ = tx.send(());
+            rt.block_on(jh).unwrap();
+        }
     }
 
     /*

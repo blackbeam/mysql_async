@@ -57,11 +57,13 @@ fn disconnect(mut conn: Conn) {
 
         // Server will report broken connection if spawn fails.
         // this might fail if, say, the runtime is shutting down, but we've done what we could
-        tokio::spawn(async move {
-            if let Ok(conn) = conn.cleanup().await {
-                let _ = conn.disconnect().await;
-            }
-        });
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Ok(conn) = conn.cleanup().await {
+                    let _ = conn.disconnect().await;
+                }
+            });
+        }
     }
 }
 

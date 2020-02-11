@@ -208,3 +208,14 @@ impl Future for Recycler {
         }
     }
 }
+
+impl Drop for Recycler {
+    fn drop(&mut self) {
+        if !self.inner.closed.load(Ordering::Acquire) {
+            // user did not wait for outstanding connections to finish!
+            // this is not good -- we won't be able to shut down our connections cleanly
+            // all we can do is try to ensure a clean shutdown
+            self.inner.close.store(true, Ordering::SeqCst);
+        }
+    }
+}
