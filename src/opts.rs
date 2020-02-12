@@ -7,15 +7,17 @@
 // modified, or distributed except according to those terms.
 
 use percent_encoding::percent_decode;
-use url::Url;
+use url::{Host, Url};
 
 use std::{
     borrow::Cow,
-    net::{Ipv4Addr, Ipv6Addr},
+    io,
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     path::Path,
     str::FromStr,
     sync::Arc,
     time::Duration,
+    vec,
 };
 
 use crate::{
@@ -30,6 +32,73 @@ const_assert!(
     DEFAULT_POOL_CONSTRAINTS.min <= DEFAULT_POOL_CONSTRAINTS.max,
 );
 const DEFAULT_STMT_CACHE_SIZE: usize = 10;
+const DEFAULT_PORT: u16 = 3306;
+
+/// Represents information about a host and port combination that can be converted
+/// into socket addresses using to_socket_addrs.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub enum HostPortOrUrl {
+    HostPort(String, u16),
+    Url(Url),
+}
+
+impl Default for HostPortOrUrl {
+    fn default() -> Self {
+        HostPortOrUrl::HostPort("127.0.0.1".to_string(), DEFAULT_PORT)
+    }
+}
+
+impl ToSocketAddrs for HostPortOrUrl {
+    type Iter = vec::IntoIter<SocketAddr>;
+
+    fn to_socket_addrs(&self) -> io::Result<vec::IntoIter<SocketAddr>> {
+        let res = match self {
+            Self::Url(url) => url.socket_addrs(|| Some(DEFAULT_PORT))?.into_iter(),
+            Self::HostPort(host, port) => (host.as_ref(), *port).to_socket_addrs()?,
+        };
+
+        Ok(res)
+    }
+}
+
+impl HostPortOrUrl {
+    pub fn get_ip_or_hostname(&self) -> &str {
+        match self {
+            Self::HostPort(host, _) => host,
+            Self::Url(url) => url.host_str().unwrap_or("127.0.0.1"),
+        }
+    }
+
+    pub fn get_tcp_port(&self) -> u16 {
+        match self {
+            Self::HostPort(_, port) => *port,
+            Self::Url(url) => url.port().unwrap_or(DEFAULT_PORT),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn is_loopback(&self) -> bool {
+        match self {
+            Self::HostPort(host, _) => {
+                let v4addr: Option<Ipv4Addr> = FromStr::from_str(host).ok();
+                let v6addr: Option<Ipv6Addr> = FromStr::from_str(host).ok();
+                if let Some(addr) = v4addr {
+                    addr.is_loopback()
+                } else if let Some(addr) = v6addr {
+                    addr.is_loopback()
+                } else {
+                    host == "localhost"
+                }
+            }
+            Self::Url(url) => match url.host() {
+                Some(Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(Host::Ipv6(ip)) => ip.is_loopback(),
+                Some(Host::Domain(s)) => s == "localhost",
+                _ => false,
+            },
+        }
+    }
+}
 
 /// Default `inactive_connection_ttl` of a pool.
 ///
@@ -214,17 +283,17 @@ impl Default for PoolOptions {
     }
 }
 
+#[derive(Clone, Eq, PartialEq, Default, Debug)]
+pub struct InnerOpts {
+    mysql_opts: MysqlOpts,
+    address: HostPortOrUrl,
+}
+
 /// Mysql connection options.
 ///
 /// Build one with [`OptsBuilder`].
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub struct InnerOpts {
-    /// Address of mysql server (defaults to `127.0.0.1`). Host names should also work.
-    ip_or_hostname: String,
-
-    /// TCP port of mysql server (defaults to `3306`).
-    tcp_port: u16,
-
+pub struct MysqlOpts {
     /// User (defaults to `None`).
     user: Option<String>,
 
@@ -302,66 +371,80 @@ pub struct Opts {
 impl Opts {
     #[doc(hidden)]
     pub fn addr_is_loopback(&self) -> bool {
-        let v4addr: Option<Ipv4Addr> = FromStr::from_str(self.inner.ip_or_hostname.as_ref()).ok();
-        let v6addr: Option<Ipv6Addr> = FromStr::from_str(self.inner.ip_or_hostname.as_ref()).ok();
-        if let Some(addr) = v4addr {
-            addr.is_loopback()
-        } else if let Some(addr) = v6addr {
-            addr.is_loopback()
-        } else {
-            self.inner.ip_or_hostname == "localhost"
-        }
+        self.inner.address.is_loopback()
     }
 
     pub fn from_url(url: &str) -> std::result::Result<Opts, UrlError> {
+        let mut url = Url::parse(url)?;
+
+        // We use the URL for socket address resolution later, so make
+        // sure it has a port set.
+        if !url.port().is_some() {
+            url.set_port(Some(DEFAULT_PORT))
+                .map_err(|_| UrlError::Invalid)?;
+        }
+
+        let mysql_opts = mysqlopts_from_url(&url)?;
+        let address = HostPortOrUrl::Url(url);
+
+        let inner_opts = InnerOpts {
+            mysql_opts,
+            address,
+        };
+
         Ok(Opts {
-            inner: Arc::new(from_url(url)?),
+            inner: Arc::new(inner_opts),
         })
     }
 
     /// Address of mysql server (defaults to `127.0.0.1`). Hostnames should also work.
     pub fn get_ip_or_hostname(&self) -> &str {
-        &*self.inner.ip_or_hostname
+        self.inner.address.get_ip_or_hostname()
+    }
+
+    pub fn get_hostport_or_url(&self) -> &HostPortOrUrl {
+        &self.inner.address
     }
 
     /// TCP port of mysql server (defaults to `3306`).
     pub fn get_tcp_port(&self) -> u16 {
-        self.inner.tcp_port
+        self.inner.address.get_tcp_port()
     }
 
     /// User (defaults to `None`).
     pub fn get_user(&self) -> Option<&str> {
-        self.inner.user.as_ref().map(AsRef::as_ref)
+        self.inner.mysql_opts.user.as_ref().map(AsRef::as_ref)
     }
 
     /// Password (defaults to `None`).
     pub fn get_pass(&self) -> Option<&str> {
-        self.inner.pass.as_ref().map(AsRef::as_ref)
+        self.inner.mysql_opts.pass.as_ref().map(AsRef::as_ref)
     }
 
     /// Database name (defaults to `None`).
     pub fn get_db_name(&self) -> Option<&str> {
-        self.inner.db_name.as_ref().map(AsRef::as_ref)
+        self.inner.mysql_opts.db_name.as_ref().map(AsRef::as_ref)
     }
 
     /// Commands to execute on each new database connection.
     pub fn get_init(&self) -> &[String] {
-        self.inner.init.as_ref()
+        self.inner.mysql_opts.init.as_ref()
     }
 
     /// TCP keep alive timeout in milliseconds (defaults to `None).
     pub fn get_tcp_keepalive(&self) -> Option<u32> {
-        self.inner.tcp_keepalive
+        self.inner.mysql_opts.tcp_keepalive
     }
 
     /// Whether `TCP_NODELAY` will be set for mysql connection.
     pub fn get_tcp_nodelay(&self) -> bool {
-        self.inner.tcp_nodelay
+        self.inner.mysql_opts.tcp_nodelay
     }
 
     /// Local infile handler
     pub fn get_local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>> {
         self.inner
+            .mysql_opts
             .local_infile_handler
             .as_ref()
             .map(|x| x.clone_inner())
@@ -369,28 +452,28 @@ impl Opts {
 
     /// Connection pool options (defaults to [`Default::default`]).
     pub fn get_pool_options(&self) -> &PoolOptions {
-        &self.inner.pool_options
+        &self.inner.mysql_opts.pool_options
     }
 
     /// Pool will close connection if time since last IO exceeds this number of seconds
     /// (defaults to `wait_timeout`).
     pub fn get_conn_ttl(&self) -> Option<Duration> {
-        self.inner.conn_ttl
+        self.inner.mysql_opts.conn_ttl
     }
 
     /// Number of prepared statements cached on the client side (per connection). Defaults to `10`.
     pub fn get_stmt_cache_size(&self) -> usize {
-        self.inner.stmt_cache_size
+        self.inner.mysql_opts.stmt_cache_size
     }
 
     /// Driver will require SSL connection if this option isn't `None` (default to `None`).
     pub fn get_ssl_opts(&self) -> Option<&SslOpts> {
-        self.inner.ssl_opts.as_ref()
+        self.inner.mysql_opts.ssl_opts.as_ref()
     }
 
     /// Will prefer socket connection if `true` (defaults to `true`).
     pub fn get_perfer_socket(&self) -> bool {
-        self.inner.prefer_socket
+        self.inner.mysql_opts.prefer_socket
     }
 
     /// Prefer socket connection (defaults to `true`).
@@ -405,12 +488,12 @@ impl Opts {
     /// Library will query the `@@socket` server variable to get socket address,
     /// and this address may be incorrect in some cases (i.e. docker).
     pub fn get_prefer_socket(&self) -> bool {
-        self.inner.prefer_socket
+        self.inner.mysql_opts.prefer_socket
     }
 
     /// Socket path (defaults to `None`).
     pub fn get_socket(&self) -> Option<&str> {
-        self.inner.socket.as_ref().map(|x| &**x)
+        self.inner.mysql_opts.socket.as_ref().map(|x| &**x)
     }
 
     /// If not `None`, then client will ask for compression if server supports it
@@ -424,7 +507,7 @@ impl Opts {
     ///
     /// Note that compression level defined here will affect only outgoing packets.
     pub fn get_compression(&self) -> Option<crate::Compression> {
-        self.inner.compression
+        self.inner.mysql_opts.compression
     }
 
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
@@ -439,13 +522,13 @@ impl Opts {
             | CapabilityFlags::CLIENT_DEPRECATE_EOF
             | CapabilityFlags::CLIENT_PLUGIN_AUTH;
 
-        if self.inner.db_name.is_some() {
+        if self.inner.mysql_opts.db_name.is_some() {
             out |= CapabilityFlags::CLIENT_CONNECT_WITH_DB;
         }
-        if self.inner.ssl_opts.is_some() {
+        if self.inner.mysql_opts.ssl_opts.is_some() {
             out |= CapabilityFlags::CLIENT_SSL;
         }
-        if self.inner.compression.is_some() {
+        if self.inner.mysql_opts.compression.is_some() {
             out |= CapabilityFlags::CLIENT_COMPRESS;
         }
 
@@ -453,11 +536,9 @@ impl Opts {
     }
 }
 
-impl Default for InnerOpts {
-    fn default() -> InnerOpts {
-        InnerOpts {
-            ip_or_hostname: "127.0.0.1".to_string(),
-            tcp_port: 3306,
+impl Default for MysqlOpts {
+    fn default() -> MysqlOpts {
+        MysqlOpts {
             user: None,
             pass: None,
             db_name: None,
@@ -537,7 +618,9 @@ impl From<PoolConstraints> for (usize, usize) {
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct OptsBuilder {
-    opts: InnerOpts,
+    opts: MysqlOpts,
+    ip_or_hostname: String,
+    tcp_port: u16,
 }
 
 impl OptsBuilder {
@@ -546,20 +629,24 @@ impl OptsBuilder {
     }
 
     pub fn from_opts<T: Into<Opts>>(opts: T) -> Self {
+        let opts = opts.into();
+
         OptsBuilder {
-            opts: (*opts.into().inner).clone(),
+            tcp_port: opts.inner.address.get_tcp_port(),
+            ip_or_hostname: opts.inner.address.get_ip_or_hostname().to_string(),
+            opts: (*opts.inner).mysql_opts.clone(),
         }
     }
 
     /// Address of mysql server (defaults to `127.0.0.1`). Hostnames should also work.
     pub fn ip_or_hostname<T: Into<String>>(&mut self, ip_or_hostname: T) -> &mut Self {
-        self.opts.ip_or_hostname = ip_or_hostname.into();
+        self.ip_or_hostname = ip_or_hostname.into();
         self
     }
 
     /// TCP port of mysql server (defaults to `3306`).
     pub fn tcp_port(&mut self, tcp_port: u16) -> &mut Self {
-        self.opts.tcp_port = tcp_port;
+        self.tcp_port = tcp_port;
         self
     }
 
@@ -684,8 +771,14 @@ impl OptsBuilder {
 
 impl From<OptsBuilder> for Opts {
     fn from(builder: OptsBuilder) -> Opts {
+        let address = HostPortOrUrl::HostPort(builder.ip_or_hostname, builder.tcp_port);
+        let inner_opts = InnerOpts {
+            mysql_opts: builder.opts,
+            address,
+        };
+
         Opts {
-            inner: Arc::new(builder.opts),
+            inner: Arc::new(inner_opts),
         }
     }
 }
@@ -727,10 +820,7 @@ fn get_opts_db_name_from_url(url: &Url) -> Option<String> {
     }
 }
 
-fn from_url_basic(
-    url_str: &str,
-) -> std::result::Result<(InnerOpts, Vec<(String, String)>), UrlError> {
-    let url = Url::parse(url_str)?;
+fn from_url_basic(url: &Url) -> std::result::Result<(MysqlOpts, Vec<(String, String)>), UrlError> {
     if url.scheme() != "mysql" {
         return Err(UrlError::UnsupportedScheme {
             scheme: url.scheme().to_string(),
@@ -741,28 +831,21 @@ fn from_url_basic(
     }
     let user = get_opts_user_from_url(&url);
     let pass = get_opts_pass_from_url(&url);
-    let ip_or_hostname = url
-        .host_str()
-        .map(String::from)
-        .unwrap_or_else(|| "127.0.0.1".into());
-    let tcp_port = url.port().unwrap_or(3306);
     let db_name = get_opts_db_name_from_url(&url);
 
     let query_pairs = url.query_pairs().into_owned().collect();
-    let opts = InnerOpts {
+    let opts = MysqlOpts {
         user,
         pass,
-        ip_or_hostname,
-        tcp_port,
         db_name,
-        ..InnerOpts::default()
+        ..MysqlOpts::default()
     };
 
     Ok((opts, query_pairs))
 }
 
-fn from_url(url: &str) -> std::result::Result<InnerOpts, UrlError> {
-    let (mut opts, query_pairs): (InnerOpts, _) = from_url_basic(url)?;
+fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
+    let (mut opts, query_pairs): (MysqlOpts, _) = from_url_basic(url)?;
     let mut pool_min = DEFAULT_POOL_CONSTRAINTS.min;
     let mut pool_max = DEFAULT_POOL_CONSTRAINTS.max;
     for (key, value) in query_pairs {
@@ -916,23 +999,35 @@ impl<T: AsRef<str> + Sized> From<T> for Opts {
 
 #[cfg(test)]
 mod test {
-    use super::{from_url, InnerOpts, Opts};
+    use super::{HostPortOrUrl, MysqlOpts, Opts, Url};
     use crate::error::UrlError::InvalidParamValue;
 
     #[test]
     fn should_convert_url_into_opts() {
-        let opts = "mysql://usr:pw@192.168.1.1:3309/dbname";
-        assert_eq!(
-            InnerOpts {
-                user: Some("usr".to_string()),
-                pass: Some("pw".to_string()),
-                ip_or_hostname: "192.168.1.1".to_string(),
-                tcp_port: 3309,
-                db_name: Some("dbname".to_string()),
-                ..InnerOpts::default()
-            },
-            from_url(opts).unwrap(),
-        );
+        let url = "mysql://usr:pw@192.168.1.1:3309/dbname";
+        let parsed_url = Url::parse("mysql://usr:pw@192.168.1.1:3309/dbname").unwrap();
+
+        let mysql_opts = MysqlOpts {
+            user: Some("usr".to_string()),
+            pass: Some("pw".to_string()),
+            db_name: Some("dbname".to_string()),
+            ..MysqlOpts::default()
+        };
+        let host = HostPortOrUrl::Url(parsed_url);
+
+        let opts = Opts::from_url(url).unwrap();
+
+        assert_eq!(opts.inner.mysql_opts, mysql_opts);
+        assert_eq!(opts.get_hostport_or_url(), &host);
+    }
+
+    #[test]
+    fn should_convert_ipv6_url_into_opts() {
+        let url = "mysql://usr:pw@[::1]:3309/dbname";
+
+        let opts = Opts::from_url(url).unwrap();
+
+        assert_eq!(opts.get_ip_or_hostname(), "[::1]");
     }
 
     #[test]
