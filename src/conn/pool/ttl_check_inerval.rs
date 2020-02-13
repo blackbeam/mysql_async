@@ -47,31 +47,25 @@ impl TtlCheckInterval {
 
     /// Perform the check.
     pub fn check_ttl(&self) {
-        let num_idling = self.inner.idle.len();
-        let mut num_to_drop = num_idling.saturating_sub(self.pool_options.constraints().min());
-        let mut num_returned = 0;
+        let mut exchange = self.inner.exchange.lock().unwrap();
 
-        for _ in 0..num_idling {
-            match self.inner.idle.pop() {
-                Ok(idling_conn) => {
-                    if idling_conn.elapsed() > self.pool_options.inactive_connection_ttl() {
-                        tokio::spawn(idling_conn.conn.disconnect().map(drop));
-                        self.inner.exist.fetch_sub(1, Ordering::AcqRel);
-                        num_to_drop -= 1;
-                        if num_to_drop == 0 {
-                            break;
-                        }
-                    } else {
-                        self.inner.push_to_idle(idling_conn);
-                        num_returned += 1;
-                    }
-                }
-                Err(_) => break,
+        let num_idling = exchange.available.len();
+        let num_to_drop = num_idling.saturating_sub(self.pool_options.constraints().min());
+
+        for _ in 0..num_to_drop {
+            let idling_conn = exchange.available.pop_front().unwrap();
+            if idling_conn.elapsed() > self.pool_options.inactive_connection_ttl() {
+                assert!(idling_conn.conn.inner.pool.is_none());
+                tokio::spawn(idling_conn.conn.disconnect().map(drop));
+                exchange.exist -= 1;
+            } else {
+                exchange.available.push_back(idling_conn);
             }
         }
 
-        if num_returned > 0 {
-            self.inner.wake(num_returned);
+        if num_to_drop > 0 {
+            // there were available connections, so no tasks should be waiting
+            assert_eq!(exchange.waiting.len(), 0);
         }
     }
 }

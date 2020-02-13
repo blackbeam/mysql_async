@@ -57,11 +57,13 @@ fn disconnect(mut conn: Conn) {
 
         // Server will report broken connection if spawn fails.
         // this might fail if, say, the runtime is shutting down, but we've done what we could
-        tokio::spawn(async move {
-            if let Ok(conn) = conn.cleanup().await {
-                let _ = conn.disconnect().await;
-            }
-        });
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Ok(conn) = conn.cleanup().await {
+                    let _ = conn.disconnect().await;
+                }
+            });
+        }
     }
 }
 
@@ -1237,6 +1239,11 @@ mod test {
             Ok(conn) => conn,
             Err(super::Error::Server(ref err)) if err.code == 1148 => {
                 // The used command is not allowed with this MySQL version
+                return Ok(());
+            }
+            Err(super::Error::Server(ref err)) if err.code == 3948 => {
+                // Loading local data is disabled;
+                // this must be enabled on both the client and server sides
                 return Ok(());
             }
             e @ Err(_) => e.unwrap(),

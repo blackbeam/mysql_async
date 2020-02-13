@@ -55,24 +55,28 @@ impl Future for Recycler {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut readied = 0;
         let mut close = self.inner.close.load(Ordering::Acquire);
 
         macro_rules! conn_decision {
-            ($self:ident, $readied:ident, $conn:ident) => {
+            ($self:ident, $conn:ident) => {
                 if $conn.inner.stream.is_none() || $conn.inner.disconnected {
                     // drop unestablished connection
                     $self.discard.push(Box::pin(::futures_util::future::ok(())));
                 } else if $conn.inner.in_transaction || $conn.inner.has_result.is_some() {
                     $self.cleaning.push(Box::pin($conn.cleanup()));
-                } else if $conn.expired()
-                    || close
-                    || $self.inner.idle.len() >= $self.pool_opts.active_bound()
-                {
+                } else if $conn.expired() || close {
                     $self.discard.push(Box::pin($conn.close()));
                 } else {
-                    $self.inner.push_to_idle($conn);
-                    $readied += 1;
+                    let mut exchange = $self.inner.exchange.lock().unwrap();
+                    if exchange.available.len() >= $self.pool_opts.active_bound() {
+                        drop(exchange);
+                        $self.discard.push(Box::pin($conn.close()));
+                    } else {
+                        exchange.available.push_back($conn.into());
+                        if let Some(w) = exchange.waiting.pop_front() {
+                            w.wake();
+                        }
+                    }
                 }
             };
         }
@@ -81,7 +85,8 @@ impl Future for Recycler {
             // see if there are more connections for us to recycle
             match Pin::new(&mut self.dropped).poll_next(cx) {
                 Poll::Ready(Some(Some(conn))) => {
-                    conn_decision!(self, readied, conn);
+                    assert!(conn.inner.pool.is_none());
+                    conn_decision!(self, conn);
                 }
                 Poll::Ready(Some(None)) => {
                     // someone signaled us that it's exit time
@@ -103,9 +108,12 @@ impl Future for Recycler {
         }
 
         // if we've been asked to close, reclaim any idle connections
-        if close {
-            while let Ok(IdlingConn { conn, .. }) = self.inner.idle.pop() {
-                conn_decision!(self, readied, conn);
+        if close || self.eof {
+            while let Some(IdlingConn { conn, .. }) =
+                self.inner.exchange.lock().unwrap().available.pop_front()
+            {
+                assert!(conn.inner.pool.is_none());
+                conn_decision!(self, conn);
             }
         }
 
@@ -113,10 +121,13 @@ impl Future for Recycler {
         loop {
             match Pin::new(&mut self.cleaning).poll_next(cx) {
                 Poll::Pending | Poll::Ready(None) => break,
-                Poll::Ready(Some(Ok(conn))) => conn_decision!(self, readied, conn),
+                Poll::Ready(Some(Ok(conn))) => conn_decision!(self, conn),
                 Poll::Ready(Some(Err(e))) => {
                     // an error occurred while cleaning a connection.
                     // what do we do? replace it with a new connection?
+                    // for a conn to end up in cleaning, it must have come through .dropped.
+                    // anything that comes through .dropped we know has .pool.is_none().
+                    // therefore, dropping the conn won't decrement .exist, so we need to do that.
                     self.discarded += 1;
                     // NOTE: we're discarding the error here
                     let _ = e;
@@ -130,6 +141,8 @@ impl Future for Recycler {
                 Poll::Pending | Poll::Ready(None) => break,
                 Poll::Ready(Some(Ok(()))) => {
                     // yes! count it.
+                    // note that we must decrement .exist since the connection does not have a
+                    // .pool, and therefore won't do anything useful when it is dropped.
                     self.discarded += 1
                 }
                 Poll::Ready(Some(Err(e))) => {
@@ -144,22 +157,27 @@ impl Future for Recycler {
 
         if self.discarded != 0 {
             // we need to open up slots for new connctions to be established!
-            self.inner.exist.fetch_sub(self.discarded, Ordering::AcqRel);
-            readied += self.discarded;
+            let mut exchange = self.inner.exchange.lock().unwrap();
+            exchange.exist -= self.discarded;
+            for _ in 0..self.discarded {
+                if let Some(w) = exchange.waiting.pop_front() {
+                    w.wake();
+                }
+            }
+            drop(exchange);
             self.discarded = 0;
         }
 
         // NOTE: we are asserting here that no more connections will ever be returned to
         // us. see the explanation in Pool::poll_new_conn for why this is okay, even during
         // races on .exist
-        let effectively_eof = close && self.inner.exist.load(Ordering::Acquire) == 0;
+        let effectively_eof = close && self.inner.exchange.lock().unwrap().exist == 0;
 
         if (self.eof || effectively_eof) && self.cleaning.is_empty() && self.discard.is_empty() {
             // we know that all Pool handles have been dropped (self.dropped.poll returned None).
 
             // if this assertion fails, where are the remaining connections?
-            assert_eq!(self.inner.idle.len(), 0);
-            assert_eq!(self.inner.exist.load(Ordering::Acquire), 0);
+            assert_eq!(self.inner.exchange.lock().unwrap().available.len(), 0);
 
             // NOTE: it is _necessary_ that we set this _before_ we call .wake
             // otherwise, the following may happen to the DisconnectPool future:
@@ -173,15 +191,31 @@ impl Future for Recycler {
             self.inner.closed.store(true, Ordering::Release);
         }
 
-        self.inner.wake(readied);
-
         if self.inner.closed.load(Ordering::Acquire) {
             // `DisconnectPool` might still wait to be woken up.
-            self.inner.wake(usize::max_value());
+            let mut exchange = self.inner.exchange.lock().unwrap();
+            while let Some(w) = exchange.waiting.pop_front() {
+                w.wake();
+            }
+            // we're about to exit, so there better be no outstanding connections
+            assert_eq!(exchange.exist, 0);
+            assert_eq!(exchange.available.len(), 0);
+            drop(exchange);
 
             Poll::Ready(())
         } else {
             Poll::Pending
+        }
+    }
+}
+
+impl Drop for Recycler {
+    fn drop(&mut self) {
+        if !self.inner.closed.load(Ordering::Acquire) {
+            // user did not wait for outstanding connections to finish!
+            // this is not good -- we won't be able to shut down our connections cleanly
+            // all we can do is try to ensure a clean shutdown
+            self.inner.close.store(true, Ordering::SeqCst);
         }
     }
 }
