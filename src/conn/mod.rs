@@ -1241,6 +1241,11 @@ mod test {
                 // The used command is not allowed with this MySQL version
                 return Ok(());
             }
+            Err(super::Error::Server(ref err)) if err.code == 3948 => {
+                // Loading local data is disabled;
+                // this must be enabled on both the client and server sides
+                return Ok(());
+            }
             e @ Err(_) => e.unwrap(),
         };
         let (conn, result) = conn
