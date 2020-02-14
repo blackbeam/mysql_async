@@ -438,7 +438,11 @@ impl Conn {
                     let mut builder = OptsBuilder::from_opts(opts);
                     builder.socket(Some(&**socket));
                     match Conn::new(builder).await {
-                        Ok(conn) => return Ok(conn),
+                        Ok(conn) => {
+                            // tidy up the old connection
+                            self.close().await?;
+                            return Ok(conn);
+                        }
                         Err(_) => return Ok(self),
                     }
                 }
@@ -502,7 +506,10 @@ impl Conn {
                 .await?
                 .0
         } else {
-            Conn::new(self.inner.opts.clone()).await?
+            let opts = self.inner.opts.clone();
+            // tidy up the old connection
+            self.close().await?;
+            Conn::new(opts).await?
         };
 
         conn.inner.stmt_cache.clear();
