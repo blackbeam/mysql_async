@@ -330,6 +330,15 @@ impl Stream {
             codec.codec_mut().compress(level);
         }
     }
+
+    pub async fn close(mut self) -> Result<()> {
+        self.closed = true;
+        if let Some(mut codec) = self.codec {
+            use futures_sink::Sink;
+            futures_util::future::poll_fn(|cx| Pin::new(&mut *codec).poll_close(cx)).await?;
+        }
+        Ok(())
+    }
 }
 
 impl stream::Stream for Stream {

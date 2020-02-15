@@ -90,7 +90,8 @@ where
         self.on_disconnect();
         let f = self.write_command_data(Command::COM_QUIT, &[]);
         Box::pin(async move {
-            f.await?;
+            let (_, stream) = f.await?.take_stream();
+            stream.close().await?;
             Ok(())
         })
     }
