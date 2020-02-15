@@ -85,7 +85,7 @@ where
         })
     }
 
-    /// Returns future that disconnects this connection from a server.
+    /// Returns future, that disconnects this connection from a server.
     fn disconnect(mut self) -> BoxFuture<()> {
         self.on_disconnect();
         let f = self.write_command_data(Command::COM_QUIT, &[]);

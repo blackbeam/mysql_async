@@ -9,11 +9,11 @@
 use futures_util::future::ok;
 use mysql_common::{
     io::ReadMysqlExt,
-    packets::{column_from_payload, parse_local_infile_packet, Column, ComStmtClose},
+    packets::{column_from_payload, parse_local_infile_packet, Column, ComStmtClose, OkPacket},
 };
 use tokio::prelude::*;
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use crate::{
     conn::{named_params::parse_named_params, stmt_cache::StmtCache},
@@ -110,6 +110,14 @@ where
         self.conn_like_ref().get_last_insert_id()
     }
 
+    fn get_info(&self) -> Cow<'_, str> {
+        self.conn_like_ref().get_info()
+    }
+
+    fn get_warnings(&self) -> u16 {
+        self.conn_like_ref().get_warnings()
+    }
+
     fn get_local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>> {
         self.conn_like_ref().get_local_infile_handler()
     }
@@ -134,16 +142,12 @@ where
         self.conn_like_ref().get_status()
     }
 
-    fn set_affected_rows(&mut self, affected_rows: u64) {
-        self.conn_like_mut().set_affected_rows(affected_rows);
+    fn set_last_ok_packet(&mut self, ok_packet: Option<OkPacket<'static>>) {
+        self.conn_like_mut().set_last_ok_packet(ok_packet);
     }
 
     fn set_in_transaction(&mut self, in_transaction: bool) {
         self.conn_like_mut().set_in_transaction(in_transaction);
-    }
-
-    fn set_last_insert_id(&mut self, last_insert_id: u64) {
-        self.conn_like_mut().set_last_insert_id(last_insert_id);
     }
 
     fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>) {
@@ -152,10 +156,6 @@ where
 
     fn set_status(&mut self, status: StatusFlags) {
         self.conn_like_mut().set_status(status);
-    }
-
-    fn set_warnings(&mut self, warnings: u16) {
-        self.conn_like_mut().set_warnings(warnings);
     }
 
     fn reset_seq_id(&mut self) {
@@ -186,18 +186,18 @@ pub trait ConnectionLike: Send {
     fn get_capabilities(&self) -> CapabilityFlags;
     fn get_in_transaction(&self) -> bool;
     fn get_last_insert_id(&self) -> Option<u64>;
+    fn get_info(&self) -> Cow<'_, str>;
+    fn get_warnings(&self) -> u16;
     fn get_local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>>;
     fn get_max_allowed_packet(&self) -> usize;
     fn get_opts(&self) -> &Opts;
     fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)>;
     fn get_server_version(&self) -> (u16, u16, u16);
     fn get_status(&self) -> StatusFlags;
-    fn set_affected_rows(&mut self, affected_rows: u64);
+    fn set_last_ok_packet(&mut self, ok_packet: Option<OkPacket<'static>>);
     fn set_in_transaction(&mut self, in_transaction: bool);
-    fn set_last_insert_id(&mut self, last_insert_id: u64);
     fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>);
     fn set_status(&mut self, status: StatusFlags);
-    fn set_warnings(&mut self, warnings: u16);
     fn reset_seq_id(&mut self);
     fn sync_seq_id(&mut self);
     fn touch(&mut self) -> ();

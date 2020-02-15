@@ -6,12 +6,9 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use mysql_async::error::*;
-use mysql_async::prelude::*;
-use mysql_async::{Opts, Pool, QueryResult};
+use mysql_async::{error::*, prelude::*, Opts, Pool, QueryResult};
 
-use std::env;
-use std::io;
+use std::{env, io};
 
 fn get_url() -> String {
     if let Ok(url) = env::var("DATABASE_URL") {

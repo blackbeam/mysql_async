@@ -8,9 +8,11 @@
 
 use futures_core::ready;
 use pin_project::pin_project;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use crate::{
     connection_like::{streamless::Streamless, ConnectionLike},

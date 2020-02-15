@@ -13,11 +13,12 @@ use mysql_common::{
     crypto,
     packets::{
         parse_auth_switch_request, parse_handshake_packet, AuthPlugin, AuthSwitchRequest,
-        HandshakeResponse, SslRequest,
+        HandshakeResponse, OkPacket, SslRequest,
     },
 };
 
 use std::{
+    borrow::Cow,
     fmt,
     future::Future,
     mem,
@@ -76,9 +77,7 @@ struct ConnInner {
     socket: Option<String>,
     capabilities: consts::CapabilityFlags,
     status: consts::StatusFlags,
-    last_insert_id: u64,
-    affected_rows: u64,
-    warnings: u16,
+    last_ok_packet: Option<OkPacket<'static>>,
     pool: Option<Pool>,
     has_result: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>,
     in_transaction: bool,
@@ -113,11 +112,9 @@ impl ConnInner {
         ConnInner {
             capabilities: opts.get_capabilities(),
             status: consts::StatusFlags::empty(),
-            last_insert_id: 0,
-            affected_rows: 0,
+            last_ok_packet: None,
             stream: None,
             max_allowed_packet: DEFAULT_MAX_ALLOWED_PACKET,
-            warnings: 0,
             version: (0, 0, 0),
             id: 0,
             has_result: None,
@@ -566,7 +563,11 @@ impl ConnectionLike for Conn {
     }
 
     fn get_affected_rows(&self) -> u64 {
-        self.inner.affected_rows
+        self.inner
+            .last_ok_packet
+            .as_ref()
+            .map(|ok| ok.affected_rows())
+            .unwrap_or_default()
     }
 
     fn get_capabilities(&self) -> consts::CapabilityFlags {
@@ -578,10 +579,26 @@ impl ConnectionLike for Conn {
     }
 
     fn get_last_insert_id(&self) -> Option<u64> {
-        match self.inner.last_insert_id {
-            0 => None,
-            x => Some(x),
-        }
+        self.inner
+            .last_ok_packet
+            .as_ref()
+            .and_then(|ok| ok.last_insert_id())
+    }
+
+    fn get_info(&self) -> Cow<'_, str> {
+        self.inner
+            .last_ok_packet
+            .as_ref()
+            .and_then(|ok| ok.info_str())
+            .unwrap_or_else(|| "".into())
+    }
+
+    fn get_warnings(&self) -> u16 {
+        self.inner
+            .last_ok_packet
+            .as_ref()
+            .map(|ok| ok.warnings())
+            .unwrap_or_default()
     }
 
     fn get_local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>> {
@@ -608,16 +625,12 @@ impl ConnectionLike for Conn {
         self.inner.status
     }
 
-    fn set_affected_rows(&mut self, affected_rows: u64) {
-        self.inner.affected_rows = affected_rows;
+    fn set_last_ok_packet(&mut self, ok_packet: Option<OkPacket<'static>>) {
+        self.inner.last_ok_packet = ok_packet;
     }
 
     fn set_in_transaction(&mut self, in_transaction: bool) {
         self.inner.in_transaction = in_transaction;
-    }
-
-    fn set_last_insert_id(&mut self, last_insert_id: u64) {
-        self.inner.last_insert_id = last_insert_id;
     }
 
     fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>) {
@@ -626,10 +639,6 @@ impl ConnectionLike for Conn {
 
     fn set_status(&mut self, status: consts::StatusFlags) {
         self.inner.status = status;
-    }
-
-    fn set_warnings(&mut self, warnings: u16) {
-        self.inner.warnings = warnings;
     }
 
     fn reset_seq_id(&mut self) {

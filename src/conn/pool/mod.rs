@@ -275,8 +275,7 @@ impl Drop for Conn {
 
 #[cfg(test)]
 mod test {
-    use futures_util::stream::StreamExt;
-    use futures_util::{future::try_join_all, try_join};
+    use futures_util::{future::try_join_all, stream::StreamExt, try_join};
 
     use std::time::Duration;
 
@@ -619,13 +618,10 @@ mod test {
 
     #[cfg(feature = "nightly")]
     mod bench {
-        use futures_util::future::FutureExt;
-        use futures_util::try_future::TryFutureExt;
+        use futures_util::{future::FutureExt, try_future::TryFutureExt};
         use tokio::runtime::Runtime;
 
-        use crate::prelude::Queryable;
-        use crate::test_misc::get_opts;
-        use crate::{Pool, PoolConstraints, PoolOptions};
+        use crate::{prelude::Queryable, test_misc::get_opts, Pool, PoolConstraints, PoolOptions};
         use std::time::Duration;
 
         #[bench]

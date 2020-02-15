@@ -11,8 +11,7 @@ use futures_core::{ready, stream};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::{pin_project, project};
-use tokio::net::TcpStream;
-use tokio::prelude::*;
+use tokio::{net::TcpStream, prelude::*};
 use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 
 use std::{

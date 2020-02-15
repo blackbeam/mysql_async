@@ -7,9 +7,11 @@
 // modified, or distributed except according to those terms.
 
 use futures_core::ready;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use crate::{
     conn::{pool::Pool, Conn},

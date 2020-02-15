@@ -10,11 +10,12 @@ use futures_core::stream::Stream;
 use futures_util::stream::futures_unordered::FuturesUnordered;
 use tokio::sync::mpsc;
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{atomic::Ordering, Arc},
+    task::{Context, Poll},
+};
 
 use super::{IdlingConn, Inner};
 use crate::{BoxFuture, Conn, PoolOptions};
