@@ -12,10 +12,11 @@
 use bytes::buf::BufMut;
 use native_tls::{Error, TlsConnector};
 use pin_project::pin_project;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tokio::io::Error as IoError;
-use tokio::prelude::*;
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio::{io::Error as IoError, prelude::*};
 use tokio_tls::{self};
 
 use std::mem::MaybeUninit;

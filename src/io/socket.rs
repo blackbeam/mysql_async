@@ -8,10 +8,11 @@
 
 use bytes::BufMut;
 use pin_project::pin_project;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tokio::io::Error;
-use tokio::prelude::*;
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio::{io::Error, prelude::*};
 
 use std::{io, mem::MaybeUninit, path::Path};
 

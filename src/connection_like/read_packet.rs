@@ -10,12 +10,15 @@ use futures_core::ready;
 use futures_util::stream::{StreamExt, StreamFuture};
 use mysql_common::packets::{parse_err_packet, parse_ok_packet};
 use pin_project::pin_project;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use crate::{
     connection_like::{streamless::Streamless, ConnectionLike},
+    consts::StatusFlags,
     error::*,
     io,
 };
@@ -48,13 +51,13 @@ impl<T: ConnectionLike> Future for ReadPacket<T> {
         match packet_opt {
             Some(packet) => {
                 if let Ok(ok_packet) = parse_ok_packet(&*packet, conn_like.get_capabilities()) {
-                    conn_like.set_affected_rows(ok_packet.affected_rows());
-                    conn_like.set_last_insert_id(ok_packet.last_insert_id().unwrap_or(0));
                     conn_like.set_status(ok_packet.status_flags());
-                    conn_like.set_warnings(ok_packet.warnings());
+                    conn_like.set_last_ok_packet(Some(ok_packet.into_owned()));
                 } else if let Ok(err_packet) =
                     parse_err_packet(&*packet, conn_like.get_capabilities())
                 {
+                    conn_like.set_status(StatusFlags::empty());
+                    conn_like.set_last_ok_packet(None);
                     return Err(err_packet.into()).into();
                 }
 

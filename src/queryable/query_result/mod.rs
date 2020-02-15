@@ -9,9 +9,7 @@
 use futures_util::future::Either;
 use mysql_common::row::convert::FromRowError;
 
-use std::marker::PhantomData;
-use std::result::Result as StdResult;
-use std::sync::Arc;
+use std::{borrow::Cow, marker::PhantomData, result::Result as StdResult, sync::Arc};
 
 use self::QueryResultInner::*;
 use crate::{
@@ -165,14 +163,24 @@ where
         }
     }
 
-    /// Last insert id (if not 0).
+    /// Last insert id, if any.
     pub fn last_insert_id(&self) -> Option<u64> {
         self.get_last_insert_id()
     }
 
-    /// Value of `affected_rows` returned from a server.
+    /// Number of affected rows, reported by the server, or `0`.
     pub fn affected_rows(&self) -> u64 {
         self.get_affected_rows()
+    }
+
+    /// Text information, reported by the server, or an empty string
+    pub fn info(&self) -> Cow<'_, str> {
+        self.get_info()
+    }
+
+    /// Number of warnings, reported by the server, or `0`.
+    pub fn warnings(&self) -> u16 {
+        self.get_warnings()
     }
 
     /// `true` if there is no more rows nor result sets in this query.

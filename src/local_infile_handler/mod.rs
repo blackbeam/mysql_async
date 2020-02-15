@@ -9,10 +9,7 @@
 use crate::error;
 use tokio::prelude::*;
 
-use std::future::Future;
-use std::marker::Unpin;
-use std::pin::Pin;
-use std::{fmt, sync::Arc};
+use std::{fmt, future::Future, marker::Unpin, pin::Pin, sync::Arc};
 
 pub mod builtin;
 

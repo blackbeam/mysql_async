@@ -19,8 +19,10 @@ use crate::{
     Column, Params, Row,
     Value::{self},
 };
-use mysql_common::constants::MAX_PAYLOAD_LEN;
-use mysql_common::packets::{parse_stmt_packet, ComStmtExecuteRequestBuilder, ComStmtSendLongData};
+use mysql_common::{
+    constants::MAX_PAYLOAD_LEN,
+    packets::{parse_stmt_packet, ComStmtExecuteRequestBuilder, ComStmtSendLongData},
+};
 
 /// Inner statement representation.
 #[derive(Eq, PartialEq, Clone, Debug)]

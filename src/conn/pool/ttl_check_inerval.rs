@@ -6,18 +6,20 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures_util::future::FutureExt;
-use futures_util::stream::{StreamExt, StreamFuture};
+use futures_util::{
+    future::FutureExt,
+    stream::{StreamExt, StreamFuture},
+};
 use pin_project::pin_project;
 use tokio::time::{self, Interval};
 
-use std::future::Future;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::{
+    future::Future,
+    sync::{atomic::Ordering, Arc},
+};
 
 use super::Inner;
-use crate::prelude::Queryable;
-use crate::PoolOptions;
+use crate::{prelude::Queryable, PoolOptions};
 use futures_core::task::{Context, Poll};
 use std::pin::Pin;
 

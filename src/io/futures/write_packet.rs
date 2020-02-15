@@ -8,9 +8,11 @@
 
 use futures_core::ready;
 use futures_sink::Sink;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use crate::{error::*, io::Stream};
 
