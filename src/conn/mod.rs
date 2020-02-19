@@ -389,7 +389,7 @@ impl Conn {
         let stream = if let Some(path) = opts.get_socket() {
             Stream::connect_socket(path.to_owned()).await?
         } else {
-            Stream::connect_tcp((opts.get_ip_or_hostname(), opts.get_tcp_port())).await?
+            Stream::connect_tcp(opts.get_hostport_or_url()).await?
         };
 
         conn.inner.stream = Some(stream);
