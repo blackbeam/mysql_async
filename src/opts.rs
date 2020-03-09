@@ -1028,24 +1028,45 @@ mod test {
         let builder_opts = Opts::from(builder);
 
         assert_eq!(url_opts.addr_is_loopback(), builder_opts.addr_is_loopback());
-        assert_eq!(url_opts.get_ip_or_hostname(), builder_opts.get_ip_or_hostname());
+        assert_eq!(
+            url_opts.get_ip_or_hostname(),
+            builder_opts.get_ip_or_hostname()
+        );
         assert_eq!(url_opts.get_tcp_port(), builder_opts.get_tcp_port());
         assert_eq!(url_opts.get_user(), builder_opts.get_user());
         assert_eq!(url_opts.get_pass(), builder_opts.get_pass());
         assert_eq!(url_opts.get_db_name(), builder_opts.get_db_name());
         assert_eq!(url_opts.get_init(), builder_opts.get_init());
-        assert_eq!(url_opts.get_tcp_keepalive(), builder_opts.get_tcp_keepalive());
+        assert_eq!(
+            url_opts.get_tcp_keepalive(),
+            builder_opts.get_tcp_keepalive()
+        );
         assert_eq!(url_opts.get_tcp_nodelay(), builder_opts.get_tcp_nodelay());
         assert_eq!(url_opts.get_pool_options(), builder_opts.get_pool_options());
         assert_eq!(url_opts.get_conn_ttl(), builder_opts.get_conn_ttl());
-        assert_eq!(url_opts.get_stmt_cache_size(), builder_opts.get_stmt_cache_size());
+        assert_eq!(
+            url_opts.get_stmt_cache_size(),
+            builder_opts.get_stmt_cache_size()
+        );
         assert_eq!(url_opts.get_ssl_opts(), builder_opts.get_ssl_opts());
-        assert_eq!(url_opts.get_perfer_socket(), builder_opts.get_perfer_socket());
-        assert_eq!(url_opts.get_prefer_socket(), builder_opts.get_prefer_socket());
+        assert_eq!(
+            url_opts.get_perfer_socket(),
+            builder_opts.get_perfer_socket()
+        );
+        assert_eq!(
+            url_opts.get_prefer_socket(),
+            builder_opts.get_prefer_socket()
+        );
         assert_eq!(url_opts.get_socket(), builder_opts.get_socket());
         assert_eq!(url_opts.get_compression(), builder_opts.get_compression());
-        assert_eq!(url_opts.get_hostport_or_url().get_ip_or_hostname(), builder_opts.get_hostport_or_url().get_ip_or_hostname());
-        assert_eq!(url_opts.get_hostport_or_url().get_tcp_port(), builder_opts.get_hostport_or_url().get_tcp_port());
+        assert_eq!(
+            url_opts.get_hostport_or_url().get_ip_or_hostname(),
+            builder_opts.get_hostport_or_url().get_ip_or_hostname()
+        );
+        assert_eq!(
+            url_opts.get_hostport_or_url().get_tcp_port(),
+            builder_opts.get_hostport_or_url().get_tcp_port()
+        );
     }
 
     #[test]
