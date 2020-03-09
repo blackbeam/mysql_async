@@ -616,11 +616,22 @@ impl From<PoolConstraints> for (usize, usize) {
 /// builder.ip_or_hostname(Some("foo"))
 ///        .db_name(Some("bar"));
 /// ```
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct OptsBuilder {
     opts: MysqlOpts,
     ip_or_hostname: String,
     tcp_port: u16,
+}
+
+impl Default for OptsBuilder {
+    fn default() -> Self {
+        let address = HostPortOrUrl::default();
+        Self {
+            opts: MysqlOpts::default(),
+            ip_or_hostname: address.get_ip_or_hostname().into(),
+            tcp_port: address.get_tcp_port(),
+        }
+    }
 }
 
 impl OptsBuilder {
@@ -1001,6 +1012,41 @@ impl<T: AsRef<str> + Sized> From<T> for Opts {
 mod test {
     use super::{HostPortOrUrl, MysqlOpts, Opts, Url};
     use crate::error::UrlError::InvalidParamValue;
+
+    use std::str::FromStr;
+
+    #[test]
+    fn test_builer_eq_url() {
+        const URL: &str = "mysql://iq-controller@localhost/iq_controller";
+
+        let url_opts = super::Opts::from_str(URL).unwrap();
+        let mut builder = super::OptsBuilder::new();
+        builder
+            .user(Some("iq-controller"))
+            .ip_or_hostname("localhost")
+            .db_name(Some("iq_controller"));
+        let builder_opts = Opts::from(builder);
+
+        assert_eq!(url_opts.addr_is_loopback(), builder_opts.addr_is_loopback());
+        assert_eq!(url_opts.get_ip_or_hostname(), builder_opts.get_ip_or_hostname());
+        assert_eq!(url_opts.get_tcp_port(), builder_opts.get_tcp_port());
+        assert_eq!(url_opts.get_user(), builder_opts.get_user());
+        assert_eq!(url_opts.get_pass(), builder_opts.get_pass());
+        assert_eq!(url_opts.get_db_name(), builder_opts.get_db_name());
+        assert_eq!(url_opts.get_init(), builder_opts.get_init());
+        assert_eq!(url_opts.get_tcp_keepalive(), builder_opts.get_tcp_keepalive());
+        assert_eq!(url_opts.get_tcp_nodelay(), builder_opts.get_tcp_nodelay());
+        assert_eq!(url_opts.get_pool_options(), builder_opts.get_pool_options());
+        assert_eq!(url_opts.get_conn_ttl(), builder_opts.get_conn_ttl());
+        assert_eq!(url_opts.get_stmt_cache_size(), builder_opts.get_stmt_cache_size());
+        assert_eq!(url_opts.get_ssl_opts(), builder_opts.get_ssl_opts());
+        assert_eq!(url_opts.get_perfer_socket(), builder_opts.get_perfer_socket());
+        assert_eq!(url_opts.get_prefer_socket(), builder_opts.get_prefer_socket());
+        assert_eq!(url_opts.get_socket(), builder_opts.get_socket());
+        assert_eq!(url_opts.get_compression(), builder_opts.get_compression());
+        assert_eq!(url_opts.get_hostport_or_url().get_ip_or_hostname(), builder_opts.get_hostport_or_url().get_ip_or_hostname());
+        assert_eq!(url_opts.get_hostport_or_url().get_tcp_port(), builder_opts.get_hostport_or_url().get_tcp_port());
+    }
 
     #[test]
     fn should_convert_url_into_opts() {
