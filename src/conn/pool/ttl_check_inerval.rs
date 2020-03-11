@@ -64,11 +64,6 @@ impl TtlCheckInterval {
                 exchange.available.push_back(idling_conn);
             }
         }
-
-        if num_to_drop > 0 {
-            // there were available connections, so no tasks should be waiting
-            assert_eq!(exchange.waiting.len(), 0);
-        }
     }
 }
 
