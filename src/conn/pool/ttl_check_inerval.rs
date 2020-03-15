@@ -7,7 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use futures_util::{
-    future::FutureExt,
+    future::{ok, FutureExt},
     stream::{StreamExt, StreamFuture},
 };
 use pin_project::pin_project;
@@ -58,8 +58,12 @@ impl TtlCheckInterval {
             let idling_conn = exchange.available.pop_front().unwrap();
             if idling_conn.elapsed() > self.pool_options.inactive_connection_ttl() {
                 assert!(idling_conn.conn.inner.pool.is_none());
-                tokio::spawn(idling_conn.conn.disconnect().map(drop));
-                exchange.exist -= 1;
+                let inner = self.inner.clone();
+                tokio::spawn(idling_conn.conn.disconnect().then(move |_| {
+                    let mut exchange = inner.exchange.lock().unwrap();
+                    exchange.exist -= 1;
+                    ok::<_, ()>(())
+                }));
             } else {
                 exchange.available.push_back(idling_conn);
             }
