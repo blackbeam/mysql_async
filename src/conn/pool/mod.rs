@@ -438,7 +438,7 @@ mod test {
                 assert_eq!(have, expected + 1);
 
                 // then, wait for ttl_check_interval
-                tokio::time::delay_for(std::time::Duration::from_secs(1)).await;
+                tokio::time::delay_for(std::time::Duration::from_millis(1_100)).await;
             }
 
             // check that we have the expected number of connections
