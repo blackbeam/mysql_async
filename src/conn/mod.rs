@@ -152,8 +152,7 @@ impl Conn {
         self.get_affected_rows()
     }
 
-    async fn close(mut self) -> Result<()> {
-        self.inner.disconnected = true;
+    async fn close(self) -> Result<()> {
         self.cleanup().await?.disconnect().await
     }
 
