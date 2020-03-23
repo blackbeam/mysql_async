@@ -63,8 +63,8 @@ impl Protocol for BinaryProtocol {
     where
         T: ConnectionLike,
     {
-        (parse_ok_packet(packet, conn_like.get_capabilities()).is_ok()
-            && packet.get(0).cloned() == Some(0xFE))
+        parse_ok_packet(packet, conn_like.get_capabilities()).is_ok()
+            && packet.get(0).cloned() == Some(0xFE)
     }
 }
 
