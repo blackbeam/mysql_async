@@ -192,6 +192,10 @@ impl Pool {
             }
         }
 
+        self.send_to_recycler(conn);
+    }
+
+    fn send_to_recycler(&self, conn: Conn) {
         if let Err(conn) = self.drop.send(Some(conn)) {
             let conn = conn.0.unwrap();
 
@@ -238,11 +242,19 @@ impl Pool {
 
         exchange.spawn_futures_if_needed(&self.inner);
 
-        if let Some(IdlingConn { conn, .. }) = exchange.available.pop_back() {
-            return Poll::Ready(Ok(GetConn {
-                pool: Some(self.clone()),
-                inner: GetConnInner::Done(Some(conn)),
-            }));
+        loop {
+            if let Some(IdlingConn { conn, .. }) = exchange.available.pop_back() {
+                if !conn.expired() {
+                    return Poll::Ready(Ok(GetConn {
+                        pool: Some(self.clone()),
+                        inner: GetConnInner::Done(Some(conn)),
+                    }));
+                } else {
+                    self.send_to_recycler(conn);
+                }
+            } else {
+                break;
+            }
         }
 
         // we didn't _immediately_ get one -- try to make one
@@ -489,6 +501,33 @@ mod test {
         assert!(try_join!(pool.get_conn(), pool.get_conn()).is_err());
         assert_eq!(ex_field!(pool, exist), 0);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_check_wait_timeout_on_get_conn() -> super::Result<()> {
+        let pool = Pool::new(get_opts());
+        pool.get_conn()
+            .await?
+            .drop_query("SET GLOBAL wait_timeout = 3")
+            .await?
+            .disconnect()
+            .await?;
+
+        let conn = pool.get_conn().await?;
+        let (conn, wait_timeout) = conn.first::<_, usize>("SELECT @@wait_timeout").await?;
+        let (_, id1) = conn.first::<_, usize>("SELECT CONNECTION_ID()").await?;
+
+        assert_eq!(wait_timeout, Some(3));
+        assert_eq!(ex_field!(pool, exist), 1);
+
+        tokio::time::delay_for(std::time::Duration::from_secs(6)).await;
+
+        let conn = pool.get_conn().await?;
+        let (_, id2) = conn.first::<_, usize>("SELECT CONNECTION_ID()").await?;
+        assert_eq!(ex_field!(pool, exist), 1);
+        assert_ne!(id1, id2);
+
+        pool.disconnect().await
     }
 
     /*
