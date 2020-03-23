@@ -397,7 +397,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn should_hold_bounds2() -> super::Result<()> {
+    async fn aa_should_hold_bounds2() -> super::Result<()> {
         use std::cmp::min;
 
         const POOL_MIN: usize = 5;
@@ -450,7 +450,7 @@ mod test {
                 assert_eq!(have, expected + 1);
 
                 // then, wait for ttl_check_interval
-                tokio::time::delay_for(std::time::Duration::from_millis(1_100)).await;
+                tokio::time::delay_for(TTL_CHECK_INTERVAL + Duration::from_millis(50)).await;
             }
 
             // check that we have the expected number of connections
@@ -504,11 +504,12 @@ mod test {
     }
 
     #[tokio::test]
-    async fn should_check_wait_timeout_on_get_conn() -> super::Result<()> {
+    async fn zz_should_check_wait_timeout_on_get_conn() -> super::Result<()> {
         let pool = Pool::new(get_opts());
-        pool.get_conn()
-            .await?
-            .drop_query("SET GLOBAL wait_timeout = 3")
+
+        let conn = pool.get_conn().await?;
+        let (conn, wait_timeout_orig) = conn.first::<_, usize>("SELECT @@wait_timeout").await?;
+        conn.drop_query("SET GLOBAL wait_timeout = 3")
             .await?
             .disconnect()
             .await?;
@@ -523,9 +524,12 @@ mod test {
         tokio::time::delay_for(std::time::Duration::from_secs(6)).await;
 
         let conn = pool.get_conn().await?;
-        let (_, id2) = conn.first::<_, usize>("SELECT CONNECTION_ID()").await?;
+        let (conn, id2) = conn.first::<_, usize>("SELECT CONNECTION_ID()").await?;
         assert_eq!(ex_field!(pool, exist), 1);
         assert_ne!(id1, id2);
+
+        conn.drop_exec("SET GLOBAL wait_timeout = ?", (wait_timeout_orig,))
+            .await?;
 
         pool.disconnect().await
     }
