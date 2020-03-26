@@ -106,10 +106,7 @@ where
     ///     let columns = stmt.columns();
     ///
     ///     assert_eq!(columns.len(), 2);
-    ///
     ///     assert_eq!(columns[0].column_type(), ColumnType::MYSQL_TYPE_VAR_STRING);
-    ///
-    ///     assert_eq!(columns[1].column_type(), ColumnType::MYSQL_TYPE_LONGLONG);
     ///     assert!(columns[1].flags().contains(ColumnFlags::UNSIGNED_FLAG));
     ///
     ///     Ok(())
