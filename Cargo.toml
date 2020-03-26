@@ -17,6 +17,7 @@ crossbeam = "0.7"
 futures-core = "0.3"
 futures-util = "0.3"
 futures-sink = "0.3"
+lazy_static = "1"
 mio-named-pipes = "0.1.6"
 mysql_common = "0.20.0"
 native-tls = "0.2"
@@ -32,7 +33,6 @@ twox-hash = "1"
 url = "2.1"
 
 [dev-dependencies]
-lazy_static = "1"
 tempfile = "3.1.0"
 
 [features]

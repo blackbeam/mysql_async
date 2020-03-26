@@ -54,7 +54,7 @@ impl InnerStmt {
     }
 }
 
-/// Prepared statement
+/// Prepared statement.
 #[derive(Debug)]
 pub struct Stmt<T> {
     conn_like: Option<Either<T, Streamless<T>>>,
@@ -82,6 +82,72 @@ where
             inner,
             cached: Some(cached),
         }
+    }
+
+    /// Returns statement identifier.
+    pub fn id(&self) -> u32 {
+        self.inner.statement_id
+    }
+
+    /// Returns statement columns.
+    ///
+    /// ```rust
+    /// # use mysql_async::test_misc::get_opts;
+    /// use mysql_async::{consts::{ColumnFlags, ColumnType}, Pool};
+    /// use mysql_async::prelude::*;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), mysql_async::error::Error> {
+    ///     let pool = Pool::new(get_opts());
+    ///     let conn = pool.get_conn().await?;
+    ///
+    ///     let stmt = conn.prepare("SELECT 'foo', CAST(42 AS UNSIGNED)").await?;
+    ///
+    ///     let columns = stmt.columns();
+    ///
+    ///     assert_eq!(columns.len(), 2);
+    ///
+    ///     assert_eq!(columns[0].column_type(), ColumnType::MYSQL_TYPE_VAR_STRING);
+    ///
+    ///     assert_eq!(columns[1].column_type(), ColumnType::MYSQL_TYPE_LONGLONG);
+    ///     assert!(columns[1].flags().contains(ColumnFlags::UNSIGNED_FLAG));
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn columns(&self) -> &[Column] {
+        self.inner
+            .columns
+            .as_ref()
+            .map(|c| &c[..])
+            .unwrap_or_default()
+    }
+
+    /// Returns statement parameters.
+    ///
+    /// ```rust
+    /// # use mysql_async::test_misc::get_opts;
+    /// use mysql_async::{consts::{ColumnFlags, ColumnType}, Pool};
+    /// use mysql_async::prelude::*;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), mysql_async::error::Error> {
+    ///     let pool = Pool::new(get_opts());
+    ///     let conn = pool.get_conn().await?;
+    ///
+    ///     let stmt = conn.prepare("SELECT ?, ?").await?;
+    ///
+    ///     assert_eq!(stmt.params().len(), 2);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn params(&self) -> &[Column] {
+        self.inner
+            .params
+            .as_ref()
+            .map(|c| &c[..])
+            .unwrap_or_default()
     }
 
     async fn send_long_data(self, params: Vec<Value>) -> Result<Self> {

@@ -205,8 +205,8 @@ pub mod prelude {
     pub use mysql_common::params;
 }
 
-#[cfg(test)]
-mod test_misc {
+#[doc(hidden)]
+pub mod test_misc {
     use lazy_static::lazy_static;
 
     use std::env;
