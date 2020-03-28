@@ -7,7 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use mysql_common::{
-    packets::parse_ok_packet,
+    packets::{parse_ok_packet, OkPacketKind},
     row::new_row,
     value::{read_bin_values, read_text_values},
 };
@@ -35,7 +35,12 @@ pub trait Protocol: Send + 'static {
     where
         T: ConnectionLike,
     {
-        parse_ok_packet(packet, conn_like.get_capabilities()).is_ok()
+        parse_ok_packet(
+            packet,
+            conn_like.get_capabilities(),
+            OkPacketKind::ResultSetTerminator,
+        )
+        .is_ok()
     }
 }
 
@@ -52,19 +57,12 @@ impl Protocol for TextProtocol {
             .map_err(Into::into)
     }
 }
+
 impl Protocol for BinaryProtocol {
     fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row> {
         read_bin_values::<ServerSide>(packet, &*columns)
             .map(|values| new_row(values, columns))
             .map_err(Into::into)
-    }
-
-    fn is_last_result_set_packet<T>(conn_like: &T, packet: &[u8]) -> bool
-    where
-        T: ConnectionLike,
-    {
-        parse_ok_packet(packet, conn_like.get_capabilities()).is_ok()
-            && packet.get(0).cloned() == Some(0xFE)
     }
 }
 

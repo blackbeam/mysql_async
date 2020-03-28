@@ -8,7 +8,7 @@
 
 use futures_core::ready;
 use futures_util::stream::{StreamExt, StreamFuture};
-use mysql_common::packets::{parse_err_packet, parse_ok_packet};
+use mysql_common::packets::{parse_err_packet, parse_ok_packet, OkPacketKind};
 use pin_project::pin_project;
 use std::{
     future::Future,
@@ -50,7 +50,13 @@ impl<T: ConnectionLike> Future for ReadPacket<T> {
         let mut conn_like = this.conn_like.take().unwrap().return_stream(stream);
         match packet_opt {
             Some(packet) => {
-                if let Ok(ok_packet) = parse_ok_packet(&*packet, conn_like.get_capabilities()) {
+                let kind = if conn_like.get_pending_result().is_some() {
+                    OkPacketKind::ResultSetTerminator
+                } else {
+                    OkPacketKind::Other
+                };
+                if let Ok(ok_packet) = parse_ok_packet(&*packet, conn_like.get_capabilities(), kind)
+                {
                     conn_like.set_status(ok_packet.status_flags());
                     conn_like.set_last_ok_packet(Some(ok_packet.into_owned()));
                 } else if let Ok(err_packet) =

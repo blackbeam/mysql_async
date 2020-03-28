@@ -68,6 +68,13 @@ fn disconnect(mut conn: Conn) {
     }
 }
 
+#[derive(Debug)]
+pub enum PendingResult {
+    Text(Arc<Vec<Column>>),
+    Binary(Arc<Vec<Column>>, StmtCacheResult),
+    Empty,
+}
+
 /// Mysql connection
 struct ConnInner {
     stream: Option<Stream>,
@@ -79,7 +86,7 @@ struct ConnInner {
     status: consts::StatusFlags,
     last_ok_packet: Option<OkPacket<'static>>,
     pool: Option<Pool>,
-    has_result: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>,
+    has_result: Option<PendingResult>,
     in_transaction: bool,
     opts: Opts,
     last_io: Instant,
@@ -521,13 +528,18 @@ impl Conn {
 
     async fn drop_result(mut self) -> Result<Conn> {
         match self.inner.has_result.take() {
-            Some((columns, None)) => {
+            Some(PendingResult::Text(columns)) => {
                 query_result::assemble::<_, TextProtocol>(self, Some(columns), None)
                     .drop_result()
                     .await
             }
-            Some((columns, cached)) => {
-                query_result::assemble::<_, BinaryProtocol>(self, Some(columns), cached)
+            Some(PendingResult::Binary(columns, cached)) => {
+                query_result::assemble::<_, BinaryProtocol>(self, Some(columns), Some(cached))
+                    .drop_result()
+                    .await
+            }
+            Some(PendingResult::Empty) => {
+                query_result::assemble::<_, TextProtocol>(self, None, None)
                     .drop_result()
                     .await
             }
@@ -619,7 +631,7 @@ impl ConnectionLike for Conn {
         &self.inner.opts
     }
 
-    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)> {
+    fn get_pending_result(&self) -> Option<&PendingResult> {
         self.inner.has_result.as_ref()
     }
 
@@ -639,7 +651,7 @@ impl ConnectionLike for Conn {
         self.inner.in_transaction = in_transaction;
     }
 
-    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>) {
+    fn set_pending_result(&mut self, meta: Option<PendingResult>) {
         self.inner.has_result = meta;
     }
 
@@ -1191,6 +1203,52 @@ mod test {
             .await?;
         conn.disconnect().await?;
         assert_eq!(output.unwrap(), (2u8,));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn issue_107() -> super::Result<()> {
+        let conn = Conn::new(get_opts()).await?;
+        let conn = conn
+            .drop_query(
+                r"CREATE TEMPORARY TABLE mysql.issue (
+                    a BIGINT(20) UNSIGNED,
+                    b VARBINARY(16),
+                    c BINARY(32),
+                    d BIGINT(20) UNSIGNED,
+                    e BINARY(32)
+                )",
+            )
+            .await?;
+        let conn = conn
+            .drop_query(
+                r"INSERT INTO mysql.issue VALUES (
+                    0,
+                    0xC066F966B0860000,
+                    0x7939DA98E524C5F969FC2DE8D905FD9501EBC6F20001B0A9C941E0BE6D50CF44,
+                    0,
+                    ''
+                ), (
+                    1,
+                    '',
+                    0x076311DF4D407B0854371BA13A5F3FB1A4555AC22B361375FD47B263F31822F2,
+                    0,
+                    ''
+                )",
+            )
+            .await?;
+
+        let q = "SELECT b, c, d, e FROM mysql.issue";
+        let result = conn.query(q).await?;
+
+        let (conn, loaded_structs) = result
+            .map_and_drop(|row| crate::from_row::<(Vec<u8>, Vec<u8>, u64, Vec<u8>)>(dbg!(row)))
+            .await?;
+
+        conn.disconnect().await?;
+
+        assert_eq!(loaded_structs.len(), 2);
+
         Ok(())
     }
 

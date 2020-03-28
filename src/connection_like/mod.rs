@@ -6,6 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use crate::conn::PendingResult;
 use futures_util::future::ok;
 use mysql_common::{
     io::ReadMysqlExt,
@@ -51,7 +52,7 @@ pub mod streamless {
 }
 pub mod write_packet;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum StmtCacheResult {
     Cached,
     NotCached(u32),
@@ -130,7 +131,7 @@ where
         self.conn_like_ref().get_opts()
     }
 
-    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)> {
+    fn get_pending_result(&self) -> Option<&PendingResult> {
         self.conn_like_ref().get_pending_result()
     }
 
@@ -150,7 +151,7 @@ where
         self.conn_like_mut().set_in_transaction(in_transaction);
     }
 
-    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>) {
+    fn set_pending_result(&mut self, meta: Option<PendingResult>) {
         self.conn_like_mut().set_pending_result(meta);
     }
 
@@ -191,12 +192,12 @@ pub trait ConnectionLike: Send {
     fn get_local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>>;
     fn get_max_allowed_packet(&self) -> usize;
     fn get_opts(&self) -> &Opts;
-    fn get_pending_result(&self) -> Option<&(Arc<Vec<Column>>, Option<StmtCacheResult>)>;
+    fn get_pending_result(&self) -> Option<&PendingResult>;
     fn get_server_version(&self) -> (u16, u16, u16);
     fn get_status(&self) -> StatusFlags;
     fn set_last_ok_packet(&mut self, ok_packet: Option<OkPacket<'static>>);
     fn set_in_transaction(&mut self, in_transaction: bool);
-    fn set_pending_result(&mut self, meta: Option<(Arc<Vec<Column>>, Option<StmtCacheResult>)>);
+    fn set_pending_result(&mut self, meta: Option<PendingResult>);
     fn set_status(&mut self, status: StatusFlags);
     fn reset_seq_id(&mut self);
     fn sync_seq_id(&mut self);
@@ -435,7 +436,17 @@ where
         this = this.read_packet().await?.0;
     }
 
-    let columns = Arc::new(columns);
-    this.set_pending_result(Some((Clone::clone(&columns), None)));
-    Ok(query_result::new(this, Some(columns), cached))
+    if column_count > 0 {
+        let columns = Arc::new(columns);
+        match cached {
+            Some(cached) => {
+                this.set_pending_result(Some(PendingResult::Binary(columns.clone(), cached)))
+            }
+            None => this.set_pending_result(Some(PendingResult::Text(columns.clone()))),
+        }
+        Ok(query_result::new(this, Some(columns), cached))
+    } else {
+        this.set_pending_result(Some(PendingResult::Empty));
+        Ok(query_result::new(this, None, cached))
+    }
 }
