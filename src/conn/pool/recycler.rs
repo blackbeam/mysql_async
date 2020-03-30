@@ -18,7 +18,7 @@ use std::{
 };
 
 use super::{IdlingConn, Inner};
-use crate::{BoxFuture, Conn, PoolOptions};
+use crate::{queryable::transaction::TxStatus, BoxFuture, Conn, PoolOptions};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 pub struct Recycler {
@@ -63,7 +63,9 @@ impl Future for Recycler {
                 if $conn.inner.stream.is_none() || $conn.inner.disconnected {
                     // drop unestablished connection
                     $self.discard.push(Box::pin(::futures_util::future::ok(())));
-                } else if $conn.inner.in_transaction || $conn.inner.has_result.is_some() {
+                } else if $conn.inner.tx_status != TxStatus::None
+                    || $conn.inner.has_result.is_some()
+                {
                     $self.cleaning.push(Box::pin($conn.cleanup()));
                 } else if $conn.expired() || close {
                     $self.discard.push(Box::pin($conn.close()));

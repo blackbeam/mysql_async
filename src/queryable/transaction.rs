@@ -10,6 +10,18 @@ use std::fmt;
 
 use crate::{connection_like::ConnectionLike, error::*, queryable::Queryable};
 
+/// Transaction status.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[repr(u8)]
+pub enum TxStatus {
+    /// Connection is in transaction at the moment.
+    InTransaction,
+    /// `Transaction` was dropped without explicit call to `commit` or `rollback`.
+    RequiresRollback,
+    /// Connection is not in transaction at the moment.
+    None,
+}
+
 /// Transaction options.
 #[derive(Eq, PartialEq, Debug, Hash, Clone, Default)]
 pub struct TransactionOptions {
@@ -92,7 +104,7 @@ impl fmt::Display for IsolationLevel {
 /// `Transaction` is just a sugar for `START TRANSACTION`, `ROLLBACK` and `COMMIT` queries, so one
 /// should note that it is easy to mess things up calling this queries manually. Also you will get
 /// `NestedTransaction` error if you call `transaction.start_transaction(_)`.
-pub struct Transaction<'a, T>(&'a mut T);
+pub struct Transaction<'a, T: ConnectionLike>(&'a mut T);
 
 impl<'a, T: Queryable + ConnectionLike> Transaction<'a, T> {
     pub(crate) async fn new(
@@ -105,7 +117,7 @@ impl<'a, T: Queryable + ConnectionLike> Transaction<'a, T> {
             readonly,
         } = options;
 
-        if conn_like.get_in_transaction() {
+        if conn_like.get_tx_status() != TxStatus::None {
             return Err(DriverError::NestedTransaction.into());
         }
 
@@ -134,27 +146,31 @@ impl<'a, T: Queryable + ConnectionLike> Transaction<'a, T> {
             conn_like.drop_query("START TRANSACTION").await?
         };
 
-        conn_like.set_in_transaction(true);
+        conn_like.set_tx_status(TxStatus::InTransaction);
         Ok(Transaction(conn_like))
     }
 
-    /// Returns a future that performs `COMMIT` query.
-    pub fn commit(mut self) -> impl std::future::Future<Output = Result<()>> + 'a {
-        async move {
-            let result = self.0.query("COMMIT").await?;
-            result.drop_result().await?;
-            self.set_in_transaction(false);
-            Ok(())
-        }
+    /// Performs `COMMIT` query.
+    pub async fn commit(mut self) -> Result<()> {
+        let result = self.0.query("COMMIT").await?;
+        result.drop_result().await?;
+        self.set_tx_status(TxStatus::None);
+        Ok(())
     }
 
-    /// Returns a future that performs `ROLLBACK` query.
-    pub fn rollback(mut self) -> impl std::future::Future<Output = Result<()>> + 'a {
-        async move {
-            let result = self.0.query("ROLLBACK").await?;
-            result.drop_result().await?;
-            self.set_in_transaction(false);
-            Ok(())
+    /// Performs `ROLLBACK` query.
+    pub async fn rollback(mut self) -> Result<()> {
+        let result = self.0.query("ROLLBACK").await?;
+        result.drop_result().await?;
+        self.set_tx_status(TxStatus::None);
+        Ok(())
+    }
+}
+
+impl<T: ConnectionLike> Drop for Transaction<'_, T> {
+    fn drop(&mut self) {
+        if self.get_tx_status() == TxStatus::InTransaction {
+            self.set_tx_status(TxStatus::RequiresRollback);
         }
     }
 }
@@ -175,8 +191,8 @@ impl<'a, T: ConnectionLike> ConnectionLike for Transaction<'a, T> {
     fn get_capabilities(&self) -> crate::consts::CapabilityFlags {
         self.0.get_capabilities()
     }
-    fn get_in_transaction(&self) -> bool {
-        self.0.get_in_transaction()
+    fn get_tx_status(&self) -> TxStatus {
+        self.0.get_tx_status()
     }
     fn get_last_insert_id(&self) -> Option<u64> {
         self.0.get_last_insert_id()
@@ -210,8 +226,8 @@ impl<'a, T: ConnectionLike> ConnectionLike for Transaction<'a, T> {
     fn set_last_ok_packet(&mut self, ok_packet: Option<mysql_common::packets::OkPacket<'static>>) {
         self.0.set_last_ok_packet(ok_packet)
     }
-    fn set_in_transaction(&mut self, in_transaction: bool) {
-        self.0.set_in_transaction(in_transaction)
+    fn set_tx_status(&mut self, tx_status: TxStatus) {
+        self.0.set_tx_status(tx_status)
     }
     fn set_pending_result(&mut self, meta: Option<crate::conn::PendingResult>) {
         self.0.set_pending_result(meta)

@@ -22,6 +22,7 @@ use crate::{
     conn::{pool::futures::*, Conn},
     error::*,
     opts::{Opts, PoolOptions},
+    queryable::transaction::TxStatus,
 };
 
 mod recycler;
@@ -166,7 +167,7 @@ impl Pool {
         if conn.inner.stream.is_some()
             && !conn.inner.disconnected
             && !conn.expired()
-            && !conn.inner.in_transaction
+            && conn.inner.tx_status == TxStatus::None
             && conn.inner.has_result.is_none()
             && !self.inner.close.load(atomic::Ordering::Acquire)
         {

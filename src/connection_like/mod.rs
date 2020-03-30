@@ -6,8 +6,6 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use crate::conn::PendingResult;
-use crate::connection_like::write_packet2::WritePacket2;
 use futures_util::future::ok;
 use mysql_common::{
     io::ReadMysqlExt,
@@ -18,13 +16,16 @@ use tokio::prelude::*;
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
-    conn::{named_params::parse_named_params, stmt_cache::StmtCache},
-    connection_like::read_packet::{ReadPacket, ReadPackets},
+    conn::{named_params::parse_named_params, stmt_cache::StmtCache, PendingResult},
+    connection_like::{
+        read_packet::{ReadPacket, ReadPackets},
+        write_packet2::WritePacket2,
+    },
     consts::{CapabilityFlags, Command, StatusFlags},
     error::*,
     io,
     local_infile_handler::LocalInfileHandler,
-    queryable::{query_result::QueryResult, stmt::InnerStmt, Protocol},
+    queryable::{query_result::QueryResult, stmt::InnerStmt, transaction::TxStatus, Protocol},
     BoxFuture, Opts,
 };
 
@@ -43,7 +44,7 @@ pub trait ConnectionLike: Send + Sized {
     fn stmt_cache_mut(&mut self) -> &mut StmtCache;
     fn get_affected_rows(&self) -> u64;
     fn get_capabilities(&self) -> CapabilityFlags;
-    fn get_in_transaction(&self) -> bool;
+    fn get_tx_status(&self) -> TxStatus;
     fn get_last_insert_id(&self) -> Option<u64>;
     fn get_info(&self) -> Cow<'_, str>;
     fn get_warnings(&self) -> u16;
@@ -54,7 +55,7 @@ pub trait ConnectionLike: Send + Sized {
     fn get_server_version(&self) -> (u16, u16, u16);
     fn get_status(&self) -> StatusFlags;
     fn set_last_ok_packet(&mut self, ok_packet: Option<OkPacket<'static>>);
-    fn set_in_transaction(&mut self, in_transaction: bool);
+    fn set_tx_status(&mut self, tx_statux: TxStatus);
     fn set_pending_result(&mut self, meta: Option<PendingResult>);
     fn set_status(&mut self, status: StatusFlags);
     fn reset_seq_id(&mut self);

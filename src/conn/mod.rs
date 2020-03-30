@@ -36,7 +36,9 @@ use crate::{
     io::Stream,
     local_infile_handler::LocalInfileHandler,
     opts::Opts,
-    queryable::{query_result::QueryResult, BinaryProtocol, Queryable, TextProtocol},
+    queryable::{
+        query_result::QueryResult, transaction::TxStatus, BinaryProtocol, Queryable, TextProtocol,
+    },
     Column, OptsBuilder,
 };
 
@@ -87,7 +89,7 @@ struct ConnInner {
     last_ok_packet: Option<OkPacket<'static>>,
     pool: Option<Pool>,
     has_result: Option<PendingResult>,
-    in_transaction: bool,
+    tx_status: TxStatus,
     opts: Opts,
     last_io: Instant,
     wait_timeout: Duration,
@@ -106,7 +108,7 @@ impl fmt::Debug for ConnInner {
             .field("server version", &self.version)
             .field("pool", &self.pool)
             .field("has result", &self.has_result.is_some())
-            .field("in transaction", &self.in_transaction)
+            .field("tx_status", &self.tx_status)
             .field("stream", &self.stream)
             .field("options", &self.opts)
             .finish()
@@ -126,7 +128,7 @@ impl ConnInner {
             id: 0,
             has_result: None,
             pool: None,
-            in_transaction: false,
+            tx_status: TxStatus::None,
             last_io: Instant::now(),
             wait_timeout: Duration::from_secs(0),
             stmt_cache: StmtCache::new(opts.get_stmt_cache_size()),
@@ -539,9 +541,10 @@ impl Conn {
         Ok(())
     }
 
+    /// Requires that `self.inner.tx_status != TxStatus::None`
     async fn rollback_transaction(&mut self) -> Result<()> {
-        assert!(self.inner.in_transaction);
-        self.inner.in_transaction = false;
+        debug_assert_ne!(self.inner.tx_status, TxStatus::None);
+        self.inner.tx_status = TxStatus::None;
         self.drop_query("ROLLBACK").await
     }
 
@@ -573,7 +576,7 @@ impl Conn {
         loop {
             if self.inner.has_result.is_some() {
                 self.drop_result().await?;
-            } else if self.inner.in_transaction {
+            } else if self.inner.tx_status != TxStatus::None {
                 self.rollback_transaction().await?;
             } else {
                 break;
@@ -608,8 +611,8 @@ impl ConnectionLike for Conn {
         self.inner.capabilities
     }
 
-    fn get_in_transaction(&self) -> bool {
-        self.inner.in_transaction
+    fn get_tx_status(&self) -> TxStatus {
+        self.inner.tx_status
     }
 
     fn get_last_insert_id(&self) -> Option<u64> {
@@ -663,8 +666,8 @@ impl ConnectionLike for Conn {
         self.inner.last_ok_packet = ok_packet;
     }
 
-    fn set_in_transaction(&mut self, in_transaction: bool) {
-        self.inner.in_transaction = in_transaction;
+    fn set_tx_status(&mut self, tx_status: TxStatus) {
+        self.inner.tx_status = tx_status;
     }
 
     fn set_pending_result(&mut self, meta: Option<PendingResult>) {
@@ -1268,6 +1271,15 @@ mod test {
         transaction.rollback().await?;
         let output_opt = conn.first("SELECT COUNT(*) FROM tmp").await?;
         assert_eq!(output_opt, Some((2u8,)));
+
+        let mut transaction = conn.start_transaction(Default::default()).await?;
+        transaction
+            .drop_query("INSERT INTO tmp VALUES (3, 'baz')")
+            .await?;
+        drop(transaction); // implicit rollback
+        let output_opt = conn.first("SELECT COUNT(*) FROM tmp").await?;
+        assert_eq!(output_opt, Some((2u8,)));
+
         conn.disconnect().await?;
         Ok(())
     }

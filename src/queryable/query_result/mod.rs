@@ -12,11 +12,10 @@ use std::{borrow::Cow, marker::PhantomData, result::Result as StdResult, sync::A
 
 use self::QueryResultInner::*;
 use crate::{
-    connection_like::{ConnectionLike, StmtCacheResult},
+    connection_like::StmtCacheResult,
     consts::StatusFlags,
     error::*,
-    prelude::FromRow,
-    queryable::Protocol,
+    prelude::{ConnectionLike, FromRow, Protocol},
     Column, Row,
 };
 
@@ -220,16 +219,14 @@ where
     /// It'll panic if any row isn't convertible to `R` (i.e. programmer error or unknown schema).
     /// * In case of programmer error see `FromRow` docs;
     /// * In case of unknown schema use [`QueryResult::try_collect`].
-    pub fn collect_and_drop<R>(mut self) -> impl std::future::Future<Output = Result<Vec<R>>> + 'a
+    pub async fn collect_and_drop<R>(mut self) -> Result<Vec<R>>
     where
         R: FromRow,
         R: Send + 'static,
     {
-        async {
-            let output = self.collect::<R>().await?;
-            self.drop_result().await?;
-            Ok(output)
-        }
+        let output = self.collect::<R>().await?;
+        self.drop_result().await?;
+        Ok(output)
     }
 
     /// Returns a future that collects the current result set of this query result and drops

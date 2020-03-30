@@ -403,7 +403,7 @@ impl Opts {
         self.inner.address.get_ip_or_hostname()
     }
 
-    pub fn get_hostport_or_url(&self) -> &HostPortOrUrl {
+    pub(crate) fn get_hostport_or_url(&self) -> &HostPortOrUrl {
         &self.inner.address
     }
 

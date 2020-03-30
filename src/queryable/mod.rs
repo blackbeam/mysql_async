@@ -17,7 +17,7 @@ use std::sync::Arc;
 use self::{
     query_result::QueryResult,
     stmt::Stmt,
-    transaction::{Transaction, TransactionOptions},
+    transaction::{Transaction, TransactionOptions, TxStatus},
 };
 use crate::{
     connection_like::ConnectionLike, consts::Command, error::*, prelude::FromRow, BoxFuture,
@@ -66,6 +66,16 @@ impl Protocol for BinaryProtocol {
     }
 }
 
+/// The only purpose of this function at the moment is to rollback a transaction in cases,
+/// where `Transaction` is dropped without an explicit call to `commit` or `rollback`.
+async fn cleanup<T: Queryable + Sized>(queryable: &mut T) -> Result<()> {
+    if queryable.get_tx_status() == TxStatus::RequiresRollback {
+        queryable.set_tx_status(TxStatus::None);
+        queryable.drop_query("ROLLBACK").await?;
+    }
+    Ok(())
+}
+
 /// Represents something queryable, e.g. connection or transaction.
 pub trait Queryable: ConnectionLike
 where
@@ -74,6 +84,7 @@ where
     /// Returns a future, that executes `COM_PING`.
     fn ping(&mut self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
+            cleanup(self).await?;
             self.write_command_data(Command::COM_PING, &[]).await?;
             self.read_packet().await?;
             Ok(())
@@ -81,13 +92,13 @@ where
     }
 
     /// Returns a future that performs the given query.
-    fn query<'a, Q: AsRef<str>>(
-        &'a mut self,
-        query: Q,
-    ) -> BoxFuture<'a, QueryResult<'a, Self, TextProtocol>> {
-        let query = String::from(query.as_ref());
+    fn query<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, QueryResult<'a, Self, TextProtocol>>
+    where
+        Q: AsRef<str> + Sync + Send + 'static,
+    {
         Box::pin(async move {
-            self.write_command_data(Command::COM_QUERY, query.as_bytes())
+            cleanup(self).await?;
+            self.write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
                 .await?;
             self.read_result_set(None).await
         })
@@ -98,7 +109,7 @@ where
     /// Returned future will call `R::from_row(row)` internally.
     fn first<'a, Q, R>(&'a mut self, query: Q) -> BoxFuture<'a, Option<R>>
     where
-        Q: AsRef<str> + Send + 'static,
+        Q: AsRef<str> + Sync + Send + 'static,
         R: FromRow,
     {
         Box::pin(async move {
@@ -113,7 +124,10 @@ where
     }
 
     /// Returns a future that performs the given query. Result will be dropped.
-    fn drop_query<'a, Q: AsRef<str> + Send + 'static>(&'a mut self, query: Q) -> BoxFuture<'a, ()> {
+    fn drop_query<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, ()>
+    where
+        Q: AsRef<str> + Sync + Send + 'static,
+    {
         Box::pin(async move {
             let result = self.query(query).await?;
             result.drop_result().await?;
@@ -127,9 +141,10 @@ where
         query: Q,
     ) -> BoxFuture<'a, Stmt<'a, Self>> {
         Box::pin(async move {
+            cleanup(self).await?;
             let f = self.prepare_stmt(query);
             let (inner_stmt, stmt_cache_result) = f.await?;
-            Ok(stmt::new(self, inner_stmt, stmt_cache_result))
+            Ok(Stmt::new(self, inner_stmt, stmt_cache_result))
         })
     }
 
@@ -159,13 +174,17 @@ where
     /// Returned future will call `R::from_row(row)` internally.
     fn first_exec<Q, P, R>(&mut self, query: Q, params: P) -> BoxFuture<'_, Option<R>>
     where
-        Q: AsRef<str> + Send + 'static,
+        Q: AsRef<str> + Sync + Send + 'static,
         P: Into<Params>,
         R: FromRow,
     {
-        let f = self.prep_exec(query, params);
+        let params = params.into();
         Box::pin(async move {
-            let mut rows = f.await?.collect_and_drop::<Row>().await?;
+            let mut rows = self
+                .prep_exec(query, params)
+                .await?
+                .collect_and_drop::<Row>()
+                .await?;
             if rows.len() > 1 {
                 Ok(Some(FromRow::from_row(rows.swap_remove(0))))
             } else {
@@ -188,15 +207,14 @@ where
     /// the given params. Results will be dropped.
     fn batch_exec<Q, I, P>(&mut self, query: Q, params_iter: I) -> BoxFuture<'_, ()>
     where
-        Q: AsRef<str> + Send + 'static,
+        Q: AsRef<str> + Sync + Send + 'static,
         I: IntoIterator<Item = P> + Send + 'static,
         I::IntoIter: Send + 'static,
         Params: From<P>,
         P: Send + 'static,
     {
-        let f = self.prepare(query);
         Box::pin(async move {
-            let mut stmt = f.await?;
+            let mut stmt = self.prepare(query).await?;
             stmt.batch(params_iter).await?;
             stmt.close().await
         })
@@ -207,7 +225,10 @@ where
         &'a mut self,
         options: TransactionOptions,
     ) -> BoxFuture<'a, Transaction<'a, Self>> {
-        Box::pin(Transaction::new(self, options))
+        Box::pin(async move {
+            cleanup(self).await?;
+            Transaction::new(self, options).await
+        })
     }
 }
 

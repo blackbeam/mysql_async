@@ -10,7 +10,7 @@ use crate::{
     connection_like::{ConnectionLike, StmtCacheResult},
     error::*,
     prelude::FromRow,
-    queryable::{query_result::QueryResult, BinaryProtocol},
+    queryable::{query_result::QueryResult, transaction::TxStatus, BinaryProtocol},
     Column, Params,
     Value::{self},
 };
@@ -59,18 +59,15 @@ pub struct Stmt<'a, T> {
     pub(crate) cached: Option<StmtCacheResult>,
 }
 
-pub fn new<'a, T>(conn_like: &'a mut T, inner: InnerStmt, cached: StmtCacheResult) -> Stmt<'a, T>
-where
-    T: ConnectionLike + Sized,
-{
-    Stmt::new(conn_like, inner, cached)
-}
-
 impl<'a, T> Stmt<'a, T>
 where
-    T: ConnectionLike + Sized,
+    T: crate::prelude::ConnectionLike,
 {
-    fn new(conn_like: &'a mut T, inner: InnerStmt, cached: StmtCacheResult) -> Stmt<'a, T> {
+    pub(crate) fn new(
+        conn_like: &'a mut T,
+        inner: InnerStmt,
+        cached: StmtCacheResult,
+    ) -> Stmt<'a, T> {
         Stmt {
             conn_like,
             inner,
@@ -160,10 +157,10 @@ where
         Ok(())
     }
 
-    async fn execute_positional<'b, U>(
-        &'b mut self,
+    async fn execute_positional<U>(
+        &mut self,
         params: U,
-    ) -> Result<QueryResult<'b, Stmt<'a, T>, BinaryProtocol>>
+    ) -> Result<QueryResult<'_, Stmt<'a, T>, BinaryProtocol>>
     where
         U: ::std::ops::Deref<Target = [Value]>,
         U: IntoIterator<Item = Value>,
@@ -189,10 +186,10 @@ where
         self.read_result_set(None).await
     }
 
-    async fn execute_named<'b>(
-        &'b mut self,
+    async fn execute_named(
+        &mut self,
         params: Params,
-    ) -> Result<QueryResult<'b, Stmt<'a, T>, BinaryProtocol>> {
+    ) -> Result<QueryResult<'_, Stmt<'a, T>, BinaryProtocol>> {
         if self.inner.named_params.is_none() {
             let error = DriverError::NamedParamsForPositionalQuery.into();
             return Err(error);
@@ -210,9 +207,7 @@ where
         }
     }
 
-    async fn execute_empty<'b>(
-        &'b mut self,
-    ) -> Result<QueryResult<'b, Stmt<'a, T>, BinaryProtocol>> {
+    async fn execute_empty(&mut self) -> Result<QueryResult<'_, Stmt<'a, T>, BinaryProtocol>> {
         if self.inner.num_params > 0 {
             let error = DriverError::StmtParamsMismatch {
                 required: self.inner.num_params,
@@ -304,8 +299,8 @@ impl<'a, T: ConnectionLike> ConnectionLike for Stmt<'a, T> {
     fn get_capabilities(&self) -> crate::consts::CapabilityFlags {
         self.conn_like.get_capabilities()
     }
-    fn get_in_transaction(&self) -> bool {
-        self.conn_like.get_in_transaction()
+    fn get_tx_status(&self) -> TxStatus {
+        self.conn_like.get_tx_status()
     }
     fn get_last_insert_id(&self) -> Option<u64> {
         self.conn_like.get_last_insert_id()
@@ -339,8 +334,8 @@ impl<'a, T: ConnectionLike> ConnectionLike for Stmt<'a, T> {
     fn set_last_ok_packet(&mut self, ok_packet: Option<mysql_common::packets::OkPacket<'static>>) {
         self.conn_like.set_last_ok_packet(ok_packet)
     }
-    fn set_in_transaction(&mut self, in_transaction: bool) {
-        self.conn_like.set_in_transaction(in_transaction)
+    fn set_tx_status(&mut self, tx_status: TxStatus) {
+        self.conn_like.set_tx_status(tx_status)
     }
     fn set_pending_result(&mut self, meta: Option<crate::conn::PendingResult>) {
         self.conn_like.set_pending_result(meta)
