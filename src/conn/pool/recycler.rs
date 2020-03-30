@@ -23,9 +23,9 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 pub struct Recycler {
     inner: Arc<Inner>,
-    discard: FuturesUnordered<BoxFuture<()>>,
+    discard: FuturesUnordered<BoxFuture<'static, ()>>,
     discarded: usize,
-    cleaning: FuturesUnordered<BoxFuture<Conn>>,
+    cleaning: FuturesUnordered<BoxFuture<'static, Conn>>,
 
     // Option<Conn> so that we have a way to send a "I didn't make a Conn after all" signal
     dropped: mpsc::UnboundedReceiver<Option<Conn>>,
@@ -73,7 +73,7 @@ impl Future for Recycler {
                         drop(exchange);
                         $self.discard.push(Box::pin($conn.close()));
                     } else {
-                        exchange.available.push_back($conn.into());
+                        exchange.available.push_back(dbg!($conn.into()));
                         if let Some(w) = exchange.waiting.pop_front() {
                             w.wake();
                         }

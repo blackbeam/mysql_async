@@ -6,17 +6,12 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures_util::future::Either;
-
 use crate::{
-    connection_like::{
-        streamless::Streamless, ConnectionLike, ConnectionLikeWrapper, StmtCacheResult,
-    },
+    connection_like::{ConnectionLike, StmtCacheResult},
     error::*,
-    io,
     prelude::FromRow,
     queryable::{query_result::QueryResult, BinaryProtocol},
-    Column, Params, Row,
+    Column, Params,
     Value::{self},
 };
 use mysql_common::{
@@ -56,29 +51,29 @@ impl InnerStmt {
 
 /// Prepared statement.
 #[derive(Debug)]
-pub struct Stmt<T> {
-    conn_like: Option<Either<T, Streamless<T>>>,
+pub struct Stmt<'a, T> {
+    conn_like: &'a mut T,
     inner: InnerStmt,
     /// None => In use elsewhere
     /// Some(Cached) => Should not be closed
     /// Some(NotCached(_)) => Should be closed
-    cached: Option<StmtCacheResult>,
+    pub(crate) cached: Option<StmtCacheResult>,
 }
 
-pub fn new<T>(conn_like: T, inner: InnerStmt, cached: StmtCacheResult) -> Stmt<T>
+pub fn new<'a, T>(conn_like: &'a mut T, inner: InnerStmt, cached: StmtCacheResult) -> Stmt<'a, T>
 where
-    T: ConnectionLike + Sized + 'static,
+    T: ConnectionLike + Sized,
 {
     Stmt::new(conn_like, inner, cached)
 }
 
-impl<T> Stmt<T>
+impl<'a, T> Stmt<'a, T>
 where
-    T: ConnectionLike + Sized + 'static,
+    T: ConnectionLike + Sized,
 {
-    fn new(conn_like: T, inner: InnerStmt, cached: StmtCacheResult) -> Stmt<T> {
+    fn new(conn_like: &'a mut T, inner: InnerStmt, cached: StmtCacheResult) -> Stmt<'a, T> {
         Stmt {
-            conn_like: Some(Either::Left(conn_like)),
+            conn_like,
             inner,
             cached: Some(cached),
         }
@@ -99,7 +94,7 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<(), mysql_async::error::Error> {
     ///     let pool = Pool::new(get_opts());
-    ///     let conn = pool.get_conn().await?;
+    ///     let mut conn = pool.get_conn().await?;
     ///
     ///     let stmt = conn.prepare("SELECT 'foo', CAST(42 AS UNSIGNED)").await?;
     ///
@@ -130,7 +125,7 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<(), mysql_async::error::Error> {
     ///     let pool = Pool::new(get_opts());
-    ///     let conn = pool.get_conn().await?;
+    ///     let mut conn = pool.get_conn().await?;
     ///
     ///     let stmt = conn.prepare("SELECT ?, ?").await?;
     ///
@@ -147,9 +142,7 @@ where
             .unwrap_or_default()
     }
 
-    async fn send_long_data(self, params: Vec<Value>) -> Result<Self> {
-        let mut this = self;
-
+    async fn send_long_data(&mut self, params: Vec<Value>) -> Result<()> {
         for (i, value) in params.into_iter().enumerate() {
             if let Value::Bytes(bytes) = value {
                 let chunks = bytes.chunks(MAX_PAYLOAD_LEN - 6);
@@ -159,16 +152,19 @@ where
                     None
                 });
                 for chunk in chunks {
-                    let com = ComStmtSendLongData::new(this.inner.statement_id, i, chunk);
-                    this = this.write_command_raw(com.into()).await?;
+                    let com = ComStmtSendLongData::new(self.inner.statement_id, i, chunk);
+                    self.write_command_raw(com.into()).await?;
                 }
             }
         }
 
-        Ok(this)
+        Ok(())
     }
 
-    async fn execute_positional<U>(self, params: U) -> Result<QueryResult<Self, BinaryProtocol>>
+    async fn execute_positional<'b, U>(
+        &'b mut self,
+        params: U,
+    ) -> Result<QueryResult<'b, Stmt<'a, T>, BinaryProtocol>>
     where
         U: ::std::ops::Deref<Target = [Value]>,
         U: IntoIterator<Item = Value>,
@@ -186,19 +182,18 @@ where
         let (body, as_long_data) =
             ComStmtExecuteRequestBuilder::new(self.inner.statement_id).build(&*params);
 
-        let this = if as_long_data {
+        if as_long_data {
             self.send_long_data(params).await?
-        } else {
-            self
-        };
+        }
 
-        this.write_command_raw(body)
-            .await?
-            .read_result_set(None)
-            .await
+        self.write_command_raw(body).await?;
+        self.read_result_set(None).await
     }
 
-    async fn execute_named(self, params: Params) -> Result<QueryResult<Self, BinaryProtocol>> {
+    async fn execute_named<'b>(
+        &'b mut self,
+        params: Params,
+    ) -> Result<QueryResult<'b, Stmt<'a, T>, BinaryProtocol>> {
         if self.inner.named_params.is_none() {
             let error = DriverError::NamedParamsForPositionalQuery.into();
             return Err(error);
@@ -216,7 +211,9 @@ where
         }
     }
 
-    async fn execute_empty(self) -> Result<QueryResult<Self, BinaryProtocol>> {
+    async fn execute_empty<'b>(
+        &'b mut self,
+    ) -> Result<QueryResult<'b, Stmt<'a, T>, BinaryProtocol>> {
         if self.inner.num_params > 0 {
             let error = DriverError::StmtParamsMismatch {
                 required: self.inner.num_params,
@@ -227,12 +224,15 @@ where
         }
 
         let (body, _) = ComStmtExecuteRequestBuilder::new(self.inner.statement_id).build(&[]);
-        let this = self.write_command_raw(body).await?;
-        this.read_result_set(None).await
+        self.write_command_raw(body).await?;
+        self.read_result_set(None).await
     }
 
     /// See `Queryable::execute`
-    pub async fn execute<P>(self, params: P) -> Result<QueryResult<Self, BinaryProtocol>>
+    pub async fn execute<P>(
+        &mut self,
+        params: P,
+    ) -> Result<QueryResult<'_, Stmt<'a, T>, BinaryProtocol>>
     where
         P: Into<Params>,
     {
@@ -245,22 +245,22 @@ where
     }
 
     /// See `Queryable::first`
-    pub async fn first<P, R>(self, params: P) -> Result<(Self, Option<R>)>
+    pub async fn first<P, R>(&mut self, params: P) -> Result<Option<R>>
     where
         P: Into<Params> + 'static,
         R: FromRow,
     {
         let result = self.execute(params).await?;
-        let (this, mut rows) = result.collect_and_drop::<Row>().await?;
-        if rows.len() > 1 {
-            Ok((this, Some(FromRow::from_row(rows.swap_remove(0)))))
+        let mut rows = result.collect_and_drop::<crate::Row>().await?;
+        if rows.len() > 0 {
+            Ok(Some(FromRow::from_row(rows.swap_remove(0))))
         } else {
-            Ok((this, rows.pop().map(FromRow::from_row)))
+            Ok(None)
         }
     }
 
     /// See `Queryable::batch`
-    pub async fn batch<I, P>(self, params_iter: I) -> Result<Self>
+    pub async fn batch<I, P>(&mut self, params_iter: I) -> Result<()>
     where
         I: IntoIterator<Item = P>,
         I::IntoIter: Send + 'static,
@@ -268,87 +268,97 @@ where
         P: 'static,
     {
         let mut params_iter = params_iter.into_iter().map(Params::from);
-        let mut this = self;
         loop {
             match params_iter.next() {
                 Some(params) => {
-                    this = this.execute(params).await?.drop_result().await?;
+                    let result = self.execute(params).await?;
+                    result.drop_result().await?;
                 }
-                None => break Ok(this),
+                None => break Ok(()),
             }
         }
     }
 
     /// This will close statement (if it's not in the cache) and resolve to a wrapped queryable.
-    pub async fn close(mut self) -> Result<T> {
+    pub async fn close(mut self) -> Result<()> {
         let cached = self.cached.take();
-        match self.conn_like {
-            Some(Either::Left(conn_like)) => {
-                if let Some(StmtCacheResult::NotCached(stmt_id)) = cached {
-                    conn_like.close_stmt(stmt_id).await
-                } else {
-                    Ok(conn_like)
-                }
-            }
-            _ => unreachable!(),
+        if let Some(StmtCacheResult::NotCached(stmt_id)) = cached {
+            self.conn_like.close_stmt(stmt_id).await?;
         }
-    }
-
-    pub(crate) fn unwrap(mut self) -> (T, Option<StmtCacheResult>) {
-        match self.conn_like {
-            Some(Either::Left(conn_like)) => (conn_like, self.cached.take()),
-            _ => unreachable!(),
-        }
+        Ok(())
     }
 }
 
-impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Stmt<T> {
-    type ConnLike = T;
-
-    fn take_stream(self) -> (Streamless<Self>, io::Stream)
-    where
-        Self: Sized,
-    {
-        let Stmt {
-            conn_like,
-            inner,
-            cached,
-        } = self;
-        match conn_like {
-            Some(Either::Left(conn_like)) => {
-                let (streamless, stream) = conn_like.take_stream();
-                let this = Stmt {
-                    conn_like: Some(Either::Right(streamless)),
-                    inner,
-                    cached,
-                };
-                (Streamless::new(this), stream)
-            }
-            _ => unreachable!(),
-        }
+impl<'a, T: ConnectionLike> ConnectionLike for Stmt<'a, T> {
+    fn stream_mut(&mut self) -> &mut crate::io::Stream {
+        self.conn_like.stream_mut()
     }
-
-    fn return_stream(&mut self, stream: io::Stream) {
-        let conn_like = self.conn_like.take().unwrap();
-        match conn_like {
-            Either::Right(streamless) => {
-                self.conn_like = Some(Either::Left(streamless.return_stream(stream)));
-            }
-            _ => unreachable!(),
-        }
+    fn stmt_cache_ref(&self) -> &crate::conn::stmt_cache::StmtCache {
+        self.conn_like.stmt_cache_ref()
     }
-
-    fn conn_like_ref(&self) -> &Self::ConnLike {
-        match self.conn_like {
-            Some(Either::Left(ref conn_like)) => conn_like,
-            _ => unreachable!(),
-        }
+    fn stmt_cache_mut(&mut self) -> &mut crate::conn::stmt_cache::StmtCache {
+        self.conn_like.stmt_cache_mut()
     }
-
-    fn conn_like_mut(&mut self) -> &mut Self::ConnLike {
-        match self.conn_like {
-            Some(Either::Left(ref mut conn_like)) => conn_like,
-            _ => unreachable!(),
-        }
+    fn get_affected_rows(&self) -> u64 {
+        self.conn_like.get_affected_rows()
+    }
+    fn get_capabilities(&self) -> crate::consts::CapabilityFlags {
+        self.conn_like.get_capabilities()
+    }
+    fn get_in_transaction(&self) -> bool {
+        self.conn_like.get_in_transaction()
+    }
+    fn get_last_insert_id(&self) -> Option<u64> {
+        self.conn_like.get_last_insert_id()
+    }
+    fn get_info(&self) -> std::borrow::Cow<'_, str> {
+        self.conn_like.get_info()
+    }
+    fn get_warnings(&self) -> u16 {
+        self.conn_like.get_warnings()
+    }
+    fn get_local_infile_handler(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::local_infile_handler::LocalInfileHandler>> {
+        self.conn_like.get_local_infile_handler()
+    }
+    fn get_max_allowed_packet(&self) -> usize {
+        self.conn_like.get_max_allowed_packet()
+    }
+    fn get_opts(&self) -> &crate::Opts {
+        self.conn_like.get_opts()
+    }
+    fn get_pending_result(&self) -> Option<&crate::conn::PendingResult> {
+        self.conn_like.get_pending_result()
+    }
+    fn get_server_version(&self) -> (u16, u16, u16) {
+        self.conn_like.get_server_version()
+    }
+    fn get_status(&self) -> crate::consts::StatusFlags {
+        self.conn_like.get_status()
+    }
+    fn set_last_ok_packet(&mut self, ok_packet: Option<mysql_common::packets::OkPacket<'static>>) {
+        self.conn_like.set_last_ok_packet(ok_packet)
+    }
+    fn set_in_transaction(&mut self, in_transaction: bool) {
+        self.conn_like.set_in_transaction(in_transaction)
+    }
+    fn set_pending_result(&mut self, meta: Option<crate::conn::PendingResult>) {
+        self.conn_like.set_pending_result(meta)
+    }
+    fn set_status(&mut self, status: crate::consts::StatusFlags) {
+        self.conn_like.set_status(status)
+    }
+    fn reset_seq_id(&mut self) {
+        self.conn_like.reset_seq_id()
+    }
+    fn sync_seq_id(&mut self) {
+        self.conn_like.sync_seq_id()
+    }
+    fn touch(&mut self) -> () {
+        self.conn_like.touch()
+    }
+    fn on_disconnect(&mut self) {
+        self.conn_like.on_disconnect()
     }
 }

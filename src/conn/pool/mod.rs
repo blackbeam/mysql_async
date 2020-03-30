@@ -22,10 +22,6 @@ use crate::{
     conn::{pool::futures::*, Conn},
     error::*,
     opts::{Opts, PoolOptions},
-    queryable::{
-        transaction::{Transaction, TransactionOptions},
-        Queryable,
-    },
 };
 
 mod recycler;
@@ -142,14 +138,6 @@ impl Pool {
     /// Returns future that resolves to `Conn`.
     pub fn get_conn(&self) -> GetConn {
         new_get_conn(self)
-    }
-
-    /// Shortcut for `get_conn` followed by `start_transaction`.
-    pub async fn start_transaction(
-        &self,
-        options: TransactionOptions,
-    ) -> Result<Transaction<Conn>> {
-        Queryable::start_transaction(self.get_conn().await?, options).await
     }
 
     /// Returns future that disconnects this pool from server and resolves to `()`.
@@ -277,6 +265,10 @@ impl Pool {
 
 impl Drop for Conn {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+
         if let Some(mut pool) = self.inner.pool.take() {
             pool.return_conn(self.take());
         } else if self.inner.stream.is_some() && !self.inner.disconnected {
@@ -377,22 +369,63 @@ mod test {
             .await?
             .drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)")
             .await?;
-        let _ = pool
+        let mut conn = pool.get_conn().await?;
+        let mut tx = conn
             .start_transaction(TransactionOptions::default())
-            .await?
-            .batch_exec("INSERT INTO tmp (id) VALUES (?)", vec![(1,), (2,)])
-            .await?
-            .prep_exec("SELECT * FROM tmp", ())
             .await?;
+        tx.batch_exec("INSERT INTO tmp (id) VALUES (?)", vec![(1_u8,), (2_u8,)])
+            .await?;
+        tx.prep_exec("SELECT * FROM tmp", ()).await?;
+        drop(tx);
+        drop(conn);
         let row_opt = pool
             .get_conn()
             .await?
             .first("SELECT COUNT(*) FROM tmp")
-            .await?
-            .1;
+            .await?;
         assert_eq!(row_opt, Some((0u8,)));
         pool.get_conn().await?.drop_query("DROP TABLE tmp").await?;
         pool.disconnect().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_check_inactive_connection_ttl() -> super::Result<()> {
+        const POOL_MIN: usize = 5;
+        const POOL_MAX: usize = 10;
+
+        const INACTIVE_CONNECTION_TTL: Duration = Duration::from_millis(500);
+        const TTL_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+        let constraints = PoolConstraints::new(POOL_MIN, POOL_MAX).unwrap();
+        let pool_options =
+            PoolOptions::new(constraints, INACTIVE_CONNECTION_TTL, TTL_CHECK_INTERVAL);
+
+        // Clean
+        let mut opts = get_opts();
+        opts.pool_options(pool_options);
+
+        let pool = Pool::new(opts);
+        let pool_clone = pool.clone();
+        let conns = (0..POOL_MAX).map(|_| pool.get_conn()).collect::<Vec<_>>();
+
+        let conns = try_join_all(conns).await?;
+
+        assert_eq!(ex_field!(pool_clone, exist), POOL_MAX);
+        drop(conns);
+
+        // wait for a bit to let the connections be reclaimed
+        tokio::time::delay_for(std::time::Duration::from_millis(100)).await;
+
+        // check that connections are still in the pool because of inactive_connection_ttl
+        assert_eq!(ex_field!(pool_clone, available).len(), POOL_MAX);
+
+        // then, wait for ttl_check_interval
+        tokio::time::delay_for(TTL_CHECK_INTERVAL).await;
+
+        // check that we have the expected number of connections
+        assert_eq!(ex_field!(pool_clone, available).len(), POOL_MIN);
+
         Ok(())
     }
 
@@ -402,12 +435,9 @@ mod test {
 
         const POOL_MIN: usize = 5;
         const POOL_MAX: usize = 10;
-        const INACTIVE_CONNECTION_TTL: Duration = Duration::from_millis(500);
-        const TTL_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
         let constraints = PoolConstraints::new(POOL_MIN, POOL_MAX).unwrap();
-        let pool_options =
-            PoolOptions::new(constraints, INACTIVE_CONNECTION_TTL, TTL_CHECK_INTERVAL);
+        let pool_options = PoolOptions::with_constraints(constraints);
 
         // Clean
         let mut opts = get_opts();
@@ -443,15 +473,6 @@ mod test {
             let dropped = POOL_MAX - conns.len();
             let idle = min(dropped, POOL_MIN);
             let expected = conns.len() + idle;
-
-            if dropped > POOL_MIN {
-                // check that connection is still in the pool because of inactive_connection_ttl
-                let have = ex_field!(pool_clone, exist);
-                assert_eq!(have, expected + 1);
-
-                // then, wait for ttl_check_interval
-                tokio::time::delay_for(TTL_CHECK_INTERVAL + Duration::from_millis(50)).await;
-            }
 
             // check that we have the expected number of connections
             let have = ex_field!(pool_clone, exist);
@@ -507,31 +528,33 @@ mod test {
     async fn zz_should_check_wait_timeout_on_get_conn() -> super::Result<()> {
         let pool = Pool::new(get_opts());
 
-        let conn = pool.get_conn().await?;
-        let (conn, wait_timeout_orig) = conn.first::<_, usize>("SELECT @@wait_timeout").await?;
-        conn.drop_query("SET GLOBAL wait_timeout = 3")
-            .await?
-            .disconnect()
-            .await?;
+        let mut conn = pool.get_conn().await?;
+        let wait_timeout_orig = conn.first::<_, usize>("SELECT @@wait_timeout").await?;
+        conn.drop_query("SET GLOBAL wait_timeout = 3").await?;
+        conn.disconnect().await?;
 
-        let conn = pool.get_conn().await?;
-        let (conn, wait_timeout) = conn.first::<_, usize>("SELECT @@wait_timeout").await?;
-        let (_, id1) = conn.first::<_, usize>("SELECT CONNECTION_ID()").await?;
+        let mut conn = pool.get_conn().await?;
+        let wait_timeout = conn.first::<_, usize>("SELECT @@wait_timeout").await?;
+        let id1 = conn.first::<_, usize>("SELECT CONNECTION_ID()").await?;
+        drop(conn);
 
         assert_eq!(wait_timeout, Some(3));
         assert_eq!(ex_field!(pool, exist), 1);
 
         tokio::time::delay_for(std::time::Duration::from_secs(6)).await;
 
-        let conn = pool.get_conn().await?;
-        let (conn, id2) = conn.first::<_, usize>("SELECT CONNECTION_ID()").await?;
+        let mut conn = pool.get_conn().await?;
+        let id2 = conn.first::<_, usize>("SELECT CONNECTION_ID()").await?;
         assert_eq!(ex_field!(pool, exist), 1);
         assert_ne!(id1, id2);
 
         conn.drop_exec("SET GLOBAL wait_timeout = ?", (wait_timeout_orig,))
             .await?;
+        drop(conn);
 
-        pool.disconnect().await
+        pool.disconnect().await?;
+
+        Ok(())
     }
 
     /*
@@ -607,7 +630,7 @@ mod test {
             let (tx, rx) = tokio::sync::oneshot::channel();
             rt.block_on(async move {
                 let pool = Pool::new(get_opts());
-                let c = pool.get_conn().await.unwrap();
+                let mut c = pool.get_conn().await.unwrap();
                 tokio::spawn(async move {
                     let _ = rx.await;
                     let _ = c.drop_query("SELECT 1").await;
@@ -627,7 +650,7 @@ mod test {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let jh = rt.spawn(async move {
                 let pool = Pool::new(get_opts());
-                let c = pool.get_conn().await.unwrap();
+                let mut c = pool.get_conn().await.unwrap();
                 tokio::spawn(async move {
                     let _ = rx.await;
                     let _ = c.drop_query("SELECT 1").await;

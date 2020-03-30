@@ -7,6 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use crate::conn::PendingResult;
+use crate::connection_like::write_packet2::WritePacket2;
 use futures_util::future::ok;
 use mysql_common::{
     io::ReadMysqlExt,
@@ -18,39 +19,17 @@ use std::{borrow::Cow, sync::Arc};
 
 use crate::{
     conn::{named_params::parse_named_params, stmt_cache::StmtCache},
-    connection_like::{read_packet::ReadPacket, streamless::Streamless, write_packet::WritePacket},
+    connection_like::read_packet::{ReadPacket, ReadPackets},
     consts::{CapabilityFlags, Command, StatusFlags},
     error::*,
     io,
     local_infile_handler::LocalInfileHandler,
-    queryable::{
-        query_result::{self, QueryResult},
-        stmt::InnerStmt,
-        Protocol,
-    },
+    queryable::{query_result::QueryResult, stmt::InnerStmt, Protocol},
     BoxFuture, Opts,
 };
 
 pub mod read_packet;
-pub mod streamless {
-    use super::ConnectionLike;
-    use crate::io::Stream;
-
-    #[derive(Debug)]
-    pub struct Streamless<T>(T);
-
-    impl<T: ConnectionLike> Streamless<T> {
-        pub fn new(x: T) -> Streamless<T> {
-            Streamless(x)
-        }
-
-        pub fn return_stream(mut self, stream: Stream) -> T {
-            self.0.return_stream(stream);
-            self.0
-        }
-    }
-}
-pub mod write_packet;
+pub mod write_packet2;
 
 #[derive(Debug, Clone, Copy)]
 pub enum StmtCacheResult {
@@ -58,129 +37,8 @@ pub enum StmtCacheResult {
     NotCached(u32),
 }
 
-pub trait ConnectionLikeWrapper {
-    type ConnLike: ConnectionLike;
-
-    fn take_stream(self) -> (Streamless<Self>, io::Stream)
-    where
-        Self: Sized;
-    fn return_stream(&mut self, stream: io::Stream) -> ();
-    fn conn_like_ref(&self) -> &Self::ConnLike;
-
-    fn conn_like_mut(&mut self) -> &mut Self::ConnLike;
-}
-
-impl<T, U> ConnectionLike for T
-where
-    T: ConnectionLikeWrapper<ConnLike = U>,
-    T: Send,
-    U: ConnectionLike + 'static,
-{
-    fn take_stream(self) -> (Streamless<Self>, io::Stream)
-    where
-        Self: Sized,
-    {
-        <Self as ConnectionLikeWrapper>::take_stream(self)
-    }
-
-    fn return_stream(&mut self, stream: io::Stream) {
-        <Self as ConnectionLikeWrapper>::return_stream(self, stream)
-    }
-
-    fn stmt_cache_ref(&self) -> &StmtCache {
-        self.conn_like_ref().stmt_cache_ref()
-    }
-
-    fn stmt_cache_mut(&mut self) -> &mut StmtCache {
-        self.conn_like_mut().stmt_cache_mut()
-    }
-
-    fn get_affected_rows(&self) -> u64 {
-        self.conn_like_ref().get_affected_rows()
-    }
-
-    fn get_capabilities(&self) -> CapabilityFlags {
-        self.conn_like_ref().get_capabilities()
-    }
-
-    fn get_in_transaction(&self) -> bool {
-        self.conn_like_ref().get_in_transaction()
-    }
-
-    fn get_last_insert_id(&self) -> Option<u64> {
-        self.conn_like_ref().get_last_insert_id()
-    }
-
-    fn get_info(&self) -> Cow<'_, str> {
-        self.conn_like_ref().get_info()
-    }
-
-    fn get_warnings(&self) -> u16 {
-        self.conn_like_ref().get_warnings()
-    }
-
-    fn get_local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>> {
-        self.conn_like_ref().get_local_infile_handler()
-    }
-
-    fn get_max_allowed_packet(&self) -> usize {
-        self.conn_like_ref().get_max_allowed_packet()
-    }
-
-    fn get_opts(&self) -> &Opts {
-        self.conn_like_ref().get_opts()
-    }
-
-    fn get_pending_result(&self) -> Option<&PendingResult> {
-        self.conn_like_ref().get_pending_result()
-    }
-
-    fn get_server_version(&self) -> (u16, u16, u16) {
-        self.conn_like_ref().get_server_version()
-    }
-
-    fn get_status(&self) -> StatusFlags {
-        self.conn_like_ref().get_status()
-    }
-
-    fn set_last_ok_packet(&mut self, ok_packet: Option<OkPacket<'static>>) {
-        self.conn_like_mut().set_last_ok_packet(ok_packet);
-    }
-
-    fn set_in_transaction(&mut self, in_transaction: bool) {
-        self.conn_like_mut().set_in_transaction(in_transaction);
-    }
-
-    fn set_pending_result(&mut self, meta: Option<PendingResult>) {
-        self.conn_like_mut().set_pending_result(meta);
-    }
-
-    fn set_status(&mut self, status: StatusFlags) {
-        self.conn_like_mut().set_status(status);
-    }
-
-    fn reset_seq_id(&mut self) {
-        self.conn_like_mut().reset_seq_id();
-    }
-
-    fn sync_seq_id(&mut self) {
-        self.conn_like_mut().sync_seq_id();
-    }
-
-    fn touch(&mut self) {
-        self.conn_like_mut().touch();
-    }
-
-    fn on_disconnect(&mut self) {
-        self.conn_like_mut().on_disconnect();
-    }
-}
-
-pub trait ConnectionLike: Send {
-    fn take_stream(self) -> (Streamless<Self>, io::Stream)
-    where
-        Self: Sized;
-    fn return_stream(&mut self, stream: io::Stream) -> ();
+pub trait ConnectionLike: Send + Sized {
+    fn stream_mut(&mut self) -> &mut io::Stream;
     fn stmt_cache_ref(&self) -> &StmtCache;
     fn stmt_cache_mut(&mut self) -> &mut StmtCache;
     fn get_affected_rows(&self) -> u64;
@@ -204,21 +62,26 @@ pub trait ConnectionLike: Send {
     fn touch(&mut self) -> ();
     fn on_disconnect(&mut self);
 
-    fn cache_stmt(mut self, query: String, stmt: &InnerStmt) -> BoxFuture<(Self, StmtCacheResult)>
+    fn cache_stmt<'a>(
+        &'a mut self,
+        query: String,
+        stmt: &InnerStmt,
+    ) -> BoxFuture<'a, StmtCacheResult>
     where
-        Self: Sized + 'static,
+        Self: Sized,
     {
         if self.get_opts().get_stmt_cache_size() > 0 {
             if let Some(old_stmt) = self.stmt_cache_mut().put(query, stmt.clone()) {
-                let f = self.close_stmt(old_stmt.statement_id);
-                Box::pin(async move { Ok((f.await?, StmtCacheResult::Cached)) })
+                Box::pin(async move {
+                    self.close_stmt(old_stmt.statement_id).await?;
+                    Ok(StmtCacheResult::Cached)
+                })
             } else {
-                Box::pin(futures_util::future::ok((self, StmtCacheResult::Cached)))
+                Box::pin(futures_util::future::ok(StmtCacheResult::Cached))
             }
         } else {
-            Box::pin(futures_util::future::ok((
-                self,
-                StmtCacheResult::NotCached(stmt.statement_id),
+            Box::pin(futures_util::future::ok(StmtCacheResult::NotCached(
+                stmt.statement_id,
             )))
         }
     }
@@ -227,55 +90,33 @@ pub trait ConnectionLike: Send {
         self.stmt_cache_mut().get(query)
     }
 
-    /// Returns future that reads packet from a server end resolves to `(Self, Packet)`.
-    fn read_packet(self) -> ReadPacket<Self>
-    where
-        Self: Sized + 'static,
-    {
+    fn read_packet<'a>(&'a mut self) -> ReadPacket<'a, Self> {
         ReadPacket::new(self)
     }
 
     /// Returns future that reads packets from a server and resolves to `(Self, Vec<Packet>)`.
-    fn read_packets(self, n: usize) -> BoxFuture<(Self, Vec<Vec<u8>>)>
-    where
-        Self: Sized + 'static,
-    {
-        if n == 0 {
-            return Box::pin(ok((self, Vec::new())));
-        }
-        Box::pin(async move {
-            let mut acc = Vec::new();
-            let mut conn_like = self;
-            for _ in 0..n {
-                let (cl, packet) = conn_like.read_packet().await?;
-                conn_like = cl;
-                acc.push(packet);
-            }
-            Ok((conn_like, acc))
-        })
+    fn read_packets<'a>(&'a mut self, n: usize) -> ReadPackets<'a, Self> {
+        ReadPackets::new(self, n)
     }
 
-    fn prepare_stmt<Q>(mut self, query: Q) -> BoxFuture<(Self, InnerStmt, StmtCacheResult)>
+    fn prepare_stmt<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, (InnerStmt, StmtCacheResult)>
     where
         Q: AsRef<str>,
-        Self: Sized + 'static,
+        Self: Sized,
     {
         match parse_named_params(query.as_ref()) {
             Ok((named_params, query)) => {
                 let query = query.into_owned();
                 if let Some(mut inner_stmt) = self.get_cached_stmt(&query).map(Clone::clone) {
                     inner_stmt.named_params = named_params.clone();
-                    Box::pin(ok((self, inner_stmt, StmtCacheResult::Cached)))
+                    Box::pin(ok((inner_stmt, StmtCacheResult::Cached)))
                 } else {
                     Box::pin(async move {
-                        let (this, packet) = self
-                            .write_command_data(Command::COM_STMT_PREPARE, &*query)
-                            .await?
-                            .read_packet()
+                        self.write_command_data(Command::COM_STMT_PREPARE, &*query)
                             .await?;
+                        let packet = self.read_packet().await?;
                         let mut inner_stmt = InnerStmt::new(&*packet, named_params)?;
-                        let (mut this, packets) =
-                            this.read_packets(inner_stmt.num_params as usize).await?;
+                        let packets = self.read_packets(inner_stmt.num_params as usize).await?;
                         if !packets.is_empty() {
                             let params = packets
                                 .into_iter()
@@ -285,16 +126,15 @@ pub trait ConnectionLike: Send {
                         }
 
                         if inner_stmt.num_params > 0 {
-                            if !this
+                            if !self
                                 .get_capabilities()
                                 .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
                             {
-                                this = this.read_packet().await?.0;
+                                self.read_packet().await?;
                             }
                         }
 
-                        let (mut this, packets) =
-                            this.read_packets(inner_stmt.num_columns as usize).await?;
+                        let packets = self.read_packets(inner_stmt.num_columns as usize).await?;
                         if !packets.is_empty() {
                             let columns = packets
                                 .into_iter()
@@ -304,16 +144,16 @@ pub trait ConnectionLike: Send {
                         }
 
                         if inner_stmt.num_columns > 0 {
-                            if !this
+                            if !self
                                 .get_capabilities()
                                 .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
                             {
-                                this = this.read_packet().await?.0;
+                                self.read_packet().await?;
                             }
                         }
 
-                        let (this, stmt_cache_result) = this.cache_stmt(query, &inner_stmt).await?;
-                        Ok((this, inner_stmt, stmt_cache_result))
+                        let stmt_cache_result = self.cache_stmt(query, &inner_stmt).await?;
+                        Ok((inner_stmt, stmt_cache_result))
                     })
                 }
             }
@@ -321,53 +161,46 @@ pub trait ConnectionLike: Send {
         }
     }
 
-    fn close_stmt(self, statement_id: u32) -> WritePacket<Self>
-    where
-        Self: Sized + 'static,
-    {
+    fn close_stmt<'a>(&'a mut self, statement_id: u32) -> WritePacket2<'a, Self> {
         self.write_command_raw(ComStmtClose::new(statement_id).into())
     }
 
     /// Returns future that reads result set from a server and resolves to `QueryResult`.
-    fn read_result_set<P>(self, cached: Option<StmtCacheResult>) -> BoxFuture<QueryResult<Self, P>>
+    fn read_result_set<'a, P>(
+        &'a mut self,
+        cached: Option<StmtCacheResult>,
+    ) -> BoxFuture<'a, QueryResult<'a, Self, P>>
     where
-        Self: Sized + 'static,
+        Self: Sized,
         P: Protocol,
-        P: Send + 'static,
     {
         Box::pin(async move {
-            let (this, packet) = self.read_packet().await?;
+            let packet = self.read_packet().await?;
             match packet.get(0) {
-                Some(0x00) => Ok(query_result::new(this, None, cached)),
-                Some(0xFB) => handle_local_infile(this, &*packet, cached).await,
-                _ => handle_result_set(this, &*packet, cached).await,
+                Some(0x00) => Ok(QueryResult::new(self, None, cached)),
+                Some(0xFB) => handle_local_infile(self, &*packet, cached).await,
+                _ => handle_result_set(self, &*packet, cached).await,
             }
         })
     }
 
-    /// Returns future that writes packet to a server end resolves to `Self`.
-    fn write_packet<T>(self, data: T) -> WritePacket<Self>
+    fn write_packet<T>(&mut self, data: T) -> WritePacket2<'_, Self>
     where
-        T: Into<Vec<u8>>, // TODO: Switch to `AsRef<u8> + 'static`?
-        Self: Sized + 'static,
+        T: Into<Vec<u8>>,
     {
-        WritePacket::new(self, data)
+        WritePacket2::new(self, data.into())
     }
 
     /// Returns future that sends full command body to a server and resolves to `Self`.
-    fn write_command_raw(mut self, body: Vec<u8>) -> WritePacket<Self>
-    where
-        Self: Sized + 'static,
-    {
+    fn write_command_raw<'a>(&'a mut self, body: Vec<u8>) -> WritePacket2<'a, Self> {
         assert!(body.len() > 0);
         self.reset_seq_id();
         self.write_packet(body)
     }
 
     /// Returns future that writes command to a server and resolves to `Self`.
-    fn write_command_data<T>(self, cmd: Command, cmd_data: T) -> WritePacket<Self>
+    fn write_command_data<T>(&mut self, cmd: Command, cmd_data: T) -> WritePacket2<'_, Self>
     where
-        Self: Sized + 'static,
         T: AsRef<[u8]>,
     {
         let cmd_data = cmd_data.as_ref();
@@ -379,15 +212,14 @@ pub trait ConnectionLike: Send {
 }
 
 /// Will handle local infile packet.
-async fn handle_local_infile<T, P>(
-    mut this: T,
+async fn handle_local_infile<'a, T: ?Sized, P>(
+    this: &'a mut T,
     packet: &[u8],
     cached: Option<StmtCacheResult>,
-) -> Result<QueryResult<T, P>>
+) -> Result<QueryResult<'a, T, P>>
 where
-    P: Protocol + 'static,
-    T: ConnectionLike,
-    T: Send + Sized + 'static,
+    P: Protocol,
+    T: ConnectionLike + Sized,
 {
     let local_infile = parse_local_infile_packet(&*packet)?;
     let (local_infile, handler) = match this.get_local_infile_handler() {
@@ -399,31 +231,29 @@ where
     let mut buf = [0; 4096];
     loop {
         let read = reader.read(&mut buf[..]).await?;
-        this = this.write_packet(&buf[..read]).await?;
+        this.write_packet(&buf[..read]).await?;
 
         if read == 0 {
             break;
         }
     }
 
-    let (this, _) = this.read_packet().await?;
-    Ok(query_result::new(this, None, cached))
+    this.read_packet().await?;
+    Ok(QueryResult::new(this, None, cached))
 }
 
 /// Will handle result set packet.
-async fn handle_result_set<T, P>(
-    this: T,
+async fn handle_result_set<'a, T: Sized, P>(
+    this: &'a mut T,
     mut packet: &[u8],
     cached: Option<StmtCacheResult>,
-) -> Result<QueryResult<T, P>>
+) -> Result<QueryResult<'a, T, P>>
 where
     P: Protocol,
-    P: Send + 'static,
     T: ConnectionLike,
-    T: Send + Sized + 'static,
 {
     let column_count = packet.read_lenenc_int()?;
-    let (mut this, packets) = this.read_packets(column_count as usize).await?;
+    let packets = this.read_packets(column_count as usize).await?;
     let columns = packets
         .into_iter()
         .map(|packet| column_from_payload(packet).map_err(Error::from))
@@ -433,7 +263,7 @@ where
         .get_capabilities()
         .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
     {
-        this = this.read_packet().await?.0;
+        this.read_packet().await?;
     }
 
     if column_count > 0 {
@@ -444,9 +274,9 @@ where
             }
             None => this.set_pending_result(Some(PendingResult::Text(columns.clone()))),
         }
-        Ok(query_result::new(this, Some(columns), cached))
+        Ok(QueryResult::new(this, Some(columns), cached))
     } else {
         this.set_pending_result(Some(PendingResult::Empty));
-        Ok(query_result::new(this, None, cached))
+        Ok(QueryResult::new(this, None, cached))
     }
 }

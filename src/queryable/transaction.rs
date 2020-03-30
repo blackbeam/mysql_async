@@ -6,16 +6,9 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures_util::future::Either;
-
 use std::fmt;
 
-use crate::{
-    connection_like::{streamless::Streamless, ConnectionLike, ConnectionLikeWrapper},
-    error::*,
-    io,
-    queryable::Queryable,
-};
+use crate::{connection_like::ConnectionLike, error::*, queryable::Queryable};
 
 /// Options for transaction
 #[derive(Eq, PartialEq, Debug, Hash, Clone, Default)]
@@ -89,17 +82,20 @@ impl fmt::Display for IsolationLevel {
 /// `Transaction` it's a sugar for `START TRANSACTION`, `ROLLBACK` and `COMMIT` queries, so one
 /// should note that it is easy to mess things up calling this queries manually. Also you will get
 /// `NestedTransaction` error if you call `transaction.start_transaction(_)`.
-pub struct Transaction<T>(Option<Either<T, Streamless<T>>>);
+pub struct Transaction<'a, T>(&'a mut T);
 
-pub async fn new<T>(conn_like: T, options: TransactionOptions) -> Result<Transaction<T>>
+pub async fn new<'a, T>(
+    conn_like: &'a mut T,
+    options: TransactionOptions,
+) -> Result<Transaction<'a, T>>
 where
     T: Queryable + ConnectionLike,
 {
     Transaction::new(conn_like, options).await
 }
 
-impl<T: Queryable + ConnectionLike> Transaction<T> {
-    async fn new(mut conn_like: T, options: TransactionOptions) -> Result<Transaction<T>> {
+impl<'a, T: Queryable + ConnectionLike> Transaction<'a, T> {
+    async fn new(conn_like: &'a mut T, options: TransactionOptions) -> Result<Transaction<'a, T>> {
         let TransactionOptions {
             consistent_snapshot,
             isolation_level,
@@ -116,18 +112,18 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
 
         if let Some(isolation_level) = isolation_level {
             let query = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation_level);
-            conn_like = conn_like.drop_query(query).await?;
+            conn_like.drop_query(query).await?;
         }
 
         if let Some(readonly) = readonly {
             if readonly {
-                conn_like = conn_like.drop_query("SET TRANSACTION READ ONLY").await?;
+                conn_like.drop_query("SET TRANSACTION READ ONLY").await?;
             } else {
-                conn_like = conn_like.drop_query("SET TRANSACTION READ WRITE").await?;
+                conn_like.drop_query("SET TRANSACTION READ WRITE").await?;
             }
         }
 
-        conn_like = if consistent_snapshot {
+        if consistent_snapshot {
             conn_like
                 .drop_query("START TRANSACTION WITH CONSISTENT SNAPSHOT")
                 .await?
@@ -136,70 +132,100 @@ impl<T: Queryable + ConnectionLike> Transaction<T> {
         };
 
         conn_like.set_in_transaction(true);
-        Ok(Transaction(Some(Either::Left(conn_like))))
-    }
-
-    fn unwrap(self) -> T {
-        match self {
-            Transaction(Some(Either::Left(conn_like))) => conn_like,
-            _ => unreachable!(),
-        }
+        Ok(Transaction(conn_like))
     }
 
     /// Returns future that will perform `COMMIT` query and resolve to a wrapped `Queryable`.
-    pub async fn commit(self) -> Result<T> {
-        let mut this = self.drop_query("COMMIT").await?;
-        this.set_in_transaction(false);
-        Ok(this.unwrap())
+    pub fn commit(mut self) -> impl std::future::Future<Output = Result<()>> + 'a {
+        async move {
+            let result = self.0.query("COMMIT").await?;
+            result.drop_result().await?;
+            self.set_in_transaction(false);
+            Ok(())
+        }
     }
 
     /// Returns future that will perform `ROLLBACK` query and resolve to a wrapped `Queryable`.
-    pub async fn rollback(self) -> Result<T> {
-        let mut this = self.drop_query("ROLLBACK").await?;
-        this.set_in_transaction(false);
-        Ok(this.unwrap())
+    pub fn rollback(mut self) -> impl std::future::Future<Output = Result<()>> + 'a {
+        async move {
+            let result = self.0.query("ROLLBACK").await?;
+            result.drop_result().await?;
+            self.set_in_transaction(false);
+            Ok(())
+        }
     }
 }
 
-impl<T: ConnectionLike + 'static> ConnectionLikeWrapper for Transaction<T> {
-    type ConnLike = T;
-
-    fn take_stream(self) -> (Streamless<Self>, io::Stream)
-    where
-        Self: Sized,
-    {
-        let Transaction(conn_like) = self;
-        match conn_like {
-            Some(Either::Left(conn_like)) => {
-                let (streamless, stream) = conn_like.take_stream();
-                let this = Transaction(Some(Either::Right(streamless)));
-                (Streamless::new(this), stream)
-            }
-            _ => unreachable!(),
-        }
+impl<'a, T: ConnectionLike> ConnectionLike for Transaction<'a, T> {
+    fn stream_mut(&mut self) -> &mut crate::io::Stream {
+        self.0.stream_mut()
     }
-
-    fn return_stream(&mut self, stream: io::Stream) {
-        let conn_like = self.0.take().unwrap();
-        match conn_like {
-            Either::Right(streamless) => {
-                self.0 = Some(Either::Left(streamless.return_stream(stream)));
-            }
-            _ => unreachable!(),
-        }
+    fn stmt_cache_ref(&self) -> &crate::conn::stmt_cache::StmtCache {
+        self.0.stmt_cache_ref()
     }
-
-    fn conn_like_ref(&self) -> &Self::ConnLike {
-        match self.0 {
-            Some(Either::Left(ref conn_like)) => conn_like,
-            _ => unreachable!(),
-        }
+    fn stmt_cache_mut(&mut self) -> &mut crate::conn::stmt_cache::StmtCache {
+        self.0.stmt_cache_mut()
     }
-
-    fn conn_like_mut(&mut self) -> &mut Self::ConnLike {
-        match self.0 {
-            Some(Either::Left(ref mut conn_like)) => conn_like,
-            _ => unreachable!(),
-        }
+    fn get_affected_rows(&self) -> u64 {
+        self.0.get_affected_rows()
+    }
+    fn get_capabilities(&self) -> crate::consts::CapabilityFlags {
+        self.0.get_capabilities()
+    }
+    fn get_in_transaction(&self) -> bool {
+        self.0.get_in_transaction()
+    }
+    fn get_last_insert_id(&self) -> Option<u64> {
+        self.0.get_last_insert_id()
+    }
+    fn get_info(&self) -> std::borrow::Cow<'_, str> {
+        self.0.get_info()
+    }
+    fn get_warnings(&self) -> u16 {
+        self.0.get_warnings()
+    }
+    fn get_local_infile_handler(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::local_infile_handler::LocalInfileHandler>> {
+        self.0.get_local_infile_handler()
+    }
+    fn get_max_allowed_packet(&self) -> usize {
+        self.0.get_max_allowed_packet()
+    }
+    fn get_opts(&self) -> &crate::Opts {
+        self.0.get_opts()
+    }
+    fn get_pending_result(&self) -> Option<&crate::conn::PendingResult> {
+        self.0.get_pending_result()
+    }
+    fn get_server_version(&self) -> (u16, u16, u16) {
+        self.0.get_server_version()
+    }
+    fn get_status(&self) -> crate::consts::StatusFlags {
+        self.0.get_status()
+    }
+    fn set_last_ok_packet(&mut self, ok_packet: Option<mysql_common::packets::OkPacket<'static>>) {
+        self.0.set_last_ok_packet(ok_packet)
+    }
+    fn set_in_transaction(&mut self, in_transaction: bool) {
+        self.0.set_in_transaction(in_transaction)
+    }
+    fn set_pending_result(&mut self, meta: Option<crate::conn::PendingResult>) {
+        self.0.set_pending_result(meta)
+    }
+    fn set_status(&mut self, status: crate::consts::StatusFlags) {
+        self.0.set_status(status)
+    }
+    fn reset_seq_id(&mut self) {
+        self.0.reset_seq_id()
+    }
+    fn sync_seq_id(&mut self) {
+        self.0.sync_seq_id()
+    }
+    fn touch(&mut self) -> () {
+        self.0.touch()
+    }
+    fn on_disconnect(&mut self) {
+        self.0.on_disconnect()
     }
 }

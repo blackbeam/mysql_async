@@ -69,111 +69,114 @@ impl Protocol for BinaryProtocol {
 /// Represents something queryable like connection or transaction.
 pub trait Queryable: ConnectionLike
 where
-    Self: Sized + 'static,
+    Self: Sized,
 {
     /// Returns future that resolves to `Conn` if `COM_PING` executed successfully.
-    fn ping(self) -> BoxFuture<Self> {
+    fn ping(&mut self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
-            Ok(self
-                .write_command_data(Command::COM_PING, &[])
-                .await?
-                .read_packet()
-                .await?
-                .0)
-        })
-    }
-
-    /// Returns future, that disconnects this connection from a server.
-    fn disconnect(mut self) -> BoxFuture<()> {
-        self.on_disconnect();
-        let f = self.write_command_data(Command::COM_QUIT, &[]);
-        Box::pin(async move {
-            let (_, stream) = f.await?.take_stream();
-            stream.close().await?;
+            self.write_command_data(Command::COM_PING, &[]).await?;
+            self.read_packet().await?;
             Ok(())
         })
     }
 
     /// Returns future that performs `query`.
-    fn query<Q: AsRef<str>>(self, query: Q) -> BoxFuture<QueryResult<Self, TextProtocol>> {
-        let f = self.write_command_data(Command::COM_QUERY, query.as_ref().as_bytes());
-        Box::pin(async move { f.await?.read_result_set(None).await })
+    fn query<'a, Q: AsRef<str>>(
+        &'a mut self,
+        query: Q,
+    ) -> BoxFuture<'a, QueryResult<'a, Self, TextProtocol>> {
+        let query = String::from(query.as_ref());
+        Box::pin(async move {
+            self.write_command_data(Command::COM_QUERY, query.as_bytes())
+                .await?;
+            self.read_result_set(None).await
+        })
     }
 
     /// Returns future that resolves to a first row of result of a `query` execution (if any).
     ///
     /// Returned future will call `R::from_row(row)` internally.
-    fn first<Q, R>(self, query: Q) -> BoxFuture<(Self, Option<R>)>
+    fn first<'a, Q, R>(&'a mut self, query: Q) -> BoxFuture<'a, Option<R>>
     where
-        Q: AsRef<str>,
+        Q: AsRef<str> + Send + 'static,
         R: FromRow,
     {
-        let f = self.query(query);
         Box::pin(async move {
-            let (this, mut rows) = f.await?.collect_and_drop::<Row>().await?;
+            let result = self.query(query).await?;
+            let mut rows = result.collect_and_drop::<Row>().await?;
             if rows.len() > 1 {
-                Ok((this, Some(FromRow::from_row(rows.swap_remove(0)))))
+                Ok(Some(FromRow::from_row(rows.swap_remove(0))))
             } else {
-                Ok((this, rows.pop().map(FromRow::from_row)))
+                Ok(rows.pop().map(FromRow::from_row))
             }
         })
     }
 
     /// Returns future that performs query. Result will be dropped.
-    fn drop_query<Q: AsRef<str>>(self, query: Q) -> BoxFuture<Self> {
-        let f = self.query(query);
-        Box::pin(async move { f.await?.drop_result().await })
+    fn drop_query<'a, Q: AsRef<str> + Send + 'static>(&'a mut self, query: Q) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let result = self.query(query).await?;
+            result.drop_result().await?;
+            Ok(())
+        })
     }
 
     /// Returns future that prepares statement.
-    fn prepare<Q: AsRef<str>>(self, query: Q) -> BoxFuture<Stmt<Self>> {
-        let f = self.prepare_stmt(query);
+    fn prepare<'a, Q: AsRef<str> + Send + 'static>(
+        &'a mut self,
+        query: Q,
+    ) -> BoxFuture<'a, Stmt<'a, Self>> {
         Box::pin(async move {
-            let (this, inner_stmt, stmt_cache_result) = f.await?;
-            Ok(stmt::new(this, inner_stmt, stmt_cache_result))
+            let f = self.prepare_stmt(query);
+            let (inner_stmt, stmt_cache_result) = f.await?;
+            Ok(stmt::new(self, inner_stmt, stmt_cache_result))
         })
     }
 
     /// Returns future that prepares and executes statement in one pass.
-    fn prep_exec<Q, P>(self, query: Q, params: P) -> BoxFuture<QueryResult<Self, BinaryProtocol>>
+    fn prep_exec<'a, Q, P>(
+        &'a mut self,
+        query: Q,
+        params: P,
+    ) -> BoxFuture<'a, QueryResult<'a, Self, BinaryProtocol>>
     where
-        Q: AsRef<str>,
+        Q: AsRef<str> + Send + 'static,
         P: Into<Params>,
     {
         let params: Params = params.into();
-        let f = self.prepare(query);
         Box::pin(async move {
-            let result = f.await?.execute(params).await?;
-            let (stmt, columns, _) = query_result::disassemble(result);
-            let (conn_like, cached) = stmt.unwrap();
-            Ok(query_result::assemble(conn_like, columns, cached))
+            let mut stmt = self.prepare(query).await?;
+            let result = stmt.execute(params).await?;
+            let (stmt, columns, _) = result.disassemble();
+            let cached = stmt.cached.clone();
+            Ok(QueryResult::new(self, columns, cached))
         })
     }
 
     /// Returns future that resolves to a first row of result of a statement execution (if any).
     ///
     /// Returned future will call `R::from_row(row)` internally.
-    fn first_exec<Q, P, R>(self, query: Q, params: P) -> BoxFuture<(Self, Option<R>)>
+    fn first_exec<Q, P, R>(&mut self, query: Q, params: P) -> BoxFuture<'_, Option<R>>
     where
-        Q: AsRef<str>,
+        Q: AsRef<str> + Send + 'static,
         P: Into<Params>,
         R: FromRow,
     {
         let f = self.prep_exec(query, params);
         Box::pin(async move {
-            let (this, mut rows) = f.await?.collect_and_drop::<Row>().await?;
+            let mut rows = f.await?.collect_and_drop::<Row>().await?;
             if rows.len() > 1 {
-                Ok((this, Some(FromRow::from_row(rows.swap_remove(0)))))
+                Ok(Some(FromRow::from_row(rows.swap_remove(0))))
             } else {
-                Ok((this, rows.pop().map(FromRow::from_row)))
+                Ok(rows.pop().map(FromRow::from_row))
             }
         })
     }
 
     /// Returns future that prepares and executes statement. Result will be dropped.
-    fn drop_exec<Q, P>(self, query: Q, params: P) -> BoxFuture<Self>
+    fn drop_exec<Q, P>(&mut self, query: Q, params: P) -> BoxFuture<'_, ()>
     where
-        Q: AsRef<str>,
+        Q: AsRef<str> + Send + 'static,
         P: Into<Params>,
     {
         let f = self.prep_exec(query, params);
@@ -182,23 +185,30 @@ where
 
     /// Returns future that prepares statement and performs batch execution.
     /// Results will be dropped.
-    fn batch_exec<Q, I, P>(self, query: Q, params_iter: I) -> BoxFuture<Self>
+    fn batch_exec<Q, I, P>(&mut self, query: Q, params_iter: I) -> BoxFuture<'_, ()>
     where
-        Q: AsRef<str>,
+        Q: AsRef<str> + Send + 'static,
         I: IntoIterator<Item = P> + Send + 'static,
         I::IntoIter: Send + 'static,
         Params: From<P>,
         P: Send + 'static,
     {
         let f = self.prepare(query);
-        Box::pin(async move { f.await?.batch(params_iter).await?.close().await })
+        Box::pin(async move {
+            let mut stmt = f.await?;
+            stmt.batch(params_iter).await?;
+            stmt.close().await
+        })
     }
 
     /// Returns future that starts transaction.
-    fn start_transaction(self, options: TransactionOptions) -> BoxFuture<Transaction<Self>> {
+    fn start_transaction<'a>(
+        &'a mut self,
+        options: TransactionOptions,
+    ) -> BoxFuture<'a, Transaction<'a, Self>> {
         Box::pin(transaction::new(self, options))
     }
 }
 
 impl Queryable for Conn {}
-impl<T: Queryable + ConnectionLike> Queryable for Transaction<T> {}
+impl<'a, T: Queryable + ConnectionLike> Queryable for Transaction<'a, T> {}

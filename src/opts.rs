@@ -190,6 +190,15 @@ pub struct PoolOptions {
 }
 
 impl PoolOptions {
+    /// Creates default [`PoolOptions`] with given constraints.
+    pub const fn with_constraints(constraints: PoolConstraints) -> Self {
+        Self {
+            constraints,
+            inactive_connection_ttl: DEFAULT_INACTIVE_CONNECTION_TTL,
+            ttl_check_interval: DEFAULT_TTL_CHECK_INTERVAL,
+        }
+    }
+
     /// Creates [`PoolOptions`].
     pub const fn new(
         constraints: PoolConstraints,
@@ -200,15 +209,6 @@ impl PoolOptions {
             constraints,
             inactive_connection_ttl,
             ttl_check_interval,
-        }
-    }
-
-    /// Creates default [`PoolOptions`] with given constraints.
-    pub const fn with_constraints(constraints: PoolConstraints) -> Self {
-        Self {
-            constraints,
-            inactive_connection_ttl: DEFAULT_INACTIVE_CONNECTION_TTL,
-            ttl_check_interval: DEFAULT_TTL_CHECK_INTERVAL,
         }
     }
 
@@ -223,7 +223,8 @@ impl PoolOptions {
     }
 
     /// Pool will recycle inactive connection if it outside of the lower bound of a pool
-    /// and if it is idling longer than this value (defaults to [`DEFAULT_INACTIVE_CONNECTION_TTL`]).
+    /// and if it is idling longer than this value (defaults to
+    /// [`DEFAULT_INACTIVE_CONNECTION_TTL`]).
     ///
     /// Note that it may, actually, idle longer because of [`PoolOptions::ttl_check_interval`].
     pub fn set_inactive_connection_ttl(&mut self, ttl: Duration) {

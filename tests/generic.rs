@@ -26,16 +26,20 @@ fn get_url() -> String {
     }
 }
 
-pub async fn get_all_results<TupleType, T, P>(result: QueryResult<T, P>) -> Result<Vec<TupleType>>
+pub async fn get_all_results<'a, TupleType, T, P>(
+    mut result: QueryResult<'a, T, P>,
+) -> Result<Vec<TupleType>>
 where
     TupleType: FromRow + Send + 'static,
     P: Protocol + Send + 'static,
     T: ConnectionLike + Sized + Send + 'static,
 {
-    Ok(result.collect().await?.1)
+    Ok(result.collect().await?)
 }
 
-pub async fn get_single_result<TupleType, T, P>(result: QueryResult<T, P>) -> Result<TupleType>
+pub async fn get_single_result<'a, TupleType, T, P>(
+    result: QueryResult<'a, T, P>,
+) -> Result<TupleType>
 where
     TupleType: FromRow + Send + 'static,
     P: Protocol + Send + 'static,
@@ -52,11 +56,12 @@ where
 #[tokio::test]
 async fn use_generic_code() {
     let pool = Pool::new(Opts::from_url(&*get_url()).unwrap());
-    let conn = pool.get_conn().await.unwrap();
+    let mut conn = pool.get_conn().await.unwrap();
     let result = conn.query("SELECT 1, 2, 3").await.unwrap();
     let result = get_single_result::<(u8, u8, u8), _, _>(result)
         .await
         .unwrap();
+    drop(conn);
     pool.disconnect().await.unwrap();
     assert_eq!(result, (1, 2, 3));
 }

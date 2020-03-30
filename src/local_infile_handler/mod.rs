@@ -51,10 +51,10 @@ pub mod builtin;
 ///
 /// let pool = mysql_async::Pool::new(opts);
 ///
-/// let conn = pool.get_conn().await?;
-/// let conn = conn.drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);").await?;
-/// let conn = match conn.drop_query("LOAD DATA LOCAL INFILE 'baz' INTO TABLE tmp;").await {
-///     Ok(conn) => conn,
+/// let mut conn = pool.get_conn().await?;
+/// conn.drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);").await?;
+/// match conn.drop_query("LOAD DATA LOCAL INFILE 'baz' INTO TABLE tmp;").await {
+///     Ok(()) => (),
 ///     Err(mysql_async::error::Error::Server(ref err)) if err.code == 1148 => {
 ///         // The used command is not allowed with this MySQL version
 ///         return Ok(());
@@ -67,12 +67,13 @@ pub mod builtin;
 ///     e@Err(_) => e.unwrap(),
 /// };
 /// let result = conn.prep_exec("SELECT * FROM tmp;", ()).await?;
-/// let (_ /* conn */, result) = result.map_and_drop(|row| {
+/// let result = result.map_and_drop(|row| {
 ///     mysql_async::from_row::<(String,)>(row).0
 /// }).await?;
 ///
 /// assert_eq!(result.len(), 1);
 /// assert_eq!(result[0], "foobar");
+/// drop(conn);
 /// pool.disconnect().await?;
 /// # Ok(())
 /// # }

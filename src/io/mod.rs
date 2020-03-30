@@ -36,7 +36,6 @@ use crate::{
     opts::SslOpts,
 };
 
-mod async_tls;
 pub mod futures;
 mod socket;
 
@@ -78,8 +77,8 @@ impl Encoder for PacketCodec {
 #[pin_project]
 #[derive(Debug)]
 pub enum Endpoint {
-    Plain(#[pin] TcpStream),
-    Secure(#[pin] self::async_tls::TlsStream<TcpStream>),
+    Plain(Option<TcpStream>),
+    Secure(#[pin] tokio_tls::TlsStream<TcpStream>),
     Socket(#[pin] Socket),
 }
 
@@ -95,8 +94,9 @@ impl Endpoint {
     pub fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
         let ms = ms.map(|val| Duration::from_millis(u64::from(val)));
         match *self {
-            Endpoint::Plain(ref stream) => stream.set_keepalive(ms)?,
-            Endpoint::Secure(ref stream) => stream.get_ref().get_ref().set_keepalive(ms)?,
+            Endpoint::Plain(Some(ref stream)) => stream.set_keepalive(ms)?,
+            Endpoint::Plain(None) => unreachable!(),
+            Endpoint::Secure(ref stream) => stream.get_ref().set_keepalive(ms)?,
             Endpoint::Socket(_) => (/* inapplicable */),
         }
         Ok(())
@@ -104,17 +104,18 @@ impl Endpoint {
 
     pub fn set_tcp_nodelay(&self, val: bool) -> Result<()> {
         match *self {
-            Endpoint::Plain(ref stream) => stream.set_nodelay(val)?,
-            Endpoint::Secure(ref stream) => stream.get_ref().get_ref().set_nodelay(val)?,
+            Endpoint::Plain(Some(ref stream)) => stream.set_nodelay(val)?,
+            Endpoint::Plain(None) => unreachable!(),
+            Endpoint::Secure(ref stream) => stream.get_ref().set_nodelay(val)?,
             Endpoint::Socket(_) => (/* inapplicable */),
         }
         Ok(())
     }
 
-    pub async fn make_secure(self, domain: String, ssl_opts: SslOpts) -> Result<Self> {
+    pub async fn make_secure(&mut self, domain: String, ssl_opts: SslOpts) -> Result<()> {
         if let Endpoint::Socket(_) = self {
             // inapplicable
-            return Ok(self);
+            return Ok(());
         }
 
         let mut builder = TlsConnector::builder();
@@ -135,20 +136,24 @@ impl Endpoint {
         }
         builder.danger_accept_invalid_hostnames(ssl_opts.skip_domain_validation());
         builder.danger_accept_invalid_certs(ssl_opts.accept_invalid_certs());
-        let tls_connector = builder.build()?;
-        let tls_stream = match self {
+        let tls_connector: tokio_tls::TlsConnector = builder.build()?.into();
+
+        *self = match self {
             Endpoint::Plain(stream) => {
-                self::async_tls::connect_async(&tls_connector, &*domain, stream).await?
+                let stream = stream.take().unwrap();
+                let tls_stream = tls_connector.connect(&*domain, stream).await?;
+                Endpoint::Secure(tls_stream)
             }
             Endpoint::Secure(_) | Endpoint::Socket(_) => unreachable!(),
         };
-        Ok(Endpoint::Secure(tls_stream))
+
+        Ok(())
     }
 }
 
 impl From<TcpStream> for Endpoint {
     fn from(stream: TcpStream) -> Self {
-        Endpoint::Plain(stream)
+        Endpoint::Plain(Some(stream))
     }
 }
 
@@ -158,8 +163,8 @@ impl From<Socket> for Endpoint {
     }
 }
 
-impl From<self::async_tls::TlsStream<TcpStream>> for Endpoint {
-    fn from(stream: self::async_tls::TlsStream<TcpStream>) -> Self {
+impl From<tokio_tls::TlsStream<TcpStream>> for Endpoint {
+    fn from(stream: tokio_tls::TlsStream<TcpStream>) -> Self {
         Endpoint::Secure(stream)
     }
 }
@@ -173,7 +178,9 @@ impl AsyncRead for Endpoint {
     ) -> Poll<StdResult<usize, tokio::io::Error>> {
         #[project]
         match self.project() {
-            Endpoint::Plain(stream) => stream.poll_read(cx, buf),
+            Endpoint::Plain(ref mut stream) => {
+                Pin::new(stream.as_mut().unwrap()).poll_read(cx, buf)
+            }
             Endpoint::Secure(stream) => stream.poll_read(cx, buf),
             Endpoint::Socket(stream) => stream.poll_read(cx, buf),
         }
@@ -181,7 +188,8 @@ impl AsyncRead for Endpoint {
 
     unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
         match self {
-            Endpoint::Plain(stream) => stream.prepare_uninitialized_buffer(buf),
+            Endpoint::Plain(Some(stream)) => stream.prepare_uninitialized_buffer(buf),
+            Endpoint::Plain(None) => unreachable!(),
             Endpoint::Secure(stream) => stream.prepare_uninitialized_buffer(buf),
             Endpoint::Socket(stream) => stream.prepare_uninitialized_buffer(buf),
         }
@@ -198,7 +206,9 @@ impl AsyncRead for Endpoint {
     {
         #[project]
         match self.project() {
-            Endpoint::Plain(stream) => stream.poll_read_buf(cx, buf),
+            Endpoint::Plain(ref mut stream) => {
+                Pin::new(stream.as_mut().unwrap()).poll_read_buf(cx, buf)
+            }
             Endpoint::Secure(stream) => stream.poll_read_buf(cx, buf),
             Endpoint::Socket(stream) => stream.poll_read_buf(cx, buf),
         }
@@ -214,7 +224,9 @@ impl AsyncWrite for Endpoint {
     ) -> Poll<StdResult<usize, tokio::io::Error>> {
         #[project]
         match self.project() {
-            Endpoint::Plain(stream) => stream.poll_write(cx, buf),
+            Endpoint::Plain(ref mut stream) => {
+                Pin::new(stream.as_mut().unwrap()).poll_write(cx, buf)
+            }
             Endpoint::Secure(stream) => stream.poll_write(cx, buf),
             Endpoint::Socket(stream) => stream.poll_write(cx, buf),
         }
@@ -224,7 +236,7 @@ impl AsyncWrite for Endpoint {
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<StdResult<(), tokio::io::Error>> {
         #[project]
         match self.project() {
-            Endpoint::Plain(stream) => stream.poll_flush(cx),
+            Endpoint::Plain(ref mut stream) => Pin::new(stream.as_mut().unwrap()).poll_flush(cx),
             Endpoint::Secure(stream) => stream.poll_flush(cx),
             Endpoint::Socket(stream) => stream.poll_flush(cx),
         }
@@ -237,7 +249,7 @@ impl AsyncWrite for Endpoint {
     ) -> Poll<StdResult<(), tokio::io::Error>> {
         #[project]
         match self.project() {
-            Endpoint::Plain(stream) => stream.poll_shutdown(cx),
+            Endpoint::Plain(ref mut stream) => Pin::new(stream.as_mut().unwrap()).poll_shutdown(cx),
             Endpoint::Secure(stream) => stream.poll_shutdown(cx),
             Endpoint::Socket(stream) => stream.poll_shutdown(cx),
         }
@@ -247,7 +259,7 @@ impl AsyncWrite for Endpoint {
 /// Stream connected to MySql server.
 pub struct Stream {
     closed: bool,
-    codec: Option<Box<Framed<Endpoint, PacketCodec>>>,
+    pub(crate) codec: Option<Box<Framed<Endpoint, PacketCodec>>>,
 }
 
 impl fmt::Debug for Stream {
@@ -293,13 +305,13 @@ impl Stream {
         self.codec.as_ref().unwrap().get_ref().set_tcp_nodelay(val)
     }
 
-    pub async fn make_secure(mut self, domain: String, ssl_opts: SslOpts) -> Result<Self> {
+    pub async fn make_secure(&mut self, domain: String, ssl_opts: SslOpts) -> Result<()> {
         let codec = self.codec.take().unwrap();
-        let FramedParts { io, codec, .. } = codec.into_parts();
-        let endpoint = io.make_secure(domain, ssl_opts).await?;
-        let codec = Framed::new(endpoint, codec);
+        let FramedParts { mut io, codec, .. } = codec.into_parts();
+        io.make_secure(domain, ssl_opts).await?;
+        let codec = Framed::new(io, codec);
         self.codec = Some(Box::new(codec));
-        Ok(self)
+        Ok(())
     }
 
     pub fn is_secure(&self) -> bool {

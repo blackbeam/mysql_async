@@ -19,7 +19,7 @@ use std::{
 };
 
 use super::Inner;
-use crate::{prelude::Queryable, PoolOptions};
+use crate::PoolOptions;
 use futures_core::task::{Context, Poll};
 use std::pin::Pin;
 

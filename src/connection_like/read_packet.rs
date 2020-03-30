@@ -6,71 +6,100 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures_core::ready;
-use futures_util::stream::{StreamExt, StreamFuture};
+use futures_core::{ready, stream::Stream};
 use mysql_common::packets::{parse_err_packet, parse_ok_packet, OkPacketKind};
-use pin_project::pin_project;
+
 use std::{
     future::Future,
+    mem,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use crate::{
-    connection_like::{streamless::Streamless, ConnectionLike},
-    consts::StatusFlags,
-    error::*,
-    io,
-};
+use crate::{connection_like::ConnectionLike, consts::StatusFlags, error::*};
 
-#[pin_project]
-pub struct ReadPacket<T> {
-    conn_like: Option<Streamless<T>>,
-    #[pin]
-    fut: StreamFuture<io::Stream>,
+/// Reads some number of packets.
+#[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub struct ReadPackets<'a, T: ?Sized> {
+    conn_like: &'a mut T,
+    n: usize,
+    packets: Vec<Vec<u8>>,
 }
 
-impl<T: ConnectionLike> ReadPacket<T> {
-    pub fn new(conn_like: T) -> Self {
-        let (incomplete_conn, stream) = conn_like.take_stream();
-        ReadPacket {
-            conn_like: Some(incomplete_conn),
-            fut: stream.into_future(),
+impl<'a, T: ?Sized> ReadPackets<'a, T> {
+    pub fn new(conn_like: &'a mut T, n: usize) -> Self {
+        Self {
+            conn_like,
+            n,
+            packets: Vec::with_capacity(n),
         }
     }
 }
 
-impl<T: ConnectionLike> Future for ReadPacket<T> {
-    type Output = Result<(T, Vec<u8>)>;
+impl<'a, T: ConnectionLike> Future for ReadPackets<'a, T> {
+    type Output = Result<Vec<Vec<u8>>>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        let (packet_opt, stream) = ready!(this.fut.poll(cx));
-        let packet_opt = packet_opt.transpose()?;
-        let mut conn_like = this.conn_like.take().unwrap().return_stream(stream);
-        match packet_opt {
-            Some(packet) => {
-                let kind = if conn_like.get_pending_result().is_some() {
-                    OkPacketKind::ResultSetTerminator
-                } else {
-                    OkPacketKind::Other
-                };
-                if let Ok(ok_packet) = parse_ok_packet(&*packet, conn_like.get_capabilities(), kind)
-                {
-                    conn_like.set_status(ok_packet.status_flags());
-                    conn_like.set_last_ok_packet(Some(ok_packet.into_owned()));
-                } else if let Ok(err_packet) =
-                    parse_err_packet(&*packet, conn_like.get_capabilities())
-                {
-                    conn_like.set_status(StatusFlags::empty());
-                    conn_like.set_last_ok_packet(None);
-                    return Err(err_packet.into()).into();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            if self.n > 0 {
+                let packet_opt =
+                    ready!(Pin::new(self.conn_like.stream_mut()).poll_next(cx)).transpose()?;
+                match packet_opt {
+                    Some(packet) => {
+                        let kind = if self.conn_like.get_pending_result().is_some() {
+                            OkPacketKind::ResultSetTerminator
+                        } else {
+                            OkPacketKind::Other
+                        };
+
+                        if let Ok(ok_packet) =
+                            parse_ok_packet(&*packet, self.conn_like.get_capabilities(), kind)
+                        {
+                            self.conn_like.set_status(ok_packet.status_flags());
+                            self.conn_like
+                                .set_last_ok_packet(Some(ok_packet.into_owned()));
+                        } else if let Ok(err_packet) =
+                            parse_err_packet(&*packet, self.conn_like.get_capabilities())
+                        {
+                            self.conn_like.set_status(StatusFlags::empty());
+                            self.conn_like.set_last_ok_packet(None);
+                            return Err(err_packet.into()).into();
+                        }
+
+                        self.conn_like.touch();
+                        self.packets.push(packet);
+                        self.n -= 1;
+                        continue;
+                    }
+                    None => {
+                        return Poll::Ready(Err(DriverError::ConnectionClosed.into()));
+                    }
                 }
-
-                conn_like.touch();
-                Poll::Ready(Ok((conn_like, packet)))
+            } else {
+                return Poll::Ready(Ok(mem::replace(&mut self.packets, Vec::new())));
             }
-            None => Poll::Ready(Err(DriverError::ConnectionClosed.into())),
         }
+    }
+}
+
+pub struct ReadPacket<'a, T: ?Sized> {
+    inner: ReadPackets<'a, T>,
+}
+
+impl<'a, T: ?Sized> ReadPacket<'a, T> {
+    pub fn new(conn_like: &'a mut T) -> Self {
+        Self {
+            inner: ReadPackets::new(conn_like, 1),
+        }
+    }
+}
+
+impl<'a, T: ConnectionLike> Future for ReadPacket<'a, T> {
+    type Output = Result<Vec<u8>>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut packets = ready!(Pin::new(&mut self.inner).poll(cx))?;
+        Poll::Ready(Ok(packets.pop().unwrap()))
     }
 }
