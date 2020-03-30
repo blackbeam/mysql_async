@@ -155,7 +155,7 @@ impl Pool {
             let _ = self.drop.send(None).is_ok();
         }
 
-        new_disconnect_pool(self)
+        DisconnectPool::new(self)
     }
 
     /// A way to return connection taken from a pool.

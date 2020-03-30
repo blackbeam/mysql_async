@@ -28,9 +28,11 @@ pub struct DisconnectPool {
     pool_inner: Arc<Inner>,
 }
 
-pub fn new(pool: Pool) -> DisconnectPool {
-    DisconnectPool {
-        pool_inner: pool.inner,
+impl DisconnectPool {
+    pub(crate) fn new(pool: Pool) -> Self {
+        Self {
+            pool_inner: pool.inner,
+        }
     }
 }
 

@@ -23,7 +23,7 @@ pub struct WritePacket2<'a, T: ?Sized> {
 }
 
 impl<'a, T: ?Sized> WritePacket2<'a, T> {
-    pub fn new(conn_like: &'a mut T, data: Vec<u8>) -> WritePacket2<'a, T> {
+    pub(crate) fn new(conn_like: &'a mut T, data: Vec<u8>) -> WritePacket2<'a, T> {
         Self {
             conn_like,
             data: Some(data),

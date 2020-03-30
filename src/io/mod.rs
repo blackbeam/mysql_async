@@ -8,6 +8,7 @@
 
 use bytes::{BufMut, BytesMut};
 use futures_core::{ready, stream};
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::{pin_project, project};
@@ -27,16 +28,8 @@ use std::{
     time::Duration,
 };
 
-use crate::{
-    error::*,
-    io::{
-        futures::{new_connecting_tcp_stream, new_write_packet, WritePacket},
-        socket::Socket,
-    },
-    opts::SslOpts,
-};
+use crate::{error::*, io::socket::Socket, opts::SslOpts};
 
-pub mod futures;
 mod socket;
 
 #[derive(Debug, Default)]
@@ -76,7 +69,7 @@ impl Encoder for PacketCodec {
 
 #[pin_project]
 #[derive(Debug)]
-pub enum Endpoint {
+pub(crate) enum Endpoint {
     Plain(Option<TcpStream>),
     Secure(#[pin] tokio_tls::TlsStream<TcpStream>),
     Socket(#[pin] Socket),
@@ -282,30 +275,61 @@ impl Stream {
         }
     }
 
-    pub async fn connect_tcp<S>(addr: S) -> Result<Stream>
+    pub(crate) async fn connect_tcp<S>(addr: S) -> Result<Stream>
     where
         S: ToSocketAddrs,
     {
-        new_connecting_tcp_stream(addr).await
+        match addr.to_socket_addrs() {
+            Ok(addresses) => {
+                let mut streams = FuturesUnordered::new();
+
+                for address in addresses {
+                    streams.push(TcpStream::connect(address));
+                }
+
+                let mut err = None;
+                while let Some(stream) = streams.next().await {
+                    match stream {
+                        Err(e) => {
+                            err = Some(e);
+                        }
+                        Ok(stream) => {
+                            return Ok(Stream {
+                                closed: false,
+                                codec: Box::new(Framed::new(stream.into(), PacketCodec::default()))
+                                    .into(),
+                            });
+                        }
+                    }
+                }
+
+                if let Some(e) = err {
+                    Err(e.into())
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "could not resolve to any address",
+                    )
+                    .into())
+                }
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
-    pub async fn connect_socket<P: AsRef<Path>>(path: P) -> Result<Stream> {
+    pub(crate) async fn connect_socket<P: AsRef<Path>>(path: P) -> Result<Stream> {
         Ok(Stream::new(Socket::new(path).await?))
     }
 
-    pub fn write_packet(self, data: Vec<u8>) -> WritePacket {
-        new_write_packet(self, data)
-    }
-
-    pub fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
+    pub(crate) fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
         self.codec.as_ref().unwrap().get_ref().set_keepalive_ms(ms)
     }
 
-    pub fn set_tcp_nodelay(&self, val: bool) -> Result<()> {
+    pub(crate) fn set_tcp_nodelay(&self, val: bool) -> Result<()> {
         self.codec.as_ref().unwrap().get_ref().set_tcp_nodelay(val)
     }
 
-    pub async fn make_secure(&mut self, domain: String, ssl_opts: SslOpts) -> Result<()> {
+    pub(crate) async fn make_secure(&mut self, domain: String, ssl_opts: SslOpts) -> Result<()> {
         let codec = self.codec.take().unwrap();
         let FramedParts { mut io, codec, .. } = codec.into_parts();
         io.make_secure(domain, ssl_opts).await?;
@@ -314,35 +338,35 @@ impl Stream {
         Ok(())
     }
 
-    pub fn is_secure(&self) -> bool {
+    pub(crate) fn is_secure(&self) -> bool {
         self.codec.as_ref().unwrap().get_ref().is_secure()
     }
 
-    pub fn reset_seq_id(&mut self) {
+    pub(crate) fn reset_seq_id(&mut self) {
         if let Some(codec) = self.codec.as_mut() {
             codec.codec_mut().reset_seq_id();
         }
     }
 
-    pub fn sync_seq_id(&mut self) {
+    pub(crate) fn sync_seq_id(&mut self) {
         if let Some(codec) = self.codec.as_mut() {
             codec.codec_mut().sync_seq_id();
         }
     }
 
-    pub fn set_max_allowed_packet(&mut self, max_allowed_packet: usize) {
+    pub(crate) fn set_max_allowed_packet(&mut self, max_allowed_packet: usize) {
         if let Some(codec) = self.codec.as_mut() {
             codec.codec_mut().max_allowed_packet = max_allowed_packet;
         }
     }
 
-    pub fn compress(&mut self, level: crate::Compression) {
+    pub(crate) fn compress(&mut self, level: crate::Compression) {
         if let Some(codec) = self.codec.as_mut() {
             codec.codec_mut().compress(level);
         }
     }
 
-    pub async fn close(mut self) -> Result<()> {
+    pub(crate) async fn close(mut self) -> Result<()> {
         self.closed = true;
         if let Some(mut codec) = self.codec {
             use futures_sink::Sink;

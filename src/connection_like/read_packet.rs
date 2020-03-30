@@ -28,7 +28,7 @@ pub struct ReadPackets<'a, T: ?Sized> {
 }
 
 impl<'a, T: ?Sized> ReadPackets<'a, T> {
-    pub fn new(conn_like: &'a mut T, n: usize) -> Self {
+    pub(crate) fn new(conn_like: &'a mut T, n: usize) -> Self {
         Self {
             conn_like,
             n,
@@ -88,7 +88,7 @@ pub struct ReadPacket<'a, T: ?Sized> {
 }
 
 impl<'a, T: ?Sized> ReadPacket<'a, T> {
-    pub fn new(conn_like: &'a mut T) -> Self {
+    pub(crate) fn new(conn_like: &'a mut T) -> Self {
         Self {
             inner: ReadPackets::new(conn_like, 1),
         }

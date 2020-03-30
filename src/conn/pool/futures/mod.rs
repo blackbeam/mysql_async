@@ -8,7 +8,7 @@
 
 pub(super) use self::get_conn::GetConnInner;
 pub use self::{
-    disconnect_pool::{new as new_disconnect_pool, DisconnectPool},
+    disconnect_pool::DisconnectPool,
     get_conn::{new as new_get_conn, GetConn},
 };
 

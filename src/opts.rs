@@ -37,7 +37,7 @@ const DEFAULT_PORT: u16 = 3306;
 /// Represents information about a host and port combination that can be converted
 /// into socket addresses using to_socket_addrs.
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub enum HostPortOrUrl {
+pub(crate) enum HostPortOrUrl {
     HostPort(String, u16),
     Url(Url),
 }
@@ -285,7 +285,7 @@ impl Default for PoolOptions {
 }
 
 #[derive(Clone, Eq, PartialEq, Default, Debug)]
-pub struct InnerOpts {
+pub(crate) struct InnerOpts {
     mysql_opts: MysqlOpts,
     address: HostPortOrUrl,
 }
@@ -294,7 +294,7 @@ pub struct InnerOpts {
 ///
 /// Build one with [`OptsBuilder`].
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub struct MysqlOpts {
+pub(crate) struct MysqlOpts {
     /// User (defaults to `None`).
     user: Option<String>,
 

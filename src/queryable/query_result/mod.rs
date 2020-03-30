@@ -25,21 +25,21 @@ enum QueryResultInner {
 }
 
 impl QueryResultInner {
-    pub fn new(columns: Option<Arc<Vec<Column>>>, cached: Option<StmtCacheResult>) -> Self {
+    fn new(columns: Option<Arc<Vec<Column>>>, cached: Option<StmtCacheResult>) -> Self {
         match columns {
             Some(columns) => WithRows(columns, cached),
             None => Empty(cached),
         }
     }
 
-    pub fn columns(&self) -> Option<&Arc<Vec<Column>>> {
+    fn columns(&self) -> Option<&Arc<Vec<Column>>> {
         match self {
             WithRows(columns, _) => Some(columns),
             Empty(_) => None,
         }
     }
 
-    pub fn cached(&self) -> Option<StmtCacheResult> {
+    fn cached(&self) -> Option<StmtCacheResult> {
         match *self {
             WithRows(_, cached) | Empty(cached) => cached,
         }

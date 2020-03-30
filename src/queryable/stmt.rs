@@ -33,7 +33,7 @@ pub struct InnerStmt {
 }
 
 impl InnerStmt {
-    pub fn new(payload: &[u8], named_params: Option<Vec<String>>) -> Result<InnerStmt> {
+    pub(crate) fn new(payload: &[u8], named_params: Option<Vec<String>>) -> Result<InnerStmt> {
         let packet = parse_stmt_packet(payload)?;
 
         Ok(InnerStmt {
