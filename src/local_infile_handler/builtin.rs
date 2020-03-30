@@ -12,7 +12,7 @@ use std::{collections::HashSet, path::PathBuf, str::from_utf8};
 
 use crate::local_infile_handler::LocalInfileHandler;
 
-/// Handles local infile requests from filesystem using explicit path white list.
+/// Handles local infile requests from filesystem using explicit whitelist of paths.
 ///
 /// Example usage:
 ///

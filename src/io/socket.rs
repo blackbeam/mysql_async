@@ -19,7 +19,7 @@ use std::{io, mem::MaybeUninit, path::Path};
 /// Unix domain socket connection on unix, or named pipe connection on windows.
 #[pin_project]
 #[derive(Debug)]
-pub struct Socket {
+pub(crate) struct Socket {
     #[pin]
     #[cfg(unix)]
     inner: tokio::net::UnixStream,

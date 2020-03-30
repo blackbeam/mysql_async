@@ -37,7 +37,7 @@ const DEFAULT_PORT: u16 = 3306;
 /// Represents information about a host and port combination that can be converted
 /// into socket addresses using to_socket_addrs.
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub enum HostPortOrUrl {
+pub(crate) enum HostPortOrUrl {
     HostPort(String, u16),
     Url(Url),
 }
@@ -190,7 +190,16 @@ pub struct PoolOptions {
 }
 
 impl PoolOptions {
-    /// Creates [`PoolOptions`].
+    /// Creates the default [`PoolOptions`] with the given constraints.
+    pub const fn with_constraints(constraints: PoolConstraints) -> Self {
+        Self {
+            constraints,
+            inactive_connection_ttl: DEFAULT_INACTIVE_CONNECTION_TTL,
+            ttl_check_interval: DEFAULT_TTL_CHECK_INTERVAL,
+        }
+    }
+
+    /// Creates a [`PoolOptions`].
     pub const fn new(
         constraints: PoolConstraints,
         inactive_connection_ttl: Duration,
@@ -203,34 +212,26 @@ impl PoolOptions {
         }
     }
 
-    /// Creates default [`PoolOptions`] with given constraints.
-    pub const fn with_constraints(constraints: PoolConstraints) -> Self {
-        Self {
-            constraints,
-            inactive_connection_ttl: DEFAULT_INACTIVE_CONNECTION_TTL,
-            ttl_check_interval: DEFAULT_TTL_CHECK_INTERVAL,
-        }
-    }
-
     /// Sets pool constraints.
     pub fn set_constraints(&mut self, constraints: PoolConstraints) {
         self.constraints = constraints;
     }
 
-    /// Returns `constrains` value.
+    /// Returns pool constraints.
     pub fn constraints(&self) -> PoolConstraints {
         self.constraints
     }
 
-    /// Pool will recycle inactive connection if it outside of the lower bound of a pool
-    /// and if it is idling longer than this value (defaults to [`DEFAULT_INACTIVE_CONNECTION_TTL`]).
+    /// Pool will recycle inactive connection if it is outside of the lower bound of the pool
+    /// and if it is idling longer than this value (defaults to
+    /// [`DEFAULT_INACTIVE_CONNECTION_TTL`]).
     ///
     /// Note that it may, actually, idle longer because of [`PoolOptions::ttl_check_interval`].
     pub fn set_inactive_connection_ttl(&mut self, ttl: Duration) {
         self.inactive_connection_ttl = ttl;
     }
 
-    /// Returns `inactive_connection_ttl` value.
+    /// Returns a `inactive_connection_ttl` value.
     pub fn inactive_connection_ttl(&self) -> Duration {
         self.inactive_connection_ttl
     }
@@ -247,7 +248,7 @@ impl PoolOptions {
         }
     }
 
-    /// Returns `ttl_check_interval` value.
+    /// Returns a `ttl_check_interval` value.
     pub fn ttl_check_interval(&self) -> Duration {
         self.ttl_check_interval
     }
@@ -259,7 +260,7 @@ impl PoolOptions {
     /// Active bound is either:
     /// * `min` bound of the pool constraints, if this [`PoolOptions`] defines
     ///   `inactive_connection_ttl` to be `0`. This means, that pool will hold no more than `min`
-    ///   number of idling connection and other connection will be immediately disconnected.
+    ///   number of idling connections and other connections will be immediately disconnected.
     /// * `max` bound of the pool constraints, if this [`PoolOptions`] defines
     ///   `inactive_connection_ttl` to be non-zero. This means, that pool will hold up to `max`
     ///   number of idling connections and this number will be eventually reduced to `min`
@@ -284,7 +285,7 @@ impl Default for PoolOptions {
 }
 
 #[derive(Clone, Eq, PartialEq, Default, Debug)]
-pub struct InnerOpts {
+pub(crate) struct InnerOpts {
     mysql_opts: MysqlOpts,
     address: HostPortOrUrl,
 }
@@ -293,7 +294,7 @@ pub struct InnerOpts {
 ///
 /// Build one with [`OptsBuilder`].
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub struct MysqlOpts {
+pub(crate) struct MysqlOpts {
     /// User (defaults to `None`).
     user: Option<String>,
 
@@ -318,7 +319,7 @@ pub struct MysqlOpts {
     /// Connection pool options (defaults to [`PoolOptions::default`]).
     pool_options: PoolOptions,
 
-    /// Pool will close connection if time since last IO exceeds this number of seconds
+    /// Pool will close a connection if time since last IO exceeds this number of seconds
     /// (defaults to `wait_timeout`).
     conn_ttl: Option<Duration>,
 
@@ -402,7 +403,7 @@ impl Opts {
         self.inner.address.get_ip_or_hostname()
     }
 
-    pub fn get_hostport_or_url(&self) -> &HostPortOrUrl {
+    pub(crate) fn get_hostport_or_url(&self) -> &HostPortOrUrl {
         &self.inner.address
     }
 

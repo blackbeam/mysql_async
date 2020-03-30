@@ -20,6 +20,7 @@
 //! ### Example
 //!
 //! ```rust
+//! # use mysql_async::test_misc::get_opts;
 //! use mysql_async::prelude::*;
 //! # use std::env;
 //!
@@ -42,21 +43,13 @@
 //!     let payments_clone = payments.clone();
 //!
 //!     let database_url = /* ... */
-//!     # if let Ok(url) = env::var("DATABASE_URL") {
-//!     #     let opts = mysql_async::Opts::from_url(&url).expect("DATABASE_URL invalid");
-//!     #     if opts.get_db_name().expect("a database name is required").is_empty() {
-//!     #         panic!("database name is empty");
-//!     #     }
-//!     #     url
-//!     # } else {
-//!     #     "mysql://root:password@127.0.0.1:3307/mysql".to_string()
-//!     # };
+//!     # get_opts();
 //!
 //!     let pool = mysql_async::Pool::new(database_url);
-//!     let conn = pool.get_conn().await?;
+//!     let mut conn = pool.get_conn().await?;
 //!
 //!     // Create temporary table
-//!     let conn = conn.drop_query(
+//!     conn.drop_query(
 //!         r"CREATE TEMPORARY TABLE payment (
 //!             customer_id int not null,
 //!             amount int not null,
@@ -73,14 +66,17 @@
 //!         }
 //!     });
 //!
-//!     let conn = conn.batch_exec(r"INSERT INTO payment (customer_id, amount, account_name)
-//!                     VALUES (:customer_id, :amount, :account_name)", params).await?;
+//!     conn.batch_exec(
+//!         r"INSERT INTO payment (customer_id, amount, account_name)
+//!             VALUES (:customer_id, :amount, :account_name)",
+//!         params,
+//!     ).await?;
 //!
 //!     // Load payments from database.
 //!     let result = conn.prep_exec("SELECT customer_id, amount, account_name FROM payment", ()).await?;
 //!
 //!     // Collect payments
-//!     let (_ /* conn */, loaded_payments) = result.map_and_drop(|row| {
+//!     let loaded_payments = result.map_and_drop(|row| {
 //!         let (customer_id, amount, account_name) = mysql_async::from_row(row);
 //!         Payment {
 //!             customer_id: customer_id,
@@ -89,9 +85,11 @@
 //!         }
 //!     }).await?;
 //!
-//!     // The destructor of a connection will return it to the pool,
-//!     // but pool should be disconnected explicitly because it's
-//!     // an asynchronous procedure.
+//!     // We must drop the connection before disconnecting the pool.
+//!     drop(conn);
+//!
+//!     // Pool must be disconnected explicitly because it's
+//!     // an asynchronous operation.
 //!     pool.disconnect().await?;
 //!
 //!     assert_eq!(loaded_payments, payments);
@@ -120,9 +118,8 @@ mod local_infile_handler;
 mod opts;
 mod queryable;
 
-pub type BoxFuture<T> = ::std::pin::Pin<
-    Box<dyn ::std::future::Future<Output = Result<T, error::Error>> + Send + 'static>,
->;
+pub type BoxFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, error::Error>> + Send + 'a>>;
 
 #[doc(inline)]
 pub use self::conn::Conn;

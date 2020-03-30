@@ -19,7 +19,7 @@ use std::{
 };
 
 use super::Inner;
-use crate::{prelude::Queryable, PoolOptions};
+use crate::PoolOptions;
 use futures_core::task::{Context, Poll};
 use std::pin::Pin;
 
@@ -29,7 +29,7 @@ use std::pin::Pin;
 /// * overflows min bound of the pool;
 /// * idles longer then `inactive_connection_ttl`.
 #[pin_project]
-pub struct TtlCheckInterval {
+pub(crate) struct TtlCheckInterval {
     inner: Arc<Inner>,
     #[pin]
     interval: StreamFuture<Interval>,

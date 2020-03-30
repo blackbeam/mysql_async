@@ -17,7 +17,7 @@ use std::sync::Arc;
 use self::{
     query_result::QueryResult,
     stmt::Stmt,
-    transaction::{Transaction, TransactionOptions},
+    transaction::{Transaction, TransactionOptions, TxStatus},
 };
 use crate::{
     connection_like::ConnectionLike, consts::Command, error::*, prelude::FromRow, BoxFuture,
@@ -66,139 +66,171 @@ impl Protocol for BinaryProtocol {
     }
 }
 
-/// Represents something queryable like connection or transaction.
-pub trait Queryable: ConnectionLike
-where
-    Self: Sized + 'static,
-{
-    /// Returns future that resolves to `Conn` if `COM_PING` executed successfully.
-    fn ping(self) -> BoxFuture<Self> {
-        Box::pin(async move {
-            Ok(self
-                .write_command_data(Command::COM_PING, &[])
-                .await?
-                .read_packet()
-                .await?
-                .0)
-        })
+/// The only purpose of this function at the moment is to rollback a transaction in cases,
+/// where `Transaction` is dropped without an explicit call to `commit` or `rollback`.
+async fn cleanup<T: Queryable + Sized>(queryable: &mut T) -> Result<()> {
+    if queryable.get_tx_status() == TxStatus::RequiresRollback {
+        queryable.set_tx_status(TxStatus::None);
+        queryable.drop_query("ROLLBACK").await?;
     }
+    Ok(())
+}
 
-    /// Returns future, that disconnects this connection from a server.
-    fn disconnect(mut self) -> BoxFuture<()> {
-        self.on_disconnect();
-        let f = self.write_command_data(Command::COM_QUIT, &[]);
+/// Represents something queryable, e.g. connection or transaction.
+pub trait Queryable: crate::prelude::ConnectionLike
+where
+    Self: Sized,
+{
+    /// Returns a future, that executes `COM_PING`.
+    fn ping(&mut self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
-            let (_, stream) = f.await?.take_stream();
-            stream.close().await?;
+            cleanup(self).await?;
+            self.write_command_data(Command::COM_PING, &[]).await?;
+            self.read_packet().await?;
             Ok(())
         })
     }
 
-    /// Returns future that performs `query`.
-    fn query<Q: AsRef<str>>(self, query: Q) -> BoxFuture<QueryResult<Self, TextProtocol>> {
-        let f = self.write_command_data(Command::COM_QUERY, query.as_ref().as_bytes());
-        Box::pin(async move { f.await?.read_result_set(None).await })
+    /// Returns a future that performs the given query.
+    fn query<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, QueryResult<'a, Self, TextProtocol>>
+    where
+        Q: AsRef<str> + Sync + Send + 'static,
+    {
+        Box::pin(async move {
+            cleanup(self).await?;
+            self.write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
+                .await?;
+            self.read_result_set(None).await
+        })
     }
 
-    /// Returns future that resolves to a first row of result of a `query` execution (if any).
+    /// Returns a future that executes the given query and returns the first row (if any).
     ///
     /// Returned future will call `R::from_row(row)` internally.
-    fn first<Q, R>(self, query: Q) -> BoxFuture<(Self, Option<R>)>
+    fn first<'a, Q, R>(&'a mut self, query: Q) -> BoxFuture<'a, Option<R>>
     where
-        Q: AsRef<str>,
+        Q: AsRef<str> + Sync + Send + 'static,
         R: FromRow,
     {
-        let f = self.query(query);
         Box::pin(async move {
-            let (this, mut rows) = f.await?.collect_and_drop::<Row>().await?;
+            let result = self.query(query).await?;
+            let mut rows = result.collect_and_drop::<Row>().await?;
             if rows.len() > 1 {
-                Ok((this, Some(FromRow::from_row(rows.swap_remove(0)))))
+                Ok(Some(FromRow::from_row(rows.swap_remove(0))))
             } else {
-                Ok((this, rows.pop().map(FromRow::from_row)))
+                Ok(rows.pop().map(FromRow::from_row))
             }
         })
     }
 
-    /// Returns future that performs query. Result will be dropped.
-    fn drop_query<Q: AsRef<str>>(self, query: Q) -> BoxFuture<Self> {
-        let f = self.query(query);
-        Box::pin(async move { f.await?.drop_result().await })
-    }
-
-    /// Returns future that prepares statement.
-    fn prepare<Q: AsRef<str>>(self, query: Q) -> BoxFuture<Stmt<Self>> {
-        let f = self.prepare_stmt(query);
+    /// Returns a future that performs the given query. Result will be dropped.
+    fn drop_query<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, ()>
+    where
+        Q: AsRef<str> + Sync + Send + 'static,
+    {
         Box::pin(async move {
-            let (this, inner_stmt, stmt_cache_result) = f.await?;
-            Ok(stmt::new(this, inner_stmt, stmt_cache_result))
+            let result = self.query(query).await?;
+            result.drop_result().await?;
+            Ok(())
         })
     }
 
-    /// Returns future that prepares and executes statement in one pass.
-    fn prep_exec<Q, P>(self, query: Q, params: P) -> BoxFuture<QueryResult<Self, BinaryProtocol>>
+    /// Returns a future that prepares the given statement.
+    fn prepare<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Stmt<'a, Self>>
     where
-        Q: AsRef<str>,
+        Q: AsRef<str> + Send + 'static,
+    {
+        Box::pin(async move {
+            cleanup(self).await?;
+            let f = self.prepare_stmt(query);
+            let (inner_stmt, stmt_cache_result) = f.await?;
+            Ok(Stmt::new(self, inner_stmt, stmt_cache_result))
+        })
+    }
+
+    /// Returns a future that prepares and executes the given statement in one pass.
+    fn prep_exec<'a, Q, P>(
+        &'a mut self,
+        query: Q,
+        params: P,
+    ) -> BoxFuture<'a, QueryResult<'a, Self, BinaryProtocol>>
+    where
+        Q: AsRef<str> + Send + 'static,
         P: Into<Params>,
     {
         let params: Params = params.into();
-        let f = self.prepare(query);
         Box::pin(async move {
-            let result = f.await?.execute(params).await?;
-            let (stmt, columns, _) = query_result::disassemble(result);
-            let (conn_like, cached) = stmt.unwrap();
-            Ok(query_result::assemble(conn_like, columns, cached))
+            let mut stmt = self.prepare(query).await?;
+            let result = stmt.execute(params).await?;
+            let (stmt, columns, _) = result.disassemble();
+            let cached = stmt.cached.clone();
+            Ok(QueryResult::new(self, columns, cached))
         })
     }
 
-    /// Returns future that resolves to a first row of result of a statement execution (if any).
+    /// Returns a future that prepares and executes the given statement,
+    /// and resolves to the first row (if any).
     ///
     /// Returned future will call `R::from_row(row)` internally.
-    fn first_exec<Q, P, R>(self, query: Q, params: P) -> BoxFuture<(Self, Option<R>)>
+    fn first_exec<Q, P, R>(&mut self, query: Q, params: P) -> BoxFuture<'_, Option<R>>
     where
-        Q: AsRef<str>,
+        Q: AsRef<str> + Sync + Send + 'static,
         P: Into<Params>,
         R: FromRow,
     {
-        let f = self.prep_exec(query, params);
+        let params = params.into();
         Box::pin(async move {
-            let (this, mut rows) = f.await?.collect_and_drop::<Row>().await?;
+            let mut rows = self
+                .prep_exec(query, params)
+                .await?
+                .collect_and_drop::<Row>()
+                .await?;
             if rows.len() > 1 {
-                Ok((this, Some(FromRow::from_row(rows.swap_remove(0)))))
+                Ok(Some(FromRow::from_row(rows.swap_remove(0))))
             } else {
-                Ok((this, rows.pop().map(FromRow::from_row)))
+                Ok(rows.pop().map(FromRow::from_row))
             }
         })
     }
 
-    /// Returns future that prepares and executes statement. Result will be dropped.
-    fn drop_exec<Q, P>(self, query: Q, params: P) -> BoxFuture<Self>
+    /// Returns a future that prepares and executes the given statement. Result will be dropped.
+    fn drop_exec<Q, P>(&mut self, query: Q, params: P) -> BoxFuture<'_, ()>
     where
-        Q: AsRef<str>,
+        Q: AsRef<str> + Send + 'static,
         P: Into<Params>,
     {
         let f = self.prep_exec(query, params);
         Box::pin(async move { f.await?.drop_result().await })
     }
 
-    /// Returns future that prepares statement and performs batch execution.
-    /// Results will be dropped.
-    fn batch_exec<Q, I, P>(self, query: Q, params_iter: I) -> BoxFuture<Self>
+    /// Returns a future that prepares the given statement and performs batch execution using
+    /// the given params. Results will be dropped.
+    fn batch_exec<Q, I, P>(&mut self, query: Q, params_iter: I) -> BoxFuture<'_, ()>
     where
-        Q: AsRef<str>,
-        I: IntoIterator<Item = P> + Send + 'static,
+        Q: AsRef<str> + Sync + Send + 'static,
+        I: IntoIterator<Item = P>,
         I::IntoIter: Send + 'static,
         Params: From<P>,
-        P: Send + 'static,
     {
-        let f = self.prepare(query);
-        Box::pin(async move { f.await?.batch(params_iter).await?.close().await })
+        let params_iter = params_iter.into_iter();
+        Box::pin(async move {
+            let mut stmt = self.prepare(query).await?;
+            stmt.batch(params_iter).await?;
+            stmt.close().await
+        })
     }
 
-    /// Returns future that starts transaction.
-    fn start_transaction(self, options: TransactionOptions) -> BoxFuture<Transaction<Self>> {
-        Box::pin(transaction::new(self, options))
+    /// Returns a future that starts a transaction.
+    fn start_transaction<'a>(
+        &'a mut self,
+        options: TransactionOptions,
+    ) -> BoxFuture<'a, Transaction<'a, Self>> {
+        Box::pin(async move {
+            cleanup(self).await?;
+            Transaction::new(self, options).await
+        })
     }
 }
 
 impl Queryable for Conn {}
-impl<T: Queryable + ConnectionLike> Queryable for Transaction<T> {}
+impl<'a, T: Queryable + crate::prelude::ConnectionLike> Queryable for Transaction<'a, T> {}

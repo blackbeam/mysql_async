@@ -15,18 +15,19 @@ pub mod builtin;
 
 /// Trait used to handle local infile requests.
 ///
-/// Be aware of security issues with [LOAD DATA LOCAL](https://dev.mysql.com/doc/refman/8.0/en/load-data-local.html).
+/// Be aware of security issues with [LOAD DATA LOCAL][1].
 /// Using [`crate::WhiteListFsLocalInfileHandler`] is advised.
 ///
 /// Simple handler example:
 ///
 /// ```rust
-/// # use mysql_async::prelude::*;
+/// # use mysql_async::{prelude::*, test_misc::get_opts};
 /// # use tokio::prelude::*;
 /// # use std::env;
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), mysql_async::error::Error> {
 /// #
+/// /// This example hanlder will return contained bytes in response to a local infile request.
 /// struct ExampleHandler(&'static [u8]);
 ///
 /// impl LocalInfileHandler for ExampleHandler {
@@ -36,25 +37,17 @@ pub mod builtin;
 ///     }
 /// }
 ///
-/// # let database_url: String = if let Ok(url) = env::var("DATABASE_URL") {
-/// #     let opts = mysql_async::Opts::from_url(&url).expect("DATABASE_URL invalid");
-/// #     if opts.get_db_name().expect("a database name is required").is_empty() {
-/// #         panic!("database name is empty");
-/// #     }
-/// #     url
-/// # } else {
-/// #     "mysql://root:password@127.0.0.1:3307/mysql".into()
-/// # };
+/// # let database_url = get_opts();
 ///
-/// let mut opts = mysql_async::OptsBuilder::from_opts(&*database_url);
+/// let mut opts = mysql_async::OptsBuilder::from_opts(database_url);
 /// opts.local_infile_handler(Some(ExampleHandler(b"foobar")));
 ///
 /// let pool = mysql_async::Pool::new(opts);
 ///
-/// let conn = pool.get_conn().await?;
-/// let conn = conn.drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);").await?;
-/// let conn = match conn.drop_query("LOAD DATA LOCAL INFILE 'baz' INTO TABLE tmp;").await {
-///     Ok(conn) => conn,
+/// let mut conn = pool.get_conn().await?;
+/// conn.drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);").await?;
+/// match conn.drop_query("LOAD DATA LOCAL INFILE 'baz' INTO TABLE tmp;").await {
+///     Ok(()) => (),
 ///     Err(mysql_async::error::Error::Server(ref err)) if err.code == 1148 => {
 ///         // The used command is not allowed with this MySQL version
 ///         return Ok(());
@@ -67,17 +60,19 @@ pub mod builtin;
 ///     e@Err(_) => e.unwrap(),
 /// };
 /// let result = conn.prep_exec("SELECT * FROM tmp;", ()).await?;
-/// let (_ /* conn */, result) = result.map_and_drop(|row| {
+/// let result = result.map_and_drop(|row| {
 ///     mysql_async::from_row::<(String,)>(row).0
 /// }).await?;
 ///
 /// assert_eq!(result.len(), 1);
 /// assert_eq!(result[0], "foobar");
+/// drop(conn);
 /// pool.disconnect().await?;
 /// # Ok(())
 /// # }
 /// ```
 ///
+/// [1]: https://dev.mysql.com/doc/refman/8.0/en/load-data-local.html
 pub trait LocalInfileHandler: Sync + Send {
     /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
     /// query.

@@ -23,7 +23,7 @@ pub(crate) enum GetConnInner {
     New,
     Done(Option<Conn>),
     // TODO: one day this should be an existential
-    Connecting(BoxFuture<Conn>),
+    Connecting(BoxFuture<'static, Conn>),
 }
 
 impl GetConnInner {

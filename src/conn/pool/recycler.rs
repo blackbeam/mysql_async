@@ -18,14 +18,14 @@ use std::{
 };
 
 use super::{IdlingConn, Inner};
-use crate::{BoxFuture, Conn, PoolOptions};
+use crate::{queryable::transaction::TxStatus, BoxFuture, Conn, PoolOptions};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-pub struct Recycler {
+pub(crate) struct Recycler {
     inner: Arc<Inner>,
-    discard: FuturesUnordered<BoxFuture<()>>,
+    discard: FuturesUnordered<BoxFuture<'static, ()>>,
     discarded: usize,
-    cleaning: FuturesUnordered<BoxFuture<Conn>>,
+    cleaning: FuturesUnordered<BoxFuture<'static, Conn>>,
 
     // Option<Conn> so that we have a way to send a "I didn't make a Conn after all" signal
     dropped: mpsc::UnboundedReceiver<Option<Conn>>,
@@ -63,7 +63,9 @@ impl Future for Recycler {
                 if $conn.inner.stream.is_none() || $conn.inner.disconnected {
                     // drop unestablished connection
                     $self.discard.push(Box::pin(::futures_util::future::ok(())));
-                } else if $conn.inner.in_transaction || $conn.inner.has_result.is_some() {
+                } else if $conn.inner.tx_status != TxStatus::None
+                    || $conn.inner.has_result.is_some()
+                {
                     $self.cleaning.push(Box::pin($conn.cleanup()));
                 } else if $conn.expired() || close {
                     $self.discard.push(Box::pin($conn.close()));
@@ -73,7 +75,7 @@ impl Future for Recycler {
                         drop(exchange);
                         $self.discard.push(Box::pin($conn.close()));
                     } else {
-                        exchange.available.push_back($conn.into());
+                        exchange.available.push_back(dbg!($conn.into()));
                         if let Some(w) = exchange.waiting.pop_front() {
                             w.wake();
                         }

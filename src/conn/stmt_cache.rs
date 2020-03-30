@@ -12,7 +12,7 @@ use twox_hash::XxHash;
 use std::collections::vec_deque::Iter;
 use std::{
     borrow::Borrow,
-    collections::{hash_map::IntoIter, HashMap, VecDeque},
+    collections::{HashMap, VecDeque},
     hash::{BuildHasherDefault, Hash},
 };
 
@@ -26,7 +26,7 @@ pub struct StmtCache {
 }
 
 impl StmtCache {
-    pub fn new(cap: usize) -> StmtCache {
+    pub(crate) fn new(cap: usize) -> StmtCache {
         StmtCache {
             cap,
             map: Default::default(),
@@ -34,7 +34,7 @@ impl StmtCache {
         }
     }
 
-    pub fn get<T>(&mut self, key: &T) -> Option<&InnerStmt>
+    pub(crate) fn get<T>(&mut self, key: &T) -> Option<&InnerStmt>
     where
         String: Borrow<T>,
         String: PartialEq<T>,
@@ -53,7 +53,7 @@ impl StmtCache {
         }
     }
 
-    pub fn put(&mut self, key: String, value: InnerStmt) -> Option<InnerStmt> {
+    pub(crate) fn put(&mut self, key: String, value: InnerStmt) -> Option<InnerStmt> {
         self.map.insert(key.clone(), value);
         self.order.push_back(key);
         if self.order.len() > self.cap {
@@ -65,21 +65,13 @@ impl StmtCache {
         }
     }
 
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.map.clear();
         self.order.clear();
     }
 
     #[cfg(test)]
-    pub fn iter<'a>(&'a self) -> Iter<'a, String> {
+    pub(crate) fn iter<'a>(&'a self) -> Iter<'a, String> {
         self.order.iter()
-    }
-
-    pub fn into_iter(self) -> IntoIter<String, InnerStmt> {
-        self.map.into_iter()
-    }
-
-    pub fn get_cap(&self) -> usize {
-        self.cap
     }
 }

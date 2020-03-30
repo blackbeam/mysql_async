@@ -19,17 +19,20 @@ use crate::{
 
 use std::sync::{atomic, Arc};
 
-/// Future that disconnects this pool from server and resolves to `()`.
+/// Future that disconnects this pool from a server and resolves to `()`.
 ///
-/// Active connections taken from this pool should be disconnected manually.
-/// Also all pending and new `GetConn`'s will resolve to error.
+///
+/// **Note:** This Future won't resolve until all active connections, taken from it,
+/// are dropped or disonnected. Also all pending and new `GetConn`'s will resolve to error.
 pub struct DisconnectPool {
     pool_inner: Arc<Inner>,
 }
 
-pub fn new(pool: Pool) -> DisconnectPool {
-    DisconnectPool {
-        pool_inner: pool.inner,
+impl DisconnectPool {
+    pub(crate) fn new(pool: Pool) -> Self {
+        Self {
+            pool_inner: pool.inner,
+        }
     }
 }
 
