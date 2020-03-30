@@ -257,9 +257,7 @@ where
     pub async fn batch<I, P>(&mut self, params_iter: I) -> Result<()>
     where
         I: IntoIterator<Item = P>,
-        I::IntoIter: Send + 'static,
         Params: From<P>,
-        P: 'static,
     {
         let mut params_iter = params_iter.into_iter().map(Params::from);
         loop {

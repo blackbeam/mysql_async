@@ -77,7 +77,7 @@ async fn cleanup<T: Queryable + Sized>(queryable: &mut T) -> Result<()> {
 }
 
 /// Represents something queryable, e.g. connection or transaction.
-pub trait Queryable: ConnectionLike
+pub trait Queryable: crate::prelude::ConnectionLike
 where
     Self: Sized,
 {
@@ -136,10 +136,10 @@ where
     }
 
     /// Returns a future that prepares the given statement.
-    fn prepare<'a, Q: AsRef<str> + Send + 'static>(
-        &'a mut self,
-        query: Q,
-    ) -> BoxFuture<'a, Stmt<'a, Self>> {
+    fn prepare<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Stmt<'a, Self>>
+    where
+        Q: AsRef<str> + Send + 'static,
+    {
         Box::pin(async move {
             cleanup(self).await?;
             let f = self.prepare_stmt(query);
@@ -208,11 +208,11 @@ where
     fn batch_exec<Q, I, P>(&mut self, query: Q, params_iter: I) -> BoxFuture<'_, ()>
     where
         Q: AsRef<str> + Sync + Send + 'static,
-        I: IntoIterator<Item = P> + Send + 'static,
+        I: IntoIterator<Item = P>,
         I::IntoIter: Send + 'static,
         Params: From<P>,
-        P: Send + 'static,
     {
+        let params_iter = params_iter.into_iter();
         Box::pin(async move {
             let mut stmt = self.prepare(query).await?;
             stmt.batch(params_iter).await?;
@@ -233,4 +233,4 @@ where
 }
 
 impl Queryable for Conn {}
-impl<'a, T: Queryable + ConnectionLike> Queryable for Transaction<'a, T> {}
+impl<'a, T: Queryable + crate::prelude::ConnectionLike> Queryable for Transaction<'a, T> {}
