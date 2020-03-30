@@ -33,7 +33,6 @@ pub struct InnerStmt {
 }
 
 impl InnerStmt {
-    // TODO: Consume payload?
     pub fn new(payload: &[u8], named_params: Option<Vec<String>>) -> Result<InnerStmt> {
         let packet = parse_stmt_packet(payload)?;
 
@@ -79,12 +78,12 @@ where
         }
     }
 
-    /// Returns statement identifier.
+    /// Returns an identifier of the statement.
     pub fn id(&self) -> u32 {
         self.inner.statement_id
     }
 
-    /// Returns statement columns.
+    /// Returns a list of statement columns.
     ///
     /// ```rust
     /// # use mysql_async::test_misc::get_opts;
@@ -115,7 +114,7 @@ where
             .unwrap_or_default()
     }
 
-    /// Returns statement parameters.
+    /// Returns a list of statement parameters.
     ///
     /// ```rust
     /// # use mysql_async::test_misc::get_opts;
@@ -228,7 +227,7 @@ where
         self.read_result_set(None).await
     }
 
-    /// See `Queryable::execute`
+    /// See [`Queryable::execute`].
     pub async fn execute<P>(
         &mut self,
         params: P,
@@ -244,7 +243,7 @@ where
         }
     }
 
-    /// See `Queryable::first`
+    /// See [`Queryable::first`].
     pub async fn first<P, R>(&mut self, params: P) -> Result<Option<R>>
     where
         P: Into<Params> + 'static,
@@ -259,7 +258,7 @@ where
         }
     }
 
-    /// See `Queryable::batch`
+    /// See [`Queryable::batch`].
     pub async fn batch<I, P>(&mut self, params_iter: I) -> Result<()>
     where
         I: IntoIterator<Item = P>,
@@ -279,7 +278,7 @@ where
         }
     }
 
-    /// This will close statement (if it's not in the cache) and resolve to a wrapped queryable.
+    /// This will close statement (if it's not in the cache).
     pub async fn close(mut self) -> Result<()> {
         let cached = self.cached.take();
         if let Some(StmtCacheResult::NotCached(stmt_id)) = cached {

@@ -15,18 +15,19 @@ pub mod builtin;
 
 /// Trait used to handle local infile requests.
 ///
-/// Be aware of security issues with [LOAD DATA LOCAL](https://dev.mysql.com/doc/refman/8.0/en/load-data-local.html).
+/// Be aware of security issues with [LOAD DATA LOCAL][1].
 /// Using [`crate::WhiteListFsLocalInfileHandler`] is advised.
 ///
 /// Simple handler example:
 ///
 /// ```rust
-/// # use mysql_async::prelude::*;
+/// # use mysql_async::{prelude::*, test_misc::get_opts};
 /// # use tokio::prelude::*;
 /// # use std::env;
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), mysql_async::error::Error> {
 /// #
+/// /// This example hanlder will return contained bytes in response to a local infile request.
 /// struct ExampleHandler(&'static [u8]);
 ///
 /// impl LocalInfileHandler for ExampleHandler {
@@ -36,17 +37,9 @@ pub mod builtin;
 ///     }
 /// }
 ///
-/// # let database_url: String = if let Ok(url) = env::var("DATABASE_URL") {
-/// #     let opts = mysql_async::Opts::from_url(&url).expect("DATABASE_URL invalid");
-/// #     if opts.get_db_name().expect("a database name is required").is_empty() {
-/// #         panic!("database name is empty");
-/// #     }
-/// #     url
-/// # } else {
-/// #     "mysql://root:password@127.0.0.1:3307/mysql".into()
-/// # };
+/// # let database_url = get_opts();
 ///
-/// let mut opts = mysql_async::OptsBuilder::from_opts(&*database_url);
+/// let mut opts = mysql_async::OptsBuilder::from_opts(database_url);
 /// opts.local_infile_handler(Some(ExampleHandler(b"foobar")));
 ///
 /// let pool = mysql_async::Pool::new(opts);
@@ -79,6 +72,7 @@ pub mod builtin;
 /// # }
 /// ```
 ///
+/// [1]: https://dev.mysql.com/doc/refman/8.0/en/load-data-local.html
 pub trait LocalInfileHandler: Sync + Send {
     /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
     /// query.

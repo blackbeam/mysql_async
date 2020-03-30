@@ -10,7 +10,7 @@ use std::fmt;
 
 use crate::{connection_like::ConnectionLike, error::*, queryable::Queryable};
 
-/// Options for transaction
+/// Transaction options.
 #[derive(Eq, PartialEq, Debug, Hash, Clone, Default)]
 pub struct TransactionOptions {
     consistent_snapshot: bool,
@@ -19,15 +19,18 @@ pub struct TransactionOptions {
 }
 
 impl TransactionOptions {
+    /// Creates a default instance.
     pub fn new() -> TransactionOptions {
         TransactionOptions::default()
     }
 
+    /// See [`TransactionOptions::consistent_snapshot`].
     pub fn set_consistent_snapshot(&mut self, value: bool) -> &mut Self {
         self.consistent_snapshot = value;
         self
     }
 
+    /// See [`TransactionOptions::isolation_level`].
     pub fn set_isolation_level<T>(&mut self, value: T) -> &mut Self
     where
         T: Into<Option<IsolationLevel>>,
@@ -36,6 +39,7 @@ impl TransactionOptions {
         self
     }
 
+    /// See [`TransactionOptions::readonly`].
     pub fn set_readonly<T>(&mut self, value: T) -> &mut Self
     where
         T: Into<Option<bool>>,
@@ -44,14 +48,20 @@ impl TransactionOptions {
         self
     }
 
+    /// If true, then `START TRANSACTION WITH CONSISTENT SNAPSHOT` will be performed.
+    /// Defaults to `false`.
     pub fn consistent_snapshot(&self) -> bool {
         self.consistent_snapshot
     }
 
+    /// If not `None`, then `SET TRANSACTION ISOLATION LEVEL ..` will be performed.
+    /// Defaults to `None`.
     pub fn isolation_level(&self) -> Option<IsolationLevel> {
         self.isolation_level
     }
 
+    /// If not `None`, then `SET TRANSACTION READ ONLY|WRITE` will be performed.
+    /// Defaults to `None`.
     pub fn readonly(&self) -> Option<bool> {
         self.readonly
     }
@@ -79,23 +89,16 @@ impl fmt::Display for IsolationLevel {
 
 /// This struct represents MySql transaction.
 ///
-/// `Transaction` it's a sugar for `START TRANSACTION`, `ROLLBACK` and `COMMIT` queries, so one
+/// `Transaction` is just a sugar for `START TRANSACTION`, `ROLLBACK` and `COMMIT` queries, so one
 /// should note that it is easy to mess things up calling this queries manually. Also you will get
 /// `NestedTransaction` error if you call `transaction.start_transaction(_)`.
 pub struct Transaction<'a, T>(&'a mut T);
 
-pub async fn new<'a, T>(
-    conn_like: &'a mut T,
-    options: TransactionOptions,
-) -> Result<Transaction<'a, T>>
-where
-    T: Queryable + ConnectionLike,
-{
-    Transaction::new(conn_like, options).await
-}
-
 impl<'a, T: Queryable + ConnectionLike> Transaction<'a, T> {
-    async fn new(conn_like: &'a mut T, options: TransactionOptions) -> Result<Transaction<'a, T>> {
+    pub(crate) async fn new(
+        conn_like: &'a mut T,
+        options: TransactionOptions,
+    ) -> Result<Transaction<'a, T>> {
         let TransactionOptions {
             consistent_snapshot,
             isolation_level,
@@ -135,7 +138,7 @@ impl<'a, T: Queryable + ConnectionLike> Transaction<'a, T> {
         Ok(Transaction(conn_like))
     }
 
-    /// Returns future that will perform `COMMIT` query and resolve to a wrapped `Queryable`.
+    /// Returns a future that performs `COMMIT` query.
     pub fn commit(mut self) -> impl std::future::Future<Output = Result<()>> + 'a {
         async move {
             let result = self.0.query("COMMIT").await?;
@@ -145,7 +148,7 @@ impl<'a, T: Queryable + ConnectionLike> Transaction<'a, T> {
         }
     }
 
-    /// Returns future that will perform `ROLLBACK` query and resolve to a wrapped `Queryable`.
+    /// Returns a future that performs `ROLLBACK` query.
     pub fn rollback(mut self) -> impl std::future::Future<Output = Result<()>> + 'a {
         async move {
             let result = self.0.query("ROLLBACK").await?;

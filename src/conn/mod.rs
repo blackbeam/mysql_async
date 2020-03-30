@@ -43,7 +43,7 @@ use crate::{
 pub mod pool;
 pub mod stmt_cache;
 
-/// Helper that asynchronously disconnects connection on the default tokio executor.
+/// Helper that asynchronously disconnects the givent connection on the default tokio executor.
 fn disconnect(mut conn: Conn) {
     let disconnected = conn.inner.disconnected;
 
@@ -168,6 +168,7 @@ impl Conn {
         self.inner.stream.take().unwrap()
     }
 
+    /// Disconnects this connection from server.
     pub async fn disconnect(mut self) -> Result<()> {
         self.on_disconnect();
         self.write_command_data(crate::consts::Command::COM_QUIT, &[])
@@ -192,10 +193,7 @@ impl Conn {
 
     /// Hacky way to move connection through &mut. `self` becomes unusable.
     fn take(&mut self) -> Conn {
-        let inner = mem::replace(&mut *self.inner, ConnInner::empty(Default::default()));
-        Conn {
-            inner: Box::new(inner),
-        }
+        mem::replace(self, Conn::empty(Default::default()))
     }
 
     fn empty(opts: Opts) -> Self {
@@ -204,15 +202,16 @@ impl Conn {
         }
     }
 
+    /// Set `io::Stream` options as defined in the `Opts` of the connection.
+    ///
+    /// Requires that self.inner.stream is Some
     fn setup_stream(&mut self) -> Result<()> {
-        if let Some(stream) = self.inner.stream.take() {
+        debug_assert!(self.inner.stream.is_some());
+        if let Some(stream) = self.inner.stream.as_mut() {
             stream.set_keepalive_ms(self.inner.opts.get_tcp_keepalive())?;
             stream.set_tcp_nodelay(self.inner.opts.get_tcp_nodelay())?;
-            self.inner.stream = Some(stream);
-            Ok(())
-        } else {
-            unreachable!();
         }
+        Ok(())
     }
 
     async fn handle_handshake(&mut self) -> Result<()> {
@@ -419,7 +418,7 @@ impl Conn {
         Ok(())
     }
 
-    /// Returns future that resolves to [`Conn`].
+    /// Returns a future that resolves to [`Conn`].
     pub fn new<T: Into<Opts>>(opts: T) -> crate::BoxFuture<'static, Conn> {
         let opts = opts.into();
         Box::pin(async move {
@@ -447,14 +446,12 @@ impl Conn {
         })
     }
 
-    /// Returns future that resolves to [`Conn`].
+    /// Returns a future that resolves to [`Conn`].
     pub async fn from_url<T: AsRef<str>>(url: T) -> Result<Conn> {
         Conn::new(Opts::from_str(url.as_ref())?).await
     }
 
-    /// Will try to connect via socket using socket address in `self.inner.socket`.
-    ///
-    /// Returns new connection on success or self on error.
+    /// Will try to reconnect via socket using socket address in `self.inner.socket`.
     ///
     /// Won't try to reconnect if socket connection is already enforced in [`Opts`].
     async fn reconnect_via_socket_if_needed(&mut self) -> Result<()> {
@@ -476,7 +473,7 @@ impl Conn {
         Ok(())
     }
 
-    /// Returns future that reads and stores socket address inside the connection.
+    /// Reads and stores socket address inside the connection.
     ///
     /// Do nothing if socket address is already in [`Opts`] or if `prefer_socket` is `false`.
     async fn read_socket(&mut self) -> Result<()> {
@@ -487,7 +484,7 @@ impl Conn {
         Ok(())
     }
 
-    /// Returns future that reads and stores `max_allowed_packet` in the connection.
+    /// Reads and stores `max_allowed_packet` in the connection.
     async fn read_max_allowed_packet(&mut self) -> Result<()> {
         let row_opt = self.first("SELECT @@max_allowed_packet").await?;
         if let Some(stream) = self.inner.stream.as_mut() {
@@ -496,7 +493,7 @@ impl Conn {
         Ok(())
     }
 
-    /// Returns future that reads and stores `wait_timeout` in the connection.
+    /// Reads and stores `wait_timeout` in the connection.
     async fn read_wait_timeout(&mut self) -> Result<()> {
         let row_opt = self.first("SELECT @@wait_timeout").await?;
         let wait_timeout_secs = row_opt.unwrap_or((28800,)).0;
@@ -504,7 +501,8 @@ impl Conn {
         Ok(())
     }
 
-    /// Returns true if time since last io exceeds wait_timeout (or conn_ttl if specified in opts).
+    /// Returns true if time since last IO exceeds `wait_timeout`
+    /// (or `conn_ttl` if specified in opts).
     fn expired(&self) -> bool {
         let ttl = self
             .inner
@@ -514,12 +512,14 @@ impl Conn {
         self.idling() > ttl
     }
 
-    /// Returns duration since last io.
+    /// Returns duration since last IO.
     fn idling(&self) -> Duration {
         self.inner.last_io.elapsed()
     }
 
-    /// Returns future that resolves to a [`Conn`] with `COM_RESET_CONNECTION` executed on it.
+    /// Executes `COM_RESET_CONNECTION` on `self`.
+    ///
+    /// If server version is older than 5.7.2, then it'll reconnect.
     pub async fn reset(&mut self) -> Result<()> {
         let pool = self.inner.pool.clone();
 

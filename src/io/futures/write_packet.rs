@@ -16,8 +16,7 @@ use std::{
 
 use crate::{error::*, io::Stream};
 
-/// Future that writes packet to a [`Stream`] and resolves to a pair of [`Stream`] and MySql's sequence
-/// id.
+/// Future that writes packet to a [`Stream`] and resolves to a [`Stream`].
 pub struct WritePacket {
     data: Option<Vec<u8>>,
     stream: Option<Stream>,

@@ -94,7 +94,7 @@ pub trait ConnectionLike: Send + Sized {
         ReadPacket::new(self)
     }
 
-    /// Returns future that reads packets from a server and resolves to `(Self, Vec<Packet>)`.
+    /// Returns future that reads packets from a server.
     fn read_packets<'a>(&'a mut self, n: usize) -> ReadPackets<'a, Self> {
         ReadPackets::new(self, n)
     }
@@ -165,7 +165,7 @@ pub trait ConnectionLike: Send + Sized {
         self.write_command_raw(ComStmtClose::new(statement_id).into())
     }
 
-    /// Returns future that reads result set from a server and resolves to `QueryResult`.
+    /// Returns future that reads result set from a server.
     fn read_result_set<'a, P>(
         &'a mut self,
         cached: Option<StmtCacheResult>,
@@ -191,14 +191,14 @@ pub trait ConnectionLike: Send + Sized {
         WritePacket2::new(self, data.into())
     }
 
-    /// Returns future that sends full command body to a server and resolves to `Self`.
+    /// Returns future that sends full command body to a server.
     fn write_command_raw<'a>(&'a mut self, body: Vec<u8>) -> WritePacket2<'a, Self> {
         assert!(body.len() > 0);
         self.reset_seq_id();
         self.write_packet(body)
     }
 
-    /// Returns future that writes command to a server and resolves to `Self`.
+    /// Returns future that writes command to a server.
     fn write_command_data<T>(&mut self, cmd: Command, cmd_data: T) -> WritePacket2<'_, Self>
     where
         T: AsRef<[u8]>,

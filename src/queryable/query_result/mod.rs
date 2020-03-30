@@ -133,17 +133,17 @@ where
         self.conn_like.get_last_insert_id()
     }
 
-    /// Number of affected rows, reported by the server, or `0`.
+    /// Number of affected rows, as reported by the server, or `0`.
     pub fn affected_rows(&self) -> u64 {
         self.conn_like.get_affected_rows()
     }
 
-    /// Text information, reported by the server, or an empty string
+    /// Text information, as reported by the server, or an empty string.
     pub fn info(&self) -> Cow<'_, str> {
         self.conn_like.get_info()
     }
 
-    /// Number of warnings, reported by the server, or `0`.
+    /// Number of warnings, as reported by the server, or `0`.
     pub fn warnings(&self) -> u16 {
         self.conn_like.get_warnings()
     }
@@ -155,7 +155,7 @@ where
         !self.has_rows()
     }
 
-    /// Returns `true` if the SERVER_MORE_RESULTS_EXISTS flag is contained in status flags
+    /// Returns `true` if the `SERVER_MORE_RESULTS_EXISTS` flag is contained in status flags
     /// of the connection.
     fn more_results_exists(&self) -> bool {
         self.conn_like
@@ -163,19 +163,19 @@ where
             .contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS)
     }
 
-    /// `true` if rows may exists for this query result.
+    /// Returns `true` if this query result may contain rows.
     ///
     /// If `false` then there is no rows possible (for example UPDATE query).
     fn has_rows(&self) -> bool {
         matches!(self.inner, WithRows(..))
     }
 
-    /// Returns future that collects result set of this query result.
+    /// Returns a future that collects result set of this query result.
     ///
     /// It is parametrized by `R` and internally calls `R::from_row(Row)` on each row.
     ///
-    /// It will stop collecting on result set boundary. This means that you should call `collect`
-    /// as many times as result sets in your query result. For example query
+    /// It will collect rows up to a neares result set boundary. This means that you should call
+    /// `collect` as many times as result sets in your query result. For example query
     /// `SELECT 'foo'; SELECT 'foo', 'bar';` will produce `QueryResult` with two result sets in it.
     /// One can use `QueryResult::is_empty` to make sure that there is no more result sets.
     ///
@@ -196,10 +196,10 @@ where
         .await
     }
 
-    /// Returns future that collects result set of this query.
+    /// Returns a future that collects result set of this query result.
     ///
-    /// It works the same way as [`QueryResult::collect`] but won't panic
-    /// if row isn't convertible to `R`.
+    /// It works the same way as [`QueryResult::collect`] but won't panic if row isn't convertible
+    /// to `R`.
     pub async fn try_collect<R>(&mut self) -> Result<Vec<StdResult<R, FromRowError>>>
     where
         R: FromRow,
@@ -212,8 +212,8 @@ where
         .await
     }
 
-    /// Returns future that collects result set of a query result and drops everything else.
-    /// It will resolve to a pair of wrapped [`crate::prelude::Queryable`] and collected result set.
+    /// Returns a future that collects the current result set of this query result and drops
+    /// everything else.
     ///
     /// # Panic
     ///
@@ -230,16 +230,13 @@ where
             self.drop_result().await?;
             Ok(output)
         }
-        // let output = self.collect().await?;
-        // self.drop_result().await?;
-        // Ok(output)
     }
 
-    /// Returns future that collects result set of a query result and drops everything else.
-    /// It will resolve to a pair of wrapped [`crate::prelude::Queryable`] and collected result set.
+    /// Returns a future that collects the current result set of this query result and drops
+    /// everything else.
     ///
-    /// It works the same way as [`QueryResult::collect_and_drop`] but won't panic
-    /// if row isn't convertible to `R`.
+    /// It works the same way as [`QueryResult::collect_and_drop`] but won't panic if row isn't
+    /// convertible to `R`.
     pub async fn try_collect_and_drop<R>(mut self) -> Result<Vec<StdResult<R, FromRowError>>>
     where
         R: FromRow,
@@ -250,9 +247,9 @@ where
         Ok(output)
     }
 
-    /// Returns future that will execute `fun` on every row of current result set.
+    /// Returns a future that will execute `fun` on every row of the current result set.
     ///
-    /// It will stop on result set boundary (see `QueryResult::collect` docs).
+    /// It will stop on the nearest result set boundary (see `QueryResult::collect` docs).
     pub async fn for_each<F>(&mut self, mut fun: F) -> Result<()>
     where
         F: FnMut(Row),
@@ -271,8 +268,8 @@ where
         }
     }
 
-    /// Returns future that will execute `fun` on every row of current result set and drop
-    /// everything else. It will resolve to a wrapped `Queryable`.
+    /// Returns a future that will execute `fun` on every row of the current result set and drop
+    /// everything else.
     pub async fn for_each_and_drop<F>(mut self, fun: F) -> Result<()>
     where
         F: FnMut(Row),
@@ -282,9 +279,9 @@ where
         Ok(())
     }
 
-    /// Returns future that will map every row of current result set to `U` using `fun`.
+    /// Returns a future that will map every row of the current result set to `U` using `fun`.
     ///
-    /// It will stop on result set boundary (see `QueryResult::collect` docs).
+    /// It will stop on the nearest result set boundary (see `QueryResult::collect` docs).
     pub async fn map<F, U>(&mut self, mut fun: F) -> Result<Vec<U>>
     where
         F: FnMut(Row) -> U,
@@ -304,8 +301,8 @@ where
         }
     }
 
-    /// Returns future that will map every row of current result set to `U` using `fun` and drop
-    /// everything else. It will resolve to a pair of wrapped `Queryable` and mapped result set.
+    /// Returns a future that will map every row of the current result set to `U` using `fun`
+    /// and drop everything else.
     pub async fn map_and_drop<F, U>(mut self, fun: F) -> Result<Vec<U>>
     where
         F: FnMut(Row) -> U,
@@ -315,9 +312,9 @@ where
         Ok(rows)
     }
 
-    /// Returns future that will reduce rows of current result set to `U` using `fun`.
+    /// Returns a future that will reduce rows of the current result set to `U` using `fun`.
     ///
-    /// It will stop on result set boundary (see `QueryResult::collect` docs).
+    /// It will stop on the nearest result set boundary (see `QueryResult::collect` docs).
     pub async fn reduce<F, U>(&mut self, init: U, mut fun: F) -> Result<U>
     where
         F: FnMut(U, Row) -> U,
@@ -337,8 +334,8 @@ where
         }
     }
 
-    /// Returns future that will reduce rows of current result set to `U` using `fun` and drop
-    /// everything else. It will resolve to a pair of wrapped `Queryable` and `U`.
+    /// Returns a future that will reduce rows of the current result set to `U` using `fun` and drop
+    /// everything else.
     pub async fn reduce_and_drop<F, U>(mut self, init: U, fun: F) -> Result<U>
     where
         F: FnMut(U, Row) -> U,
@@ -348,7 +345,7 @@ where
         Ok(acc)
     }
 
-    /// Returns future that will drop this query result.
+    /// Returns a future that will drop this query result.
     pub async fn drop_result(mut self) -> Result<()> {
         let cached = loop {
             if !self.has_rows() {
@@ -370,7 +367,7 @@ where
         Ok(())
     }
 
-    /// Returns reference to columns in this query result.
+    /// Returns a reference to a columns list of this query result.
     pub fn columns_ref(&self) -> &[Column] {
         self.inner
             .columns()
@@ -378,7 +375,7 @@ where
             .unwrap_or_default()
     }
 
-    /// Returns a copy of columns of this query result.
+    /// Returns a copy of a columns list of this query result.
     pub fn columns(&self) -> Option<Arc<Vec<Column>>> {
         self.inner.columns().cloned()
     }

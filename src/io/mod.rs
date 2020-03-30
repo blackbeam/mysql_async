@@ -256,7 +256,7 @@ impl AsyncWrite for Endpoint {
     }
 }
 
-/// Stream connected to MySql server.
+/// A Stream, connected to MySql server.
 pub struct Stream {
     closed: bool,
     pub(crate) codec: Option<Box<Framed<Endpoint, PacketCodec>>>,

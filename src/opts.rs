@@ -190,7 +190,7 @@ pub struct PoolOptions {
 }
 
 impl PoolOptions {
-    /// Creates default [`PoolOptions`] with given constraints.
+    /// Creates the default [`PoolOptions`] with the given constraints.
     pub const fn with_constraints(constraints: PoolConstraints) -> Self {
         Self {
             constraints,
@@ -199,7 +199,7 @@ impl PoolOptions {
         }
     }
 
-    /// Creates [`PoolOptions`].
+    /// Creates a [`PoolOptions`].
     pub const fn new(
         constraints: PoolConstraints,
         inactive_connection_ttl: Duration,
@@ -217,12 +217,12 @@ impl PoolOptions {
         self.constraints = constraints;
     }
 
-    /// Returns `constrains` value.
+    /// Returns pool constraints.
     pub fn constraints(&self) -> PoolConstraints {
         self.constraints
     }
 
-    /// Pool will recycle inactive connection if it outside of the lower bound of a pool
+    /// Pool will recycle inactive connection if it is outside of the lower bound of the pool
     /// and if it is idling longer than this value (defaults to
     /// [`DEFAULT_INACTIVE_CONNECTION_TTL`]).
     ///
@@ -231,7 +231,7 @@ impl PoolOptions {
         self.inactive_connection_ttl = ttl;
     }
 
-    /// Returns `inactive_connection_ttl` value.
+    /// Returns a `inactive_connection_ttl` value.
     pub fn inactive_connection_ttl(&self) -> Duration {
         self.inactive_connection_ttl
     }
@@ -248,7 +248,7 @@ impl PoolOptions {
         }
     }
 
-    /// Returns `ttl_check_interval` value.
+    /// Returns a `ttl_check_interval` value.
     pub fn ttl_check_interval(&self) -> Duration {
         self.ttl_check_interval
     }
@@ -260,7 +260,7 @@ impl PoolOptions {
     /// Active bound is either:
     /// * `min` bound of the pool constraints, if this [`PoolOptions`] defines
     ///   `inactive_connection_ttl` to be `0`. This means, that pool will hold no more than `min`
-    ///   number of idling connection and other connection will be immediately disconnected.
+    ///   number of idling connections and other connections will be immediately disconnected.
     /// * `max` bound of the pool constraints, if this [`PoolOptions`] defines
     ///   `inactive_connection_ttl` to be non-zero. This means, that pool will hold up to `max`
     ///   number of idling connections and this number will be eventually reduced to `min`
@@ -319,7 +319,7 @@ pub struct MysqlOpts {
     /// Connection pool options (defaults to [`PoolOptions::default`]).
     pool_options: PoolOptions,
 
-    /// Pool will close connection if time since last IO exceeds this number of seconds
+    /// Pool will close a connection if time since last IO exceeds this number of seconds
     /// (defaults to `wait_timeout`).
     conn_ttl: Option<Duration>,
 

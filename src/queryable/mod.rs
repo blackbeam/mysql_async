@@ -66,12 +66,12 @@ impl Protocol for BinaryProtocol {
     }
 }
 
-/// Represents something queryable like connection or transaction.
+/// Represents something queryable, e.g. connection or transaction.
 pub trait Queryable: ConnectionLike
 where
     Self: Sized,
 {
-    /// Returns future that resolves to `Conn` if `COM_PING` executed successfully.
+    /// Returns a future, that executes `COM_PING`.
     fn ping(&mut self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             self.write_command_data(Command::COM_PING, &[]).await?;
@@ -80,7 +80,7 @@ where
         })
     }
 
-    /// Returns future that performs `query`.
+    /// Returns a future that performs the given query.
     fn query<'a, Q: AsRef<str>>(
         &'a mut self,
         query: Q,
@@ -93,7 +93,7 @@ where
         })
     }
 
-    /// Returns future that resolves to a first row of result of a `query` execution (if any).
+    /// Returns a future that executes the given query and returns the first row (if any).
     ///
     /// Returned future will call `R::from_row(row)` internally.
     fn first<'a, Q, R>(&'a mut self, query: Q) -> BoxFuture<'a, Option<R>>
@@ -112,7 +112,7 @@ where
         })
     }
 
-    /// Returns future that performs query. Result will be dropped.
+    /// Returns a future that performs the given query. Result will be dropped.
     fn drop_query<'a, Q: AsRef<str> + Send + 'static>(&'a mut self, query: Q) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             let result = self.query(query).await?;
@@ -121,7 +121,7 @@ where
         })
     }
 
-    /// Returns future that prepares statement.
+    /// Returns a future that prepares the given statement.
     fn prepare<'a, Q: AsRef<str> + Send + 'static>(
         &'a mut self,
         query: Q,
@@ -133,7 +133,7 @@ where
         })
     }
 
-    /// Returns future that prepares and executes statement in one pass.
+    /// Returns a future that prepares and executes the given statement in one pass.
     fn prep_exec<'a, Q, P>(
         &'a mut self,
         query: Q,
@@ -153,7 +153,8 @@ where
         })
     }
 
-    /// Returns future that resolves to a first row of result of a statement execution (if any).
+    /// Returns a future that prepares and executes the given statement,
+    /// and resolves to the first row (if any).
     ///
     /// Returned future will call `R::from_row(row)` internally.
     fn first_exec<Q, P, R>(&mut self, query: Q, params: P) -> BoxFuture<'_, Option<R>>
@@ -173,7 +174,7 @@ where
         })
     }
 
-    /// Returns future that prepares and executes statement. Result will be dropped.
+    /// Returns a future that prepares and executes the given statement. Result will be dropped.
     fn drop_exec<Q, P>(&mut self, query: Q, params: P) -> BoxFuture<'_, ()>
     where
         Q: AsRef<str> + Send + 'static,
@@ -183,8 +184,8 @@ where
         Box::pin(async move { f.await?.drop_result().await })
     }
 
-    /// Returns future that prepares statement and performs batch execution.
-    /// Results will be dropped.
+    /// Returns a future that prepares the given statement and performs batch execution using
+    /// the given params. Results will be dropped.
     fn batch_exec<Q, I, P>(&mut self, query: Q, params_iter: I) -> BoxFuture<'_, ()>
     where
         Q: AsRef<str> + Send + 'static,
@@ -201,12 +202,12 @@ where
         })
     }
 
-    /// Returns future that starts transaction.
+    /// Returns a future that starts a transaction.
     fn start_transaction<'a>(
         &'a mut self,
         options: TransactionOptions,
     ) -> BoxFuture<'a, Transaction<'a, Self>> {
-        Box::pin(transaction::new(self, options))
+        Box::pin(Transaction::new(self, options))
     }
 }
 

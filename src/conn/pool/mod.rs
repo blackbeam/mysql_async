@@ -93,7 +93,7 @@ pub struct Inner {
 #[derive(Clone)]
 /// Asynchronous pool of MySql connections.
 ///
-/// Note that you will probably want to await `Pool::disconnect` before dropping the runtime, as
+/// Note that you will probably want to await [`Pool::disconnect`] before dropping the runtime, as
 /// otherwise you may end up with a number of connections that are not cleanly terminated.
 pub struct Pool {
     opts: Opts,
@@ -108,7 +108,7 @@ impl fmt::Debug for Pool {
 }
 
 impl Pool {
-    /// Creates new pool of connections.
+    /// Creates a new pool of connections.
     pub fn new<O: Into<Opts>>(opts: O) -> Pool {
         let opts = opts.into();
         let pool_options = opts.get_pool_options().clone();
@@ -129,21 +129,21 @@ impl Pool {
         }
     }
 
-    /// Creates new pool of connections.
+    /// Creates a new pool of connections.
     pub fn from_url<T: AsRef<str>>(url: T) -> Result<Pool> {
         let opts = Opts::from_str(url.as_ref())?;
         Ok(Pool::new(opts))
     }
 
-    /// Returns future that resolves to `Conn`.
+    /// Returns a future that resolves to [`Conn`].
     pub fn get_conn(&self) -> GetConn {
         new_get_conn(self)
     }
 
-    /// Returns future that disconnects this pool from server and resolves to `()`.
+    /// Returns a future that disconnects this pool from the server and resolves to `()`.
     ///
-    /// Active connections taken from this pool should be disconnected manually.
-    /// Also all pending and new `GetConn`'s will resolve to error.
+    /// **Note:** This Future won't resolve until all active connections, taken from it,
+    /// are dropped or disonnected. Also all pending and new `GetConn`'s will resolve to error.
     pub fn disconnect(self) -> DisconnectPool {
         let was_closed = self.inner.close.swap(true, atomic::Ordering::AcqRel);
         if !was_closed {
@@ -557,35 +557,6 @@ mod test {
         Ok(())
     }
 
-    /*
-    #[test]
-    fn should_hold_bounds_on_get_conn_drop() {
-        let pool = Pool::new(format!("{}?pool_min=1&pool_max=2", get_opts()));
-        let mut runtime = tokio::runtime::Runtime::new().unwrap();
-
-        // This test is a bit more intricate: we need to poll the connection future once to get the
-        // pool to set it up, then drop it and make sure that the `exist` count is updated.
-        //
-        // We wrap all of it in a lazy future to get us into the tokio context that deals with
-        // setting up tasks. There might be a better way to do this but I don't remember right
-        // now. Besides, std::future is just around the corner making this obsolete.
-        //
-        // It depends on implementation details of GetConn, but that should be fine.
-        runtime
-            .block_on(future::lazy(move || {
-                let mut conn = pool.get_conn();
-                assert_eq!(pool.inner.exist.load(atomic::Ordering::SeqCst), 0);
-                let result = conn.poll().expect("successful first poll");
-                assert!(result.is_not_ready(), "not ready after first poll");
-                assert_eq!(pool.inner.exist.load(atomic::Ordering::SeqCst), 1);
-                drop(conn);
-                assert_eq!(pool.inner.exist.load(atomic::Ordering::SeqCst), 0);
-                Ok::<(), ()>(())
-            }))
-            .unwrap();
-    }
-    */
-
     #[tokio::test]
     async fn droptest() -> super::Result<()> {
         let pool = Pool::new(get_opts());
@@ -661,26 +632,6 @@ mod test {
             rt.block_on(jh).unwrap();
         }
     }
-
-    /*
-    #[test]
-    #[ignore]
-    fn should_not_panic_if_dropped_without_tokio_runtime() {
-        // NOTE: this test does not work anymore, since the runtime won't be idle until either
-        //
-        //  - all Pools and Conns are dropped; OR
-        //  - Pool::disconnect is called; OR
-        //  - Runtime::shutdown_now is called
-        //
-        // none of these are true in this test, which is why it's been ignored
-        let pool = Pool::new(get_opts());
-        run(collect(
-            (0..10).map(|_| pool.get_conn()).collect::<Vec<_>>(),
-        ))
-        .unwrap();
-        // pool will drop here
-    }
-    */
 
     #[cfg(feature = "nightly")]
     mod bench {
