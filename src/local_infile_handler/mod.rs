@@ -45,8 +45,8 @@ pub mod builtin;
 /// let pool = mysql_async::Pool::new(opts);
 ///
 /// let mut conn = pool.get_conn().await?;
-/// conn.drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);").await?;
-/// match conn.drop_query("LOAD DATA LOCAL INFILE 'baz' INTO TABLE tmp;").await {
+/// conn.query_drop("CREATE TEMPORARY TABLE tmp (a TEXT);").await?;
+/// match conn.query_drop("LOAD DATA LOCAL INFILE 'baz' INTO TABLE tmp;").await {
 ///     Ok(()) => (),
 ///     Err(mysql_async::error::Error::Server(ref err)) if err.code == 1148 => {
 ///         // The used command is not allowed with this MySQL version
@@ -59,14 +59,13 @@ pub mod builtin;
 ///     }
 ///     e@Err(_) => e.unwrap(),
 /// };
-/// let result = conn.prep_exec("SELECT * FROM tmp;", ()).await?;
-/// let result = result.map_and_drop(|row| {
-///     mysql_async::from_row::<(String,)>(row).0
-/// }).await?;
+/// let result: Vec<String> = conn.exec("SELECT * FROM tmp", ()).await?;
 ///
 /// assert_eq!(result.len(), 1);
 /// assert_eq!(result[0], "foobar");
-/// drop(conn);
+///
+/// conn; // dropped connection will go to the pool
+///
 /// pool.disconnect().await?;
 /// # Ok(())
 /// # }

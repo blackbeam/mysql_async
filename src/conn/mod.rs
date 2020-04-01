@@ -30,7 +30,7 @@ use std::{
 
 use crate::{
     conn::{pool::Pool, stmt_cache::StmtCache},
-    connection_like::{ConnectionLike, StmtCacheResult},
+    connection_like::ConnectionLike,
     consts::{self, CapabilityFlags},
     error::*,
     io::Stream,
@@ -73,7 +73,7 @@ fn disconnect(mut conn: Conn) {
 #[derive(Debug)]
 pub enum PendingResult {
     Text(Arc<Vec<Column>>),
-    Binary(Arc<Vec<Column>>, StmtCacheResult),
+    Binary(Arc<Vec<Column>>),
     Empty,
 }
 
@@ -180,7 +180,7 @@ impl Conn {
         Ok(())
     }
 
-    async fn close(mut self) -> Result<()> {
+    async fn close_conn(mut self) -> Result<()> {
         self = self.cleanup().await?;
         self.disconnect().await
     }
@@ -414,7 +414,7 @@ impl Conn {
         let mut init: Vec<_> = self.inner.opts.get_init().iter().cloned().collect();
 
         while let Some(query) = init.pop() {
-            self.drop_query(query).await?;
+            self.query_drop(query).await?;
         }
 
         Ok(())
@@ -423,7 +423,7 @@ impl Conn {
     /// Returns a future that resolves to [`Conn`].
     pub fn new<T: Into<Opts>>(opts: T) -> crate::BoxFuture<'static, Conn> {
         let opts = opts.into();
-        Box::pin(async move {
+        let fut = Box::pin(async move {
             let mut conn = Conn::empty(opts.clone());
 
             let stream = if let Some(path) = opts.get_socket() {
@@ -444,8 +444,10 @@ impl Conn {
             conn.read_max_allowed_packet().await?;
             conn.read_wait_timeout().await?;
             conn.run_init_commands().await?;
+
             Ok(conn)
-        })
+        });
+        crate::BoxFuture(fut)
     }
 
     /// Returns a future that resolves to [`Conn`].
@@ -466,7 +468,7 @@ impl Conn {
                     Ok(conn) => {
                         let old_conn = std::mem::replace(self, conn);
                         // tidy up the old connection
-                        old_conn.close().await?;
+                        old_conn.close_conn().await?;
                     }
                     Err(_) => (),
                 }
@@ -480,7 +482,7 @@ impl Conn {
     /// Do nothing if socket address is already in [`Opts`] or if `prefer_socket` is `false`.
     async fn read_socket(&mut self) -> Result<()> {
         if self.inner.opts.get_prefer_socket() && self.inner.socket.is_none() {
-            let row_opt = self.first("SELECT @@socket").await?;
+            let row_opt = self.query_first("SELECT @@socket").await?;
             self.inner.socket = row_opt.unwrap_or((None,)).0;
         }
         Ok(())
@@ -488,7 +490,7 @@ impl Conn {
 
     /// Reads and stores `max_allowed_packet` in the connection.
     async fn read_max_allowed_packet(&mut self) -> Result<()> {
-        let row_opt = self.first("SELECT @@max_allowed_packet").await?;
+        let row_opt = self.query_first("SELECT @@max_allowed_packet").await?;
         if let Some(stream) = self.inner.stream.as_mut() {
             stream.set_max_allowed_packet(row_opt.unwrap_or((DEFAULT_MAX_ALLOWED_PACKET,)).0);
         }
@@ -497,7 +499,7 @@ impl Conn {
 
     /// Reads and stores `wait_timeout` in the connection.
     async fn read_wait_timeout(&mut self) -> Result<()> {
-        let row_opt = self.first("SELECT @@wait_timeout").await?;
+        let row_opt = self.query_first("SELECT @@wait_timeout").await?;
         let wait_timeout_secs = row_opt.unwrap_or((28800,)).0;
         self.inner.wait_timeout = Duration::from_secs(wait_timeout_secs);
         Ok(())
@@ -533,7 +535,7 @@ impl Conn {
             let opts = self.inner.opts.clone();
             let old_conn = std::mem::replace(self, Conn::new(opts).await?);
             // tidy up the old connection
-            old_conn.close().await?;
+            old_conn.close_conn().await?;
         };
 
         self.inner.stmt_cache.clear();
@@ -545,25 +547,25 @@ impl Conn {
     async fn rollback_transaction(&mut self) -> Result<()> {
         debug_assert_ne!(self.inner.tx_status, TxStatus::None);
         self.inner.tx_status = TxStatus::None;
-        self.drop_query("ROLLBACK").await
+        self.query_drop("ROLLBACK").await
     }
 
-    async fn drop_result(&mut self) -> Result<()> {
+    pub(crate) async fn drop_result(&mut self) -> Result<()> {
         match self.inner.has_result.take() {
             Some(PendingResult::Text(columns)) => {
-                QueryResult::<'_, _, TextProtocol>::new(self, Some(columns), None)
+                QueryResult::<'_, _, TextProtocol>::new(self, Some(columns))
                     .drop_result()
                     .await?;
                 Ok(())
             }
-            Some(PendingResult::Binary(columns, cached)) => {
-                QueryResult::<'_, _, BinaryProtocol>::new(self, Some(columns), Some(cached))
+            Some(PendingResult::Binary(columns)) => {
+                QueryResult::<'_, _, BinaryProtocol>::new(self, Some(columns))
                     .drop_result()
                     .await?;
                 Ok(())
             }
             Some(PendingResult::Empty) => {
-                QueryResult::<'_, _, TextProtocol>::new(self, None, None)
+                QueryResult::<'_, _, TextProtocol>::new(self, None)
                     .drop_result()
                     .await?;
                 Ok(())
@@ -587,16 +589,16 @@ impl Conn {
 }
 
 impl ConnectionLike for Conn {
+    fn conn_mut(&mut self) -> &mut crate::Conn {
+        self
+    }
+
+    fn connection_id(&self) -> u32 {
+        self.connection_id()
+    }
+
     fn stream_mut(&mut self) -> &mut Stream {
         self.inner.stream.as_mut().expect("Logic error: stream")
-    }
-
-    fn stmt_cache_ref(&self) -> &StmtCache {
-        &self.inner.stmt_cache
-    }
-
-    fn stmt_cache_mut(&mut self) -> &mut StmtCache {
-        &mut self.inner.stmt_cache
     }
 
     fn get_affected_rows(&self) -> u64 {
@@ -697,6 +699,14 @@ impl ConnectionLike for Conn {
     fn on_disconnect(&mut self) {
         self.inner.disconnected = true;
     }
+
+    fn stmt_cache_ref(&self) -> &StmtCache {
+        &self.inner.stmt_cache
+    }
+
+    fn stmt_cache_mut(&mut self) -> &mut StmtCache {
+        &mut self.inner.stmt_cache
+    }
 }
 
 #[cfg(test)]
@@ -732,13 +742,35 @@ mod test {
     }
 
     #[tokio::test]
+    async fn should_clean_state_if_wrapper_is_dropeed() -> super::Result<()> {
+        let mut conn: Conn = Conn::new(get_opts()).await?;
+
+        conn.query_drop("CREATE TEMPORARY TABLE mysql.foo (id SERIAL)")
+            .await?;
+
+        // dropped query:
+        conn.query_iter("SELECT 1").await?;
+        conn.ping().await?;
+
+        // dropped query in dropped transaction:
+        let mut tx = conn.start_transaction(Default::default()).await?;
+        tx.query_drop("INSERT INTO mysql.foo (id) VALUES (42)")
+            .await?;
+        tx.exec_iter("SELECT * FROM mysql.foo", ()).await?;
+        drop(tx);
+        conn.ping().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn should_connect() -> super::Result<()> {
         let mut conn: Conn = Conn::new(get_opts()).await?;
         conn.ping().await?;
-
-        let result = conn.query("SHOW PLUGINS").await?;
-        let plugins = result
-            .map_and_drop(|mut row| row.take::<String, _>("Name").unwrap())
+        let plugins: Vec<String> = conn
+            .query_map("SHOW PLUGINS", |mut row: crate::Row| {
+                row.take("Name").unwrap()
+            })
             .await?;
 
         // Should connect with any combination of supported plugin and empty-nonempty password.
@@ -753,17 +785,17 @@ mod test {
 
         for (plug, val, pass) in variants {
             let query = format!("CREATE USER 'test_user'@'%' IDENTIFIED WITH {}", plug);
-            conn.drop_query(query).await.unwrap();
+            conn.query_drop(query).await.unwrap();
 
             if (8, 0, 11) <= conn.inner.version && conn.inner.version <= (9, 0, 0) {
-                conn.drop_query(format!("SET PASSWORD FOR 'test_user'@'%' = '{}'", pass))
+                conn.query_drop(format!("SET PASSWORD FOR 'test_user'@'%' = '{}'", pass))
                     .await
                     .unwrap();
             } else {
-                conn.drop_query(format!("SET old_passwords = {}", val))
+                conn.query_drop(format!("SET old_passwords = {}", val))
                     .await
                     .unwrap();
-                conn.drop_query(format!(
+                conn.query_drop(format!(
                     "SET PASSWORD FOR 'test_user'@'%' = PASSWORD('{}')",
                     pass
                 ))
@@ -777,7 +809,7 @@ mod test {
                 .db_name(None::<String>);
             let result = Conn::new(opts).await;
 
-            conn.drop_query("DROP USER 'test_user'@'%'").await.unwrap();
+            conn.query_drop("DROP USER 'test_user'@'%'").await.unwrap();
 
             result?.disconnect().await?;
         }
@@ -809,11 +841,7 @@ mod test {
         let mut opts_builder = OptsBuilder::from_opts(get_opts());
         opts_builder.init(vec!["SET @a = 42", "SET @b = 'foo'"]);
         let mut conn = Conn::new(opts_builder).await?;
-        let result = conn
-            .query("SELECT @a, @b")
-            .await?
-            .collect_and_drop::<(u8, String)>()
-            .await?;
+        let result: Vec<(u8, String)> = conn.query("SELECT @a, @b").await?;
         conn.disconnect().await?;
         assert_eq!(result, vec![(42, "foo".into())]);
         Ok(())
@@ -822,9 +850,9 @@ mod test {
     #[tokio::test]
     async fn should_reset_the_connection() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
-        conn.drop_exec("SELECT ?", (1_u8,)).await?;
+        conn.exec_drop("SELECT ?", (1_u8,)).await?;
         conn.reset().await?;
-        conn.drop_exec("SELECT ?", (1_u8,)).await?;
+        conn.exec_drop("SELECT ?", (1_u8,)).await?;
         conn.disconnect().await?;
         Ok(())
     }
@@ -833,20 +861,27 @@ mod test {
     async fn should_not_cache_statements_if_stmt_cache_size_is_zero() -> super::Result<()> {
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.stmt_cache_size(0);
+
         let mut conn = Conn::new(opts).await?;
-        conn.drop_exec("DO ?", (1_u8,)).await?;
-        let mut stmt = conn.prepare("DO 2").await?;
-        stmt.first::<_, crate::Value>(()).await?;
-        stmt.first::<_, crate::Value>(()).await?;
-        stmt.close().await?;
-        conn.prep_exec("DO 3", ()).await?.drop_result().await?;
-        conn.batch_exec("DO 4", vec![(), ()]).await?;
-        conn.first_exec::<_, _, (u8,)>("DO 5", ()).await?;
-        let row = conn
-            .first("SHOW SESSION STATUS LIKE 'Com_stmt_close';")
+        conn.exec_drop("DO ?", (1_u8,)).await?;
+
+        let stmt = conn.prep("DO 2").await?;
+        conn.exec_drop(&stmt, ()).await?;
+        conn.exec_drop(&stmt, ()).await?;
+        conn.close(stmt).await?;
+
+        conn.exec_drop("DO 3", ()).await?;
+        conn.exec_batch("DO 4", vec![(), ()]).await?;
+        conn.exec_first::<u8, _, _>("DO 5", ()).await?;
+        let row: Option<(crate::Value, usize)> = conn
+            .query_first("SHOW SESSION STATUS LIKE 'Com_stmt_close';")
             .await?;
-        assert_eq!(from_row::<(String, usize)>(row.unwrap()).1, 5);
+
+        assert_eq!(row.unwrap().1, 1);
+        assert_eq!(conn.inner.stmt_cache.len(), 0);
+
         conn.disconnect().await?;
+
         Ok(())
     }
 
@@ -857,25 +892,25 @@ mod test {
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.stmt_cache_size(3);
         let mut conn = Conn::new(opts).await?;
-        conn.drop_exec("DO 1", ()).await?;
-        conn.drop_exec("DO 2", ()).await?;
-        conn.drop_exec("DO 3", ()).await?;
-        conn.drop_exec("DO 1", ()).await?;
-        conn.drop_exec("DO 4", ()).await?;
-        conn.drop_exec("DO 3", ()).await?;
-        conn.drop_exec("DO 5", ()).await?;
-        conn.drop_exec("DO 6", ()).await?;
+        conn.exec_drop("DO 1", ()).await?;
+        conn.exec_drop("DO 2", ()).await?;
+        conn.exec_drop("DO 3", ()).await?;
+        conn.exec_drop("DO 1", ()).await?;
+        conn.exec_drop("DO 4", ()).await?;
+        conn.exec_drop("DO 3", ()).await?;
+        conn.exec_drop("DO 5", ()).await?;
+        conn.exec_drop("DO 6", ()).await?;
         let row_opt = conn
-            .first("SHOW SESSION STATUS LIKE 'Com_stmt_close';")
+            .query_first("SHOW SESSION STATUS LIKE 'Com_stmt_close';")
             .await?;
         let (_, count): (String, usize) = row_opt.unwrap();
         assert_eq!(count, 3);
         let order = conn
             .stmt_cache_ref()
             .iter()
-            .map(Clone::clone)
-            .collect::<Vec<String>>();
-        assert_eq!(order, &["DO 3", "DO 5", "DO 6"]);
+            .map(|item| item.1.query.0.as_ref())
+            .collect::<Vec<&str>>();
+        assert_eq!(order, &["DO 6", "DO 5", "DO 3"]);
         conn.disconnect().await?;
         Ok(())
     }
@@ -886,14 +921,8 @@ mod test {
             .take(18 * 1024 * 1024)
             .collect::<String>();
         let mut conn = Conn::new(get_opts()).await?;
-        let result = conn
+        let result: Vec<(String, u8)> = conn
             .query(format!(r"SELECT '{}', 231", long_string))
-            .await?;
-        let result = result
-            .reduce_and_drop(vec![], move |mut acc, row| {
-                acc.push(from_row(row));
-                acc
-            })
             .await?;
         conn.disconnect().await?;
         assert_eq!((long_string, 231_u8), result[0]);
@@ -901,14 +930,14 @@ mod test {
     }
 
     #[tokio::test]
-    async fn should_drop_query() -> super::Result<()> {
+    async fn should_query_drop() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
-        conn.drop_query("CREATE TEMPORARY TABLE tmp (id int DEFAULT 10, name text)")
+        conn.query_drop("CREATE TEMPORARY TABLE tmp (id int DEFAULT 10, name text)")
             .await?;
-        conn.drop_query("INSERT INTO tmp VALUES (1, 'foo')").await?;
-        let result = conn.first::<_, (u8,)>("SELECT COUNT(*) FROM tmp").await?;
+        conn.query_drop("INSERT INTO tmp VALUES (1, 'foo')").await?;
+        let result: Option<u8> = conn.query_first("SELECT COUNT(*) FROM tmp").await?;
         conn.disconnect().await?;
-        assert_eq!(result, Some((1_u8,)));
+        assert_eq!(result, Some(1_u8));
         Ok(())
     }
 
@@ -916,7 +945,7 @@ mod test {
     async fn should_try_collect() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
         let mut result = conn
-            .query(
+            .query_iter(
                 r"SELECT 'hello', 123
                     UNION ALL
                     SELECT 'world', 'bar'
@@ -938,7 +967,7 @@ mod test {
     async fn should_try_collect_and_drop() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
         let mut rows = conn
-            .query(
+            .query_iter(
                 r"SELECT 'hello', 123
                     UNION ALL
                     SELECT 'world', 'bar'
@@ -961,7 +990,7 @@ mod test {
     async fn should_handle_mutliresult_set() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
         let mut result = conn
-            .query(
+            .query_iter(
                 r"SELECT 'hello', 123
                     UNION ALL
                     SELECT 'world', 231;
@@ -983,7 +1012,7 @@ mod test {
     async fn should_map_resultset() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
         let mut result = conn
-            .query(
+            .query_iter(
                 r"
                     SELECT 'hello', 123
                     UNION ALL
@@ -1007,7 +1036,7 @@ mod test {
     async fn should_reduce_resultset() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
         let mut result = conn
-            .query(
+            .query_iter(
                 r"SELECT 5
                     UNION ALL
                     SELECT 6;
@@ -1039,30 +1068,30 @@ mod test {
             SELECT 4;";
 
         let mut c = Conn::new(get_opts()).await?;
-        c.drop_query("CREATE TEMPORARY TABLE time_zone (Time_zone_id INT)")
+        c.query_drop("CREATE TEMPORARY TABLE time_zone (Time_zone_id INT)")
             .await
             .unwrap();
         let mut t = c.start_transaction(TransactionOptions::new()).await?;
-        t.drop_query(QUERY).await?;
-        let r = t.query(QUERY).await?;
+        t.query_drop(QUERY).await?;
+        let r = t.query_iter(QUERY).await?;
         let out = r.collect_and_drop::<u8>().await?;
         assert_eq!(vec![1], out);
-        let r = t.query(QUERY).await?;
+        let r = t.query_iter(QUERY).await?;
         r.for_each_and_drop(|x| assert_eq!(from_row::<u8>(x), 1))
             .await?;
-        let r = t.query(QUERY).await?;
+        let r = t.query_iter(QUERY).await?;
         let out = r.map_and_drop(|row| from_row::<u8>(row)).await?;
         assert_eq!(vec![1], out);
-        let r = t.query(QUERY).await?;
+        let r = t.query_iter(QUERY).await?;
         let out = r
             .reduce_and_drop(0u8, |acc, x| acc + from_row::<u8>(x))
             .await?;
         assert_eq!(1, out);
-        t.query(QUERY).await?.drop_result().await?;
+        t.query_drop(QUERY).await?;
         t.commit().await?;
-        let result = c.first_exec::<_, _, u8>("SELECT 1", ()).await?;
+        let result = c.exec_first("SELECT 1", ()).await?;
         c.disconnect().await?;
-        assert_eq!(result, Some(1));
+        assert_eq!(result, Some(1_u8));
         Ok(())
     }
 
@@ -1077,7 +1106,7 @@ mod test {
 
         let mut conn = Conn::new(get_opts()).await?;
         let mut result = conn
-            .query(
+            .query_iter(
                 r"SELECT 2
                     UNION ALL
                     SELECT 3;
@@ -1108,11 +1137,13 @@ mod test {
     #[tokio::test]
     async fn should_prepare_statement() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
-        conn.prepare(r"SELECT ?").await?.close().await?;
+        let stmt = conn.prep(r"SELECT ?").await?;
+        conn.close(stmt).await?;
         conn.disconnect().await?;
 
         let mut conn = Conn::new(get_opts()).await?;
-        conn.prepare(r"SELECT :foo").await?.close().await?;
+        let stmt = conn.prep(r"SELECT :foo").await?;
+        conn.close(stmt).await?;
         conn.disconnect().await?;
         Ok(())
     }
@@ -1123,31 +1154,31 @@ mod test {
             .take(18 * 1024 * 1024)
             .collect::<String>();
         let mut conn = Conn::new(get_opts()).await?;
-        let mut stmt = conn.prepare(r"SELECT ?").await?;
-        let result = stmt.execute((&long_string,)).await?;
+        let stmt = conn.prep(r"SELECT ?").await?;
+        let result = conn.exec_iter(&stmt, (&long_string,)).await?;
         let mut mapped = result
             .map_and_drop(|row| from_row::<(String,)>(row))
             .await?;
         assert_eq!(mapped.len(), 1);
         assert_eq!(mapped.pop(), Some((long_string,)));
-        let result = stmt.execute((42_u8,)).await?;
+        let result = conn.exec_iter(&stmt, (42_u8,)).await?;
         let collected = result.collect_and_drop::<(u8,)>().await?;
         assert_eq!(collected, vec![(42u8,)]);
-        let result = stmt.execute((8_u8,)).await?;
+        let result = conn.exec_iter(&stmt, (8_u8,)).await?;
         let reduced = result
             .reduce_and_drop(2, |mut acc, row| {
                 acc += from_row::<i32>(row);
                 acc
             })
             .await?;
-        stmt.close().await?;
+        conn.close(stmt).await?;
         conn.disconnect().await?;
         assert_eq!(reduced, 10);
 
         let mut conn = Conn::new(get_opts()).await?;
-        let mut stmt = conn.prepare(r"SELECT :foo, :bar, :foo, 3").await?;
-        let result = stmt
-            .execute(params! { "foo" => "quux", "bar" => "baz" })
+        let stmt = conn.prep(r"SELECT :foo, :bar, :foo, 3").await?;
+        let result = conn
+            .exec_iter(&stmt, params! { "foo" => "quux", "bar" => "baz" })
             .await?;
         let mut mapped = result
             .map_and_drop(|row| from_row::<(String, String, String, u8)>(row))
@@ -1157,17 +1188,21 @@ mod test {
             mapped.pop(),
             Some(("quux".into(), "baz".into(), "quux".into(), 3))
         );
-        let result = stmt.execute(params! { "foo" => 2, "bar" => 3 }).await?;
+        let result = conn
+            .exec_iter(&stmt, params! { "foo" => 2, "bar" => 3 })
+            .await?;
         let collected = result.collect_and_drop::<(u8, u8, u8, u8)>().await?;
         assert_eq!(collected, vec![(2, 3, 2, 3)]);
-        let result = stmt.execute(params! { "foo" => 2, "bar" => 3 }).await?;
+        let result = conn
+            .exec_iter(&stmt, params! { "foo" => 2, "bar" => 3 })
+            .await?;
         let reduced = result
             .reduce_and_drop(0, |acc, row| {
                 let (a, b, c, d): (u8, u8, u8, u8) = from_row(row);
                 acc + a + b + c + d
             })
             .await?;
-        stmt.close().await?;
+        conn.close(stmt).await?;
         conn.disconnect().await?;
         assert_eq!(reduced, 10);
         Ok(())
@@ -1177,7 +1212,7 @@ mod test {
     async fn should_prep_exec_statement() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
         let result = conn
-            .prep_exec(r"SELECT :a, :b, :a", params! { "a" => 2, "b" => 3 })
+            .exec_iter(r"SELECT :a, :b, :a", params! { "a" => 2, "b" => 3 })
             .await?;
         let output = result
             .map_and_drop(|row| {
@@ -1194,7 +1229,7 @@ mod test {
     async fn should_first_exec_statement() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
         let output = conn
-            .first_exec(
+            .exec_first(
                 r"SELECT :a UNION ALL SELECT :b",
                 params! { "a" => 2, "b" => 3 },
             )
@@ -1207,7 +1242,7 @@ mod test {
     #[tokio::test]
     async fn issue_107() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
-        conn.drop_query(
+        conn.query_drop(
             r"CREATE TEMPORARY TABLE mysql.issue (
                     a BIGINT(20) UNSIGNED,
                     b VARBINARY(16),
@@ -1217,7 +1252,7 @@ mod test {
                 )",
         )
         .await?;
-        conn.drop_query(
+        conn.query_drop(
             r"INSERT INTO mysql.issue VALUES (
                     0,
                     0xC066F966B0860000,
@@ -1235,7 +1270,7 @@ mod test {
         .await?;
 
         let q = "SELECT b, c, d, e FROM mysql.issue";
-        let result = conn.query(q).await?;
+        let result = conn.query_iter(q).await?;
 
         let loaded_structs = result
             .map_and_drop(|row| crate::from_row::<(Vec<u8>, Vec<u8>, u64, Vec<u8>)>(row))
@@ -1251,33 +1286,33 @@ mod test {
     #[tokio::test]
     async fn should_run_transactions() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
-        conn.drop_query("CREATE TEMPORARY TABLE tmp (id INT, name TEXT)")
+        conn.query_drop("CREATE TEMPORARY TABLE tmp (id INT, name TEXT)")
             .await?;
         let mut transaction = conn.start_transaction(Default::default()).await?;
         transaction
-            .drop_query("INSERT INTO tmp VALUES (1, 'foo'), (2, 'bar')")
+            .query_drop("INSERT INTO tmp VALUES (1, 'foo'), (2, 'bar')")
             .await?;
         transaction.commit().await?;
-        let output_opt = conn.first("SELECT COUNT(*) FROM tmp").await?;
+        let output_opt = conn.query_first("SELECT COUNT(*) FROM tmp").await?;
         assert_eq!(output_opt, Some((2u8,)));
         let mut transaction = conn.start_transaction(Default::default()).await?;
         transaction
-            .drop_query("INSERT INTO tmp VALUES (3, 'baz'), (4, 'quux')")
+            .query_drop("INSERT INTO tmp VALUES (3, 'baz'), (4, 'quux')")
             .await?;
         let output_opt = transaction
-            .first_exec("SELECT COUNT(*) FROM tmp", ())
+            .exec_first("SELECT COUNT(*) FROM tmp", ())
             .await?;
         assert_eq!(output_opt, Some((4u8,)));
         transaction.rollback().await?;
-        let output_opt = conn.first("SELECT COUNT(*) FROM tmp").await?;
+        let output_opt = conn.query_first("SELECT COUNT(*) FROM tmp").await?;
         assert_eq!(output_opt, Some((2u8,)));
 
         let mut transaction = conn.start_transaction(Default::default()).await?;
         transaction
-            .drop_query("INSERT INTO tmp VALUES (3, 'baz')")
+            .query_drop("INSERT INTO tmp VALUES (3, 'baz')")
             .await?;
         drop(transaction); // implicit rollback
-        let output_opt = conn.first("SELECT COUNT(*) FROM tmp").await?;
+        let output_opt = conn.query_first("SELECT COUNT(*) FROM tmp").await?;
         assert_eq!(output_opt, Some((2u8,)));
 
         conn.disconnect().await?;
@@ -1296,7 +1331,7 @@ mod test {
         opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[file_name][..])));
 
         let mut conn = Conn::new(opts).await.unwrap();
-        conn.drop_query("CREATE TEMPORARY TABLE tmp (a TEXT);")
+        conn.query_drop("CREATE TEMPORARY TABLE tmp (a TEXT);")
             .await
             .unwrap();
 
@@ -1305,7 +1340,7 @@ mod test {
         let _ = file.write(b"BBBBBB\n");
         let _ = file.write(b"CCCCCC\n");
         match conn
-            .drop_query(format!(
+            .query_drop(format!(
                 r#"LOAD DATA LOCAL INFILE "{}" INTO TABLE tmp;"#,
                 file_name.display()
             ))
@@ -1324,7 +1359,7 @@ mod test {
             e @ Err(_) => e.unwrap(),
         };
         let result = conn
-            .prep_exec("SELECT * FROM tmp;", ())
+            .exec_iter("SELECT * FROM tmp;", ())
             .await
             .unwrap()
             .map_and_drop(|row| from_row::<(String,)>(row).0)
@@ -1359,7 +1394,7 @@ mod test {
 
             bencher.iter(|| {
                 let conn = conn_opt.take().unwrap();
-                conn_opt = Some(runtime.block_on(conn.drop_query("DO 1")).unwrap());
+                conn_opt = Some(runtime.block_on(conn.query_drop("DO 1")).unwrap());
             });
 
             runtime
@@ -1377,7 +1412,7 @@ mod test {
                 let conn = conn_opt.take().unwrap();
                 conn_opt = Some(
                     runtime
-                        .block_on(conn.drop_query("SELECT REPEAT('A', 10000)"))
+                        .block_on(conn.query_drop("SELECT REPEAT('A', 10000)"))
                         .unwrap(),
                 );
             });

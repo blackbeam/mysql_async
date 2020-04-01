@@ -12,7 +12,6 @@ use std::{borrow::Cow, marker::PhantomData, result::Result as StdResult, sync::A
 
 use self::QueryResultInner::*;
 use crate::{
-    connection_like::StmtCacheResult,
     consts::StatusFlags,
     error::*,
     prelude::{ConnectionLike, FromRow, Protocol},
@@ -20,35 +19,27 @@ use crate::{
 };
 
 enum QueryResultInner {
-    Empty(Option<StmtCacheResult>),
-    WithRows(Arc<Vec<Column>>, Option<StmtCacheResult>),
+    Empty,
+    WithRows(Arc<Vec<Column>>),
 }
 
 impl QueryResultInner {
-    fn new(columns: Option<Arc<Vec<Column>>>, cached: Option<StmtCacheResult>) -> Self {
+    fn new(columns: Option<Arc<Vec<Column>>>) -> Self {
         match columns {
-            Some(columns) => WithRows(columns, cached),
-            None => Empty(cached),
+            Some(columns) => WithRows(columns),
+            None => Empty,
         }
     }
 
     fn columns(&self) -> Option<&Arc<Vec<Column>>> {
         match self {
-            WithRows(columns, _) => Some(columns),
-            Empty(_) => None,
-        }
-    }
-
-    fn cached(&self) -> Option<StmtCacheResult> {
-        match *self {
-            WithRows(_, cached) | Empty(cached) => cached,
+            WithRows(columns) => Some(columns),
+            Empty => None,
         }
     }
 
     fn make_empty(&mut self) {
-        *self = match *self {
-            WithRows(_, cached) | Empty(cached) => Empty(cached),
-        }
+        *self = Empty
     }
 }
 
@@ -67,21 +58,18 @@ where
     pub(crate) fn new(
         conn_like: &'a mut T,
         columns: Option<Arc<Vec<Column>>>,
-        cached: Option<StmtCacheResult>,
     ) -> QueryResult<'a, T, P> {
         QueryResult {
             conn_like,
-            inner: QueryResultInner::new(columns, cached),
+            inner: QueryResultInner::new(columns),
             __phantom: PhantomData,
         }
     }
 
-    pub(crate) fn disassemble(
-        self,
-    ) -> (&'a mut T, Option<Arc<Vec<Column>>>, Option<StmtCacheResult>) {
+    pub(crate) fn disassemble(self) -> (&'a mut T, Option<Arc<Vec<Column>>>) {
         match self.inner {
-            WithRows(columns, cached) => (self.conn_like, Some(columns), cached),
-            Empty(cached) => (self.conn_like, None, cached),
+            WithRows(columns) => (self.conn_like, Some(columns)),
+            Empty => (self.conn_like, None),
         }
     }
 
@@ -100,8 +88,7 @@ where
         if P::is_last_result_set_packet(&*self.conn_like, &packet) {
             if self.more_results_exists() {
                 self.conn_like.sync_seq_id();
-                let cached = self.inner.cached();
-                let next_set = self.conn_like.read_result_set::<P>(cached).await?;
+                let next_set = self.conn_like.read_result_set::<P>().await?;
                 self.inner = next_set.inner;
                 Ok(None)
             } else {
@@ -116,7 +103,7 @@ where
     /// Returns next row, if any.
     ///
     /// Requires that `self.inner` matches `WithRows(..)`.
-    async fn get_row(&mut self) -> Result<Option<Row>> {
+    pub(crate) async fn get_row(&mut self) -> Result<Option<Row>> {
         let packet = self.get_row_raw().await?;
         if let Some(packet) = packet {
             let columns = self.inner.columns().expect("must be here");
@@ -183,10 +170,9 @@ where
     /// It'll panic if any row isn't convertible to `R` (i.e. programmer error or unknown schema).
     /// * In case of programmer error see [`FromRow`] docs;
     /// * In case of unknown schema use [`QueryResult::try_collect`].
-    pub async fn collect<R>(&mut self) -> Result<Vec<R>>
+    pub async fn collect<'b, R>(&mut self) -> Result<Vec<R>>
     where
-        R: FromRow,
-        R: Send + 'static,
+        R: FromRow + Send + 'static,
     {
         self.reduce(Vec::new(), |mut acc, row| {
             acc.push(FromRow::from_row(row));
@@ -201,8 +187,7 @@ where
     /// to `R`.
     pub async fn try_collect<R>(&mut self) -> Result<Vec<StdResult<R, FromRowError>>>
     where
-        R: FromRow,
-        R: Send + 'static,
+        R: FromRow + Send + 'static,
     {
         self.reduce(Vec::new(), |mut acc, row| {
             acc.push(FromRow::from_row_opt(row));
@@ -219,10 +204,9 @@ where
     /// It'll panic if any row isn't convertible to `R` (i.e. programmer error or unknown schema).
     /// * In case of programmer error see `FromRow` docs;
     /// * In case of unknown schema use [`QueryResult::try_collect`].
-    pub async fn collect_and_drop<R>(mut self) -> Result<Vec<R>>
+    pub async fn collect_and_drop<'b, R>(mut self) -> Result<Vec<R>>
     where
-        R: FromRow,
-        R: Send + 'static,
+        R: FromRow + Send + 'static,
     {
         let output = self.collect::<R>().await?;
         self.drop_result().await?;
@@ -236,8 +220,7 @@ where
     /// convertible to `R`.
     pub async fn try_collect_and_drop<R>(mut self) -> Result<Vec<StdResult<R, FromRowError>>>
     where
-        R: FromRow,
-        R: Send + 'static,
+        R: FromRow + Send + 'static,
     {
         let output = self.try_collect().await?;
         self.drop_result().await?;
@@ -344,21 +327,17 @@ where
 
     /// Returns a future that will drop this query result.
     pub async fn drop_result(mut self) -> Result<()> {
-        let cached = loop {
+        loop {
             if !self.has_rows() {
                 if self.more_results_exists() {
-                    let (inner, _, cached) = self.disassemble();
-                    self = inner.read_result_set(cached).await?;
+                    let (inner, _) = self.disassemble();
+                    self = inner.read_result_set().await?;
                 } else {
-                    break self.inner.cached();
+                    break;
                 }
             } else {
                 self.get_row_raw().await?;
             }
-        };
-
-        if let Some(StmtCacheResult::NotCached(statement_id)) = cached {
-            self.conn_like.close_stmt(statement_id).await?;
         }
 
         Ok(())

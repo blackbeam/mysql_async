@@ -6,72 +6,118 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use lru::LruCache;
 use twox_hash::XxHash;
 
-#[cfg(test)]
-use std::collections::vec_deque::Iter;
 use std::{
     borrow::Borrow,
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     hash::{BuildHasherDefault, Hash},
+    sync::Arc,
 };
 
-use crate::queryable::stmt::InnerStmt;
+use crate::queryable::stmt::StmtInner;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct QueryString(pub Arc<str>);
+
+impl Borrow<str> for QueryString {
+    fn borrow(&self) -> &str {
+        &*self.0.as_ref()
+    }
+}
+
+impl PartialEq<str> for QueryString {
+    fn eq(&self, other: &str) -> bool {
+        &*self.0.as_ref() == other
+    }
+}
+
+pub struct Entry {
+    pub stmt: Arc<StmtInner>,
+    pub query: QueryString,
+}
 
 #[derive(Debug)]
 pub struct StmtCache {
     cap: usize,
-    map: HashMap<String, InnerStmt, BuildHasherDefault<XxHash>>,
-    order: VecDeque<String>,
+    cache: LruCache<u32, Entry>,
+    query_map: HashMap<QueryString, u32, BuildHasherDefault<XxHash>>,
 }
 
 impl StmtCache {
-    pub(crate) fn new(cap: usize) -> StmtCache {
-        StmtCache {
+    pub fn new(cap: usize) -> Self {
+        Self {
             cap,
-            map: Default::default(),
-            order: VecDeque::with_capacity(cap),
+            cache: LruCache::unbounded(),
+            query_map: Default::default(),
         }
     }
 
-    pub(crate) fn get<T>(&mut self, key: &T) -> Option<&InnerStmt>
+    pub fn contains_query<T>(&self, key: &T) -> bool
     where
-        String: Borrow<T>,
-        String: PartialEq<T>,
+        QueryString: Borrow<T>,
         T: Hash + Eq,
         T: ?Sized,
     {
-        if self.map.contains_key(key) {
-            if let Some(pos) = self.order.iter().position(|x| x == key) {
-                if let Some(inner_st) = self.order.remove(pos) {
-                    self.order.push_back(inner_st);
-                }
+        self.query_map.contains_key(key)
+    }
+
+    pub fn by_query<T>(&mut self, query: &T) -> Option<&Entry>
+    where
+        QueryString: Borrow<T>,
+        QueryString: PartialEq<T>,
+        T: Hash + Eq,
+        T: ?Sized,
+    {
+        let id = self.query_map.get(query).cloned();
+        match id {
+            Some(id) => self.cache.get(&id),
+            None => None,
+        }
+    }
+
+    pub fn put(&mut self, query: Arc<str>, stmt: Arc<StmtInner>) -> Option<Arc<StmtInner>> {
+        if self.cap == 0 {
+            return None;
+        }
+
+        let query = QueryString(query);
+
+        self.query_map.insert(query.clone(), stmt.id());
+        self.cache.put(stmt.id(), Entry { stmt, query });
+
+        if self.cache.len() > self.cap {
+            if let Some((_, entry)) = self.cache.pop_lru() {
+                self.query_map.remove(&*entry.query.0.as_ref());
+                return Some(entry.stmt);
             }
-            self.map.get(key)
-        } else {
-            None
         }
+
+        None
     }
 
-    pub(crate) fn put(&mut self, key: String, value: InnerStmt) -> Option<InnerStmt> {
-        self.map.insert(key.clone(), value);
-        self.order.push_back(key);
-        if self.order.len() > self.cap {
-            self.order
-                .pop_front()
-                .and_then(|stmt| self.map.remove(&stmt))
-        } else {
-            None
-        }
+    pub fn clear(&mut self) {
+        self.query_map.clear();
+        self.cache.clear();
     }
 
-    pub(crate) fn clear(&mut self) {
-        self.map.clear();
-        self.order.clear();
+    pub fn remove(&mut self, id: u32) {
+        if let Some(entry) = self.cache.pop(&id) {
+            self.query_map.remove::<str>(entry.query.borrow());
+        }
     }
 
     #[cfg(test)]
-    pub(crate) fn iter<'a>(&'a self) -> Iter<'a, String> {
-        self.order.iter()
+    pub fn iter(&self) -> impl Iterator<Item = (&u32, &Entry)> {
+        self.cache.iter()
+    }
+
+    pub fn into_iter(mut self) -> impl Iterator<Item = (u32, Entry)> {
+        std::iter::from_fn(move || self.cache.pop_lru())
+    }
+
+    pub fn len(&self) -> usize {
+        self.cache.len()
     }
 }

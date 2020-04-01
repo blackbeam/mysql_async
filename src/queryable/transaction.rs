@@ -8,7 +8,7 @@
 
 use std::fmt;
 
-use crate::{connection_like::ConnectionLike, error::*, queryable::Queryable};
+use crate::{connection_like::ConnectionLike, error::*, queryable::Queryable, Conn};
 
 /// Transaction status.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -20,6 +20,16 @@ pub enum TxStatus {
     RequiresRollback,
     /// Connection is not in transaction at the moment.
     None,
+}
+
+impl Conn {
+    /// Returns a future that starts a transaction.
+    pub async fn start_transaction(
+        &mut self,
+        options: TransactionOptions,
+    ) -> Result<Transaction<'_, Self>> {
+        Transaction::new(self, options).await
+    }
 }
 
 /// Transaction options.
@@ -74,6 +84,8 @@ impl TransactionOptions {
 
     /// If not `None`, then `SET TRANSACTION READ ONLY|WRITE` will be performed.
     /// Defaults to `None`.
+    ///
+    /// Only available since MySql 5.6.5.
     pub fn readonly(&self) -> Option<bool> {
         self.readonly
     }
@@ -106,7 +118,7 @@ impl fmt::Display for IsolationLevel {
 /// `NestedTransaction` error if you call `transaction.start_transaction(_)`.
 pub struct Transaction<'a, T: ConnectionLike>(&'a mut T);
 
-impl<'a, T: Queryable + ConnectionLike> Transaction<'a, T> {
+impl<'a, T: Queryable> Transaction<'a, T> {
     pub(crate) async fn new(
         conn_like: &'a mut T,
         options: TransactionOptions,
@@ -127,23 +139,23 @@ impl<'a, T: Queryable + ConnectionLike> Transaction<'a, T> {
 
         if let Some(isolation_level) = isolation_level {
             let query = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation_level);
-            conn_like.drop_query(query).await?;
+            conn_like.query_drop(query).await?;
         }
 
         if let Some(readonly) = readonly {
             if readonly {
-                conn_like.drop_query("SET TRANSACTION READ ONLY").await?;
+                conn_like.query_drop("SET TRANSACTION READ ONLY").await?;
             } else {
-                conn_like.drop_query("SET TRANSACTION READ WRITE").await?;
+                conn_like.query_drop("SET TRANSACTION READ WRITE").await?;
             }
         }
 
         if consistent_snapshot {
             conn_like
-                .drop_query("START TRANSACTION WITH CONSISTENT SNAPSHOT")
+                .query_drop("START TRANSACTION WITH CONSISTENT SNAPSHOT")
                 .await?
         } else {
-            conn_like.drop_query("START TRANSACTION").await?
+            conn_like.query_drop("START TRANSACTION").await?
         };
 
         conn_like.set_tx_status(TxStatus::InTransaction);
@@ -152,7 +164,7 @@ impl<'a, T: Queryable + ConnectionLike> Transaction<'a, T> {
 
     /// Performs `COMMIT` query.
     pub async fn commit(mut self) -> Result<()> {
-        let result = self.0.query("COMMIT").await?;
+        let result = self.0.query_iter("COMMIT").await?;
         result.drop_result().await?;
         self.set_tx_status(TxStatus::None);
         Ok(())
@@ -160,7 +172,7 @@ impl<'a, T: Queryable + ConnectionLike> Transaction<'a, T> {
 
     /// Performs `ROLLBACK` query.
     pub async fn rollback(mut self) -> Result<()> {
-        let result = self.0.query("ROLLBACK").await?;
+        let result = self.0.query_iter("ROLLBACK").await?;
         result.drop_result().await?;
         self.set_tx_status(TxStatus::None);
         Ok(())
@@ -176,14 +188,12 @@ impl<T: ConnectionLike> Drop for Transaction<'_, T> {
 }
 
 impl<'a, T: ConnectionLike> ConnectionLike for Transaction<'a, T> {
+    fn conn_mut(&mut self) -> &mut crate::Conn {
+        self.0.conn_mut()
+    }
+
     fn stream_mut(&mut self) -> &mut crate::io::Stream {
         self.0.stream_mut()
-    }
-    fn stmt_cache_ref(&self) -> &crate::conn::stmt_cache::StmtCache {
-        self.0.stmt_cache_ref()
-    }
-    fn stmt_cache_mut(&mut self) -> &mut crate::conn::stmt_cache::StmtCache {
-        self.0.stmt_cache_mut()
     }
     fn get_affected_rows(&self) -> u64 {
         self.0.get_affected_rows()
@@ -246,5 +256,14 @@ impl<'a, T: ConnectionLike> ConnectionLike for Transaction<'a, T> {
     }
     fn on_disconnect(&mut self) {
         self.0.on_disconnect()
+    }
+    fn connection_id(&self) -> u32 {
+        self.0.connection_id()
+    }
+    fn stmt_cache_ref(&self) -> &crate::conn::stmt_cache::StmtCache {
+        self.0.stmt_cache_ref()
+    }
+    fn stmt_cache_mut(&mut self) -> &mut crate::conn::stmt_cache::StmtCache {
+        self.0.stmt_cache_mut()
     }
 }

@@ -6,351 +6,309 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use crate::{
-    connection_like::{ConnectionLike, StmtCacheResult},
-    error::*,
-    prelude::FromRow,
-    queryable::{query_result::QueryResult, transaction::TxStatus, BinaryProtocol},
-    Column, Params,
-    Value::{self},
-};
 use mysql_common::{
     constants::MAX_PAYLOAD_LEN,
-    packets::{parse_stmt_packet, ComStmtExecuteRequestBuilder, ComStmtSendLongData},
+    packets::{
+        column_from_payload, parse_stmt_packet, ComStmtClose, ComStmtExecuteRequestBuilder,
+        ComStmtSendLongData, StmtPacket,
+    },
 };
 
-/// Inner statement representation.
-#[derive(Eq, PartialEq, Clone, Debug)]
-pub struct InnerStmt {
-    /// Positions and names of named parameters
-    pub named_params: Option<Vec<String>>,
-    pub params: Option<Vec<Column>>,
-    pub columns: Option<Vec<Column>>,
-    pub statement_id: u32,
-    pub num_columns: u16,
-    pub num_params: u16,
-    pub warning_count: u16,
+use std::{borrow::Cow, sync::Arc};
+
+use crate::{
+    conn::named_params::parse_named_params,
+    connection_like::ConnectionLike,
+    consts::{CapabilityFlags, Command},
+    error::*,
+    queryable::{query_result::QueryResult, BinaryProtocol},
+    Column, Params, Value,
+};
+
+pub(crate) async fn get_statement<T, U>(conn_like: &mut T, stmt_like: &U) -> Result<Statement>
+where
+    T: ConnectionLike,
+    U: StatementLike + ?Sized,
+{
+    let (named_params, raw_query) = stmt_like.info()?;
+    let stmt_inner = if let Some(stmt_inner) = conn_like.get_cached_stmt(raw_query.as_ref()) {
+        stmt_inner
+    } else {
+        prepare_statement(conn_like, raw_query).await?
+    };
+    Ok(Statement::new(stmt_inner, named_params))
 }
 
-impl InnerStmt {
-    pub(crate) fn new(payload: &[u8], named_params: Option<Vec<String>>) -> Result<InnerStmt> {
-        let packet = parse_stmt_packet(payload)?;
+pub(crate) async fn prepare_statement<'a, T>(
+    conn_like: &'a mut T,
+    raw_query: Cow<'_, str>,
+) -> Result<Arc<StmtInner>>
+where
+    T: ConnectionLike,
+{
+    /// Requires `num > 0`.
+    async fn read_column_defs<T, U>(conn_like: &mut T, num: U) -> Result<Vec<Column>>
+    where
+        T: ConnectionLike,
+        U: Into<usize>,
+    {
+        let num = num.into();
+        debug_assert!(num > 0);
+        let packets = conn_like.read_packets(num).await?;
+        let defs = packets
+            .into_iter()
+            .map(column_from_payload)
+            .collect::<std::result::Result<Vec<Column>, _>>()
+            .map_err(Error::from)?;
 
-        Ok(InnerStmt {
-            named_params,
-            statement_id: packet.statement_id(),
-            num_columns: packet.num_columns(),
-            num_params: packet.num_params(),
-            warning_count: packet.warning_count(),
-            params: None,
+        if !conn_like
+            .get_capabilities()
+            .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
+        {
+            conn_like.read_packet().await?;
+        }
+
+        Ok(defs)
+    }
+
+    let raw_query: Arc<str> = raw_query.into_owned().into_boxed_str().into();
+
+    conn_like
+        .write_command_data(Command::COM_STMT_PREPARE, raw_query.as_bytes())
+        .await?;
+
+    let packet = conn_like.read_packet().await?;
+    let mut inner_stmt = StmtInner::from_payload(&*packet, conn_like.connection_id(), raw_query)?;
+
+    if inner_stmt.num_params() > 0 {
+        let params = read_column_defs(conn_like, inner_stmt.num_params()).await?;
+        inner_stmt = inner_stmt.with_params(params);
+    }
+
+    if inner_stmt.num_columns() > 0 {
+        let columns = read_column_defs(conn_like, inner_stmt.num_columns()).await?;
+        inner_stmt = inner_stmt.with_columns(columns);
+    }
+
+    let inner_stmt = Arc::new(inner_stmt);
+
+    if let Some(old_stmt) = conn_like.cache_stmt(&inner_stmt) {
+        close_statement(conn_like, old_stmt.id()).await?;
+    }
+
+    Ok(inner_stmt)
+}
+
+pub(crate) async fn execute_statement<'a, T, P>(
+    conn_like: &'a mut T,
+    statement: &Statement,
+    params: P,
+) -> Result<QueryResult<'a, T, BinaryProtocol>>
+where
+    T: ConnectionLike,
+    P: Into<Params>,
+{
+    let mut params = params.into();
+    loop {
+        match params {
+            Params::Positional(params) => {
+                if statement.num_params() as usize != params.len() {
+                    Err(DriverError::StmtParamsMismatch {
+                        required: statement.num_params(),
+                        supplied: params.len() as u16,
+                    })?
+                }
+
+                let params = params.into_iter().collect::<Vec<_>>();
+
+                let (body, as_long_data) =
+                    ComStmtExecuteRequestBuilder::new(statement.id()).build(&*params);
+
+                if as_long_data {
+                    for (i, value) in params.into_iter().enumerate() {
+                        if let Value::Bytes(bytes) = value {
+                            let chunks = bytes.chunks(MAX_PAYLOAD_LEN - 6);
+                            let chunks = chunks.chain(if bytes.is_empty() {
+                                Some(&[][..])
+                            } else {
+                                None
+                            });
+                            for chunk in chunks {
+                                let com = ComStmtSendLongData::new(statement.id(), i, chunk);
+                                conn_like.write_command_raw(com.into()).await?;
+                            }
+                        }
+                    }
+                }
+
+                conn_like.write_command_raw(body).await?;
+                break conn_like.read_result_set().await;
+            }
+            Params::Named(_) => {
+                if statement.named_params.is_none() {
+                    let error = DriverError::NamedParamsForPositionalQuery.into();
+                    return Err(error);
+                }
+
+                params = match params.into_positional(statement.named_params.as_ref().unwrap()) {
+                    Ok(positional_params) => positional_params,
+                    Err(error) => return Err(error.into()),
+                };
+
+                continue;
+            }
+            Params::Empty => {
+                if statement.num_params() > 0 {
+                    let error = DriverError::StmtParamsMismatch {
+                        required: statement.num_params(),
+                        supplied: 0,
+                    }
+                    .into();
+                    return Err(error);
+                }
+
+                let (body, _) = ComStmtExecuteRequestBuilder::new(statement.id()).build(&[]);
+                conn_like.write_command_raw(body).await?;
+                break conn_like.read_result_set().await;
+            }
+        }
+    }
+}
+
+pub(crate) async fn close_statement<T>(conn_like: &mut T, id: u32) -> Result<()>
+where
+    T: ConnectionLike,
+{
+    conn_like
+        .write_command_raw(ComStmtClose::new(id).into())
+        .await
+}
+
+pub trait StatementLike: Send + Sync {
+    /// Returns raw statement query coupled with its nemed parameters.
+    fn info(&self) -> Result<(Option<Vec<String>>, Cow<str>)>;
+}
+
+impl StatementLike for str {
+    fn info(&self) -> Result<(Option<Vec<String>>, Cow<str>)> {
+        parse_named_params(self).map_err(From::from)
+    }
+}
+
+impl StatementLike for Statement {
+    fn info(&self) -> Result<(Option<Vec<String>>, Cow<str>)> {
+        Ok((
+            self.named_params.clone(),
+            self.inner.raw_query.as_ref().into(),
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct StmtInner {
+    pub(crate) raw_query: Arc<str>,
+    columns: Option<Box<[Column]>>,
+    params: Option<Box<[Column]>>,
+    stmt_packet: StmtPacket,
+    connection_id: u32,
+}
+
+impl StmtInner {
+    pub(crate) fn from_payload(
+        pld: &[u8],
+        connection_id: u32,
+        raw_query: Arc<str>,
+    ) -> std::io::Result<Self> {
+        let stmt_packet = parse_stmt_packet(pld)?;
+
+        Ok(Self {
+            raw_query,
             columns: None,
+            params: None,
+            stmt_packet,
+            connection_id,
         })
+    }
+
+    pub(crate) fn with_params(mut self, params: Vec<Column>) -> Self {
+        self.params = if params.is_empty() {
+            None
+        } else {
+            Some(params.into_boxed_slice())
+        };
+        self
+    }
+
+    pub(crate) fn with_columns(mut self, columns: Vec<Column>) -> Self {
+        self.columns = if columns.is_empty() {
+            None
+        } else {
+            Some(columns.into_boxed_slice())
+        };
+        self
+    }
+
+    pub(crate) fn columns(&self) -> &[Column] {
+        self.columns.as_ref().map(AsRef::as_ref).unwrap_or(&[])
+    }
+
+    pub(crate) fn params(&self) -> &[Column] {
+        self.params.as_ref().map(AsRef::as_ref).unwrap_or(&[])
+    }
+
+    pub(crate) fn id(&self) -> u32 {
+        self.stmt_packet.statement_id()
+    }
+
+    pub(crate) const fn connection_id(&self) -> u32 {
+        self.connection_id
+    }
+
+    pub(crate) fn num_params(&self) -> u16 {
+        self.stmt_packet.num_params()
+    }
+
+    pub(crate) fn num_columns(&self) -> u16 {
+        self.stmt_packet.num_columns()
     }
 }
 
 /// Prepared statement.
-#[derive(Debug)]
-pub struct Stmt<'a, T> {
-    conn_like: &'a mut T,
-    inner: InnerStmt,
-    /// None => In use elsewhere
-    /// Some(Cached) => Should not be closed
-    /// Some(NotCached(_)) => Should be closed
-    pub(crate) cached: Option<StmtCacheResult>,
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct Statement {
+    pub(crate) inner: Arc<StmtInner>,
+    pub(crate) named_params: Option<Vec<String>>,
 }
 
-impl<'a, T> Stmt<'a, T>
-where
-    T: crate::prelude::ConnectionLike,
-{
-    pub(crate) fn new(
-        conn_like: &'a mut T,
-        inner: InnerStmt,
-        cached: StmtCacheResult,
-    ) -> Stmt<'a, T> {
-        Stmt {
-            conn_like,
+impl Statement {
+    pub(crate) fn new(inner: Arc<StmtInner>, named_params: Option<Vec<String>>) -> Self {
+        Self {
             inner,
-            cached: Some(cached),
+            named_params,
         }
     }
 
-    /// Returns an identifier of the statement.
-    pub fn id(&self) -> u32 {
-        self.inner.statement_id
-    }
-
-    /// Returns a list of statement columns.
-    ///
-    /// ```rust
-    /// # use mysql_async::test_misc::get_opts;
-    /// use mysql_async::{consts::{ColumnFlags, ColumnType}, Pool};
-    /// use mysql_async::prelude::*;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), mysql_async::error::Error> {
-    ///     let pool = Pool::new(get_opts());
-    ///     let mut conn = pool.get_conn().await?;
-    ///
-    ///     let stmt = conn.prepare("SELECT 'foo', CAST(42 AS UNSIGNED)").await?;
-    ///
-    ///     let columns = stmt.columns();
-    ///
-    ///     assert_eq!(columns.len(), 2);
-    ///     assert_eq!(columns[0].column_type(), ColumnType::MYSQL_TYPE_VAR_STRING);
-    ///     assert!(columns[1].flags().contains(ColumnFlags::UNSIGNED_FLAG));
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
     pub fn columns(&self) -> &[Column] {
-        self.inner
-            .columns
-            .as_ref()
-            .map(|c| &c[..])
-            .unwrap_or_default()
+        self.inner.columns()
     }
 
-    /// Returns a list of statement parameters.
-    ///
-    /// ```rust
-    /// # use mysql_async::test_misc::get_opts;
-    /// use mysql_async::{consts::{ColumnFlags, ColumnType}, Pool};
-    /// use mysql_async::prelude::*;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), mysql_async::error::Error> {
-    ///     let pool = Pool::new(get_opts());
-    ///     let mut conn = pool.get_conn().await?;
-    ///
-    ///     let stmt = conn.prepare("SELECT ?, ?").await?;
-    ///
-    ///     assert_eq!(stmt.params().len(), 2);
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
     pub fn params(&self) -> &[Column] {
-        self.inner
-            .params
-            .as_ref()
-            .map(|c| &c[..])
-            .unwrap_or_default()
+        self.inner.params()
     }
 
-    async fn send_long_data(&mut self, params: Vec<Value>) -> Result<()> {
-        for (i, value) in params.into_iter().enumerate() {
-            if let Value::Bytes(bytes) = value {
-                let chunks = bytes.chunks(MAX_PAYLOAD_LEN - 6);
-                let chunks = chunks.chain(if bytes.is_empty() {
-                    Some(&[][..])
-                } else {
-                    None
-                });
-                for chunk in chunks {
-                    let com = ComStmtSendLongData::new(self.inner.statement_id, i, chunk);
-                    self.write_command_raw(com.into()).await?;
-                }
-            }
-        }
-
-        Ok(())
+    pub fn id(&self) -> u32 {
+        self.inner.id()
     }
 
-    async fn execute_positional<U>(
-        &mut self,
-        params: U,
-    ) -> Result<QueryResult<'_, Stmt<'a, T>, BinaryProtocol>>
-    where
-        U: ::std::ops::Deref<Target = [Value]>,
-        U: IntoIterator<Item = Value>,
-        U: Send + 'static,
-    {
-        if self.inner.num_params as usize != params.len() {
-            Err(DriverError::StmtParamsMismatch {
-                required: self.inner.num_params,
-                supplied: params.len() as u16,
-            })?
-        }
-
-        let params = params.into_iter().collect::<Vec<_>>();
-
-        let (body, as_long_data) =
-            ComStmtExecuteRequestBuilder::new(self.inner.statement_id).build(&*params);
-
-        if as_long_data {
-            self.send_long_data(params).await?
-        }
-
-        self.write_command_raw(body).await?;
-        self.read_result_set(None).await
+    pub fn connection_id(&self) -> u32 {
+        self.inner.connection_id()
     }
 
-    async fn execute_named(
-        &mut self,
-        params: Params,
-    ) -> Result<QueryResult<'_, Stmt<'a, T>, BinaryProtocol>> {
-        if self.inner.named_params.is_none() {
-            let error = DriverError::NamedParamsForPositionalQuery.into();
-            return Err(error);
-        }
-
-        let positional_params =
-            match params.into_positional(self.inner.named_params.as_ref().unwrap()) {
-                Ok(positional_params) => positional_params,
-                Err(error) => return Err(error.into()),
-            };
-
-        match positional_params {
-            Params::Positional(params) => self.execute_positional(params).await,
-            _ => unreachable!(),
-        }
+    pub fn num_params(&self) -> u16 {
+        self.inner.num_params()
     }
 
-    async fn execute_empty(&mut self) -> Result<QueryResult<'_, Stmt<'a, T>, BinaryProtocol>> {
-        if self.inner.num_params > 0 {
-            let error = DriverError::StmtParamsMismatch {
-                required: self.inner.num_params,
-                supplied: 0,
-            }
-            .into();
-            return Err(error);
-        }
-
-        let (body, _) = ComStmtExecuteRequestBuilder::new(self.inner.statement_id).build(&[]);
-        self.write_command_raw(body).await?;
-        self.read_result_set(None).await
-    }
-
-    /// See [`Queryable::execute`].
-    pub async fn execute<P>(
-        &mut self,
-        params: P,
-    ) -> Result<QueryResult<'_, Stmt<'a, T>, BinaryProtocol>>
-    where
-        P: Into<Params>,
-    {
-        let params = params.into();
-        match params {
-            Params::Positional(params) => self.execute_positional(params).await,
-            Params::Named(_) => self.execute_named(params).await,
-            Params::Empty => self.execute_empty().await,
-        }
-    }
-
-    /// See [`Queryable::first`].
-    pub async fn first<P, R>(&mut self, params: P) -> Result<Option<R>>
-    where
-        P: Into<Params> + 'static,
-        R: FromRow,
-    {
-        let result = self.execute(params).await?;
-        let mut rows = result.collect_and_drop::<crate::Row>().await?;
-        if rows.len() > 0 {
-            Ok(Some(FromRow::from_row(rows.swap_remove(0))))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// See [`Queryable::batch`].
-    pub async fn batch<I, P>(&mut self, params_iter: I) -> Result<()>
-    where
-        I: IntoIterator<Item = P>,
-        Params: From<P>,
-    {
-        let mut params_iter = params_iter.into_iter().map(Params::from);
-        loop {
-            match params_iter.next() {
-                Some(params) => {
-                    let result = self.execute(params).await?;
-                    result.drop_result().await?;
-                }
-                None => break Ok(()),
-            }
-        }
-    }
-
-    /// This will close statement (if it's not in the cache).
-    pub async fn close(mut self) -> Result<()> {
-        let cached = self.cached.take();
-        if let Some(StmtCacheResult::NotCached(stmt_id)) = cached {
-            self.conn_like.close_stmt(stmt_id).await?;
-        }
-        Ok(())
-    }
-}
-
-impl<'a, T: ConnectionLike> ConnectionLike for Stmt<'a, T> {
-    fn stream_mut(&mut self) -> &mut crate::io::Stream {
-        self.conn_like.stream_mut()
-    }
-    fn stmt_cache_ref(&self) -> &crate::conn::stmt_cache::StmtCache {
-        self.conn_like.stmt_cache_ref()
-    }
-    fn stmt_cache_mut(&mut self) -> &mut crate::conn::stmt_cache::StmtCache {
-        self.conn_like.stmt_cache_mut()
-    }
-    fn get_affected_rows(&self) -> u64 {
-        self.conn_like.get_affected_rows()
-    }
-    fn get_capabilities(&self) -> crate::consts::CapabilityFlags {
-        self.conn_like.get_capabilities()
-    }
-    fn get_tx_status(&self) -> TxStatus {
-        self.conn_like.get_tx_status()
-    }
-    fn get_last_insert_id(&self) -> Option<u64> {
-        self.conn_like.get_last_insert_id()
-    }
-    fn get_info(&self) -> std::borrow::Cow<'_, str> {
-        self.conn_like.get_info()
-    }
-    fn get_warnings(&self) -> u16 {
-        self.conn_like.get_warnings()
-    }
-    fn get_local_infile_handler(
-        &self,
-    ) -> Option<std::sync::Arc<dyn crate::local_infile_handler::LocalInfileHandler>> {
-        self.conn_like.get_local_infile_handler()
-    }
-    fn get_max_allowed_packet(&self) -> usize {
-        self.conn_like.get_max_allowed_packet()
-    }
-    fn get_opts(&self) -> &crate::Opts {
-        self.conn_like.get_opts()
-    }
-    fn get_pending_result(&self) -> Option<&crate::conn::PendingResult> {
-        self.conn_like.get_pending_result()
-    }
-    fn get_server_version(&self) -> (u16, u16, u16) {
-        self.conn_like.get_server_version()
-    }
-    fn get_status(&self) -> crate::consts::StatusFlags {
-        self.conn_like.get_status()
-    }
-    fn set_last_ok_packet(&mut self, ok_packet: Option<mysql_common::packets::OkPacket<'static>>) {
-        self.conn_like.set_last_ok_packet(ok_packet)
-    }
-    fn set_tx_status(&mut self, tx_status: TxStatus) {
-        self.conn_like.set_tx_status(tx_status)
-    }
-    fn set_pending_result(&mut self, meta: Option<crate::conn::PendingResult>) {
-        self.conn_like.set_pending_result(meta)
-    }
-    fn set_status(&mut self, status: crate::consts::StatusFlags) {
-        self.conn_like.set_status(status)
-    }
-    fn reset_seq_id(&mut self) {
-        self.conn_like.reset_seq_id()
-    }
-    fn sync_seq_id(&mut self) {
-        self.conn_like.sync_seq_id()
-    }
-    fn touch(&mut self) -> () {
-        self.conn_like.touch()
-    }
-    fn on_disconnect(&mut self) {
-        self.conn_like.on_disconnect()
+    pub fn num_columns(&self) -> u16 {
+        self.inner.num_columns()
     }
 }

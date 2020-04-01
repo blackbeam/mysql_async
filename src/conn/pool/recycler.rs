@@ -62,20 +62,22 @@ impl Future for Recycler {
             ($self:ident, $conn:ident) => {
                 if $conn.inner.stream.is_none() || $conn.inner.disconnected {
                     // drop unestablished connection
-                    $self.discard.push(Box::pin(::futures_util::future::ok(())));
+                    $self
+                        .discard
+                        .push(BoxFuture(Box::pin(::futures_util::future::ok(()))));
                 } else if $conn.inner.tx_status != TxStatus::None
                     || $conn.inner.has_result.is_some()
                 {
-                    $self.cleaning.push(Box::pin($conn.cleanup()));
+                    $self.cleaning.push(BoxFuture(Box::pin($conn.cleanup())));
                 } else if $conn.expired() || close {
-                    $self.discard.push(Box::pin($conn.close()));
+                    $self.discard.push(BoxFuture(Box::pin($conn.close_conn())));
                 } else {
                     let mut exchange = $self.inner.exchange.lock().unwrap();
                     if exchange.available.len() >= $self.pool_opts.active_bound() {
                         drop(exchange);
-                        $self.discard.push(Box::pin($conn.close()));
+                        $self.discard.push(BoxFuture(Box::pin($conn.close_conn())));
                     } else {
-                        exchange.available.push_back(dbg!($conn.into()));
+                        exchange.available.push_back($conn.into());
                         if let Some(w) = exchange.waiting.pop_front() {
                             w.wake();
                         }
