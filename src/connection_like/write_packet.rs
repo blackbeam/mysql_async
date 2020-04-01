@@ -17,13 +17,13 @@ use std::{
 
 use crate::{connection_like::ConnectionLike, error::*};
 
-pub struct WritePacket2<'a, T: ?Sized> {
+pub struct WritePacket<'a, T: ?Sized> {
     conn_like: &'a mut T,
     data: Option<Vec<u8>>,
 }
 
-impl<'a, T: ?Sized> WritePacket2<'a, T> {
-    pub(crate) fn new(conn_like: &'a mut T, data: Vec<u8>) -> WritePacket2<'a, T> {
+impl<'a, T: ?Sized> WritePacket<'a, T> {
+    pub(crate) fn new(conn_like: &'a mut T, data: Vec<u8>) -> WritePacket<'a, T> {
         Self {
             conn_like,
             data: Some(data),
@@ -31,7 +31,7 @@ impl<'a, T: ?Sized> WritePacket2<'a, T> {
     }
 }
 
-impl<'a, T> Future for WritePacket2<'a, T>
+impl<'a, T> Future for WritePacket<'a, T>
 where
     T: ConnectionLike,
 {

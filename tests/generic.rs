@@ -57,7 +57,7 @@ where
 async fn use_generic_code() {
     let pool = Pool::new(Opts::from_url(&*get_url()).unwrap());
     let mut conn = pool.get_conn().await.unwrap();
-    let result = conn.query("SELECT 1, 2, 3").await.unwrap();
+    let result = conn.query_iter("SELECT 1, 2, 3").await.unwrap();
     let result = get_single_result::<(u8, u8, u8), _, _>(result)
         .await
         .unwrap();

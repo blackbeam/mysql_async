@@ -23,6 +23,7 @@ use crate::{
     error::*,
     opts::{Opts, PoolOptions},
     queryable::transaction::TxStatus,
+    BoxFuture,
 };
 
 mod recycler;
@@ -254,7 +255,7 @@ impl Pool {
 
             return Poll::Ready(Ok(GetConn {
                 pool: Some(self.clone()),
-                inner: GetConnInner::Connecting(Box::pin(Conn::new(self.opts.clone()))),
+                inner: GetConnInner::Connecting(BoxFuture(Box::pin(Conn::new(self.opts.clone())))),
             }));
         }
 
@@ -368,24 +369,24 @@ mod test {
         let pool = Pool::new(opts);
         pool.get_conn()
             .await?
-            .drop_query("CREATE TABLE IF NOT EXISTS tmp(id int)")
+            .query_drop("CREATE TABLE IF NOT EXISTS tmp(id int)")
             .await?;
         let mut conn = pool.get_conn().await?;
         let mut tx = conn
             .start_transaction(TransactionOptions::default())
             .await?;
-        tx.batch_exec("INSERT INTO tmp (id) VALUES (?)", vec![(1_u8,), (2_u8,)])
+        tx.exec_batch("INSERT INTO tmp (id) VALUES (?)", vec![(1_u8,), (2_u8,)])
             .await?;
-        tx.prep_exec("SELECT * FROM tmp", ()).await?;
+        tx.exec_drop("SELECT * FROM tmp", ()).await?;
         drop(tx);
         drop(conn);
         let row_opt = pool
             .get_conn()
             .await?
-            .first("SELECT COUNT(*) FROM tmp")
+            .query_first("SELECT COUNT(*) FROM tmp")
             .await?;
         assert_eq!(row_opt, Some((0u8,)));
-        pool.get_conn().await?.drop_query("DROP TABLE tmp").await?;
+        pool.get_conn().await?.query_drop("DROP TABLE tmp").await?;
         pool.disconnect().await?;
         Ok(())
     }
@@ -530,13 +531,13 @@ mod test {
         let pool = Pool::new(get_opts());
 
         let mut conn = pool.get_conn().await?;
-        let wait_timeout_orig = conn.first::<_, usize>("SELECT @@wait_timeout").await?;
-        conn.drop_query("SET GLOBAL wait_timeout = 3").await?;
+        let wait_timeout_orig: Option<usize> = conn.query_first("SELECT @@wait_timeout").await?;
+        conn.query_drop("SET GLOBAL wait_timeout = 3").await?;
         conn.disconnect().await?;
 
         let mut conn = pool.get_conn().await?;
-        let wait_timeout = conn.first::<_, usize>("SELECT @@wait_timeout").await?;
-        let id1 = conn.first::<_, usize>("SELECT CONNECTION_ID()").await?;
+        let wait_timeout: Option<usize> = conn.query_first("SELECT @@wait_timeout").await?;
+        let id1: Option<usize> = conn.query_first("SELECT CONNECTION_ID()").await?;
         drop(conn);
 
         assert_eq!(wait_timeout, Some(3));
@@ -545,11 +546,11 @@ mod test {
         tokio::time::delay_for(std::time::Duration::from_secs(6)).await;
 
         let mut conn = pool.get_conn().await?;
-        let id2 = conn.first::<_, usize>("SELECT CONNECTION_ID()").await?;
+        let id2: Option<usize> = conn.query_first("SELECT CONNECTION_ID()").await?;
         assert_eq!(ex_field!(pool, exist), 1);
         assert_ne!(id1, id2);
 
-        conn.drop_exec("SET GLOBAL wait_timeout = ?", (wait_timeout_orig,))
+        conn.exec_drop("SET GLOBAL wait_timeout = ?", (wait_timeout_orig,))
             .await?;
         drop(conn);
 
@@ -605,7 +606,7 @@ mod test {
                 let mut c = pool.get_conn().await.unwrap();
                 tokio::spawn(async move {
                     let _ = rx.await;
-                    let _ = c.drop_query("SELECT 1").await;
+                    let _ = c.query_drop("SELECT 1").await;
                 });
             });
             drop(rt);
@@ -625,7 +626,7 @@ mod test {
                 let mut c = pool.get_conn().await.unwrap();
                 tokio::spawn(async move {
                     let _ = rx.await;
-                    let _ = c.drop_query("SELECT 1").await;
+                    let _ = c.query_drop("SELECT 1").await;
                 });
                 let _ = pool.disconnect().await;
             });

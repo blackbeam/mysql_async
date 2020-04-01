@@ -5,11 +5,11 @@ use mysql_async::{
     params,
     prelude::{
         ConnectionLike, ConvIr, FromRow, FromValue, LocalInfileHandler, Protocol, Queryable,
-        ToValue,
+        StatementLike, ToValue,
     },
     time, uuid, BinaryProtocol, BoxFuture, Column, Conn, Deserialized, FromRowError,
     FromValueError, IsolationLevel, Opts, OptsBuilder, Params, Pool, PoolConstraints, PoolOptions,
-    QueryResult, Row, Serialized, SslOpts, Stmt, TextProtocol, Transaction, TransactionOptions,
-    Value, WhiteListFsLocalInfileHandler, DEFAULT_INACTIVE_CONNECTION_TTL,
+    QueryResult, Row, Serialized, SslOpts, Statement, TextProtocol, Transaction,
+    TransactionOptions, Value, WhiteListFsLocalInfileHandler, DEFAULT_INACTIVE_CONNECTION_TTL,
     DEFAULT_TTL_CHECK_INTERVAL,
 };

@@ -49,7 +49,7 @@
 //!     let mut conn = pool.get_conn().await?;
 //!
 //!     // Create temporary table
-//!     conn.drop_query(
+//!     conn.query_drop(
 //!         r"CREATE TEMPORARY TABLE payment (
 //!             customer_id int not null,
 //!             amount int not null,
@@ -66,30 +66,24 @@
 //!         }
 //!     });
 //!
-//!     conn.batch_exec(
+//!     conn.exec_batch(
 //!         r"INSERT INTO payment (customer_id, amount, account_name)
 //!             VALUES (:customer_id, :amount, :account_name)",
 //!         params,
 //!     ).await?;
 //!
-//!     // Load payments from database.
-//!     let result = conn.prep_exec("SELECT customer_id, amount, account_name FROM payment", ()).await?;
+//!     // Load payments from database. Type inference will work here.
+//!     let loaded_payments = conn.exec_map(
+//!         "SELECT customer_id, amount, account_name FROM payment",
+//!         (),
+//!         |(customer_id, amount, account_name)| Payment { customer_id, amount, account_name },
+//!     ).await?;
 //!
-//!     // Collect payments
-//!     let loaded_payments = result.map_and_drop(|row| {
-//!         let (customer_id, amount, account_name) = mysql_async::from_row(row);
-//!         Payment {
-//!             customer_id: customer_id,
-//!             amount: amount,
-//!             account_name: account_name,
-//!         }
-//!     }).await?;
+//!     // Dropped connection will go to the pool
+//!     conn;
 //!
-//!     // We must drop the connection before disconnecting the pool.
-//!     drop(conn);
-//!
-//!     // Pool must be disconnected explicitly because it's
-//!     // an asynchronous operation.
+//!     // Pool must be disconnected explicitly because
+//!     // it's an asynchronous operation.
 //!     pool.disconnect().await?;
 //!
 //!     assert_eq!(loaded_payments, payments);
@@ -107,6 +101,8 @@ extern crate test;
 
 pub use mysql_common::{chrono, constants as consts, params, time, uuid};
 
+use std::{future::Future, pin::Pin};
+
 #[macro_use]
 mod macros;
 mod conn;
@@ -118,8 +114,19 @@ mod local_infile_handler;
 mod opts;
 mod queryable;
 
-pub type BoxFuture<'a, T> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, error::Error>> + Send + 'a>>;
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub struct BoxFuture<'a, T>(Pin<Box<dyn Future<Output = Result<T, error::Error>> + Send + 'a>>);
+
+impl<T> Future for BoxFuture<'_, T> {
+    type Output = Result<T, error::Error>;
+
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.0.as_mut().poll(cx)
+    }
+}
 
 #[doc(inline)]
 pub use self::conn::Conn;
@@ -173,7 +180,7 @@ pub use self::queryable::transaction::{Transaction, TransactionOptions};
 pub use self::queryable::{BinaryProtocol, TextProtocol};
 
 #[doc(inline)]
-pub use self::queryable::stmt::Stmt;
+pub use self::queryable::stmt::Statement;
 
 /// Futures used in this crate
 pub mod futures {
@@ -184,6 +191,8 @@ pub mod futures {
 pub mod prelude {
     #[doc(inline)]
     pub use crate::local_infile_handler::LocalInfileHandler;
+    #[doc(inline)]
+    pub use crate::queryable::stmt::StatementLike;
     #[doc(inline)]
     pub use crate::queryable::Queryable;
     #[doc(inline)]
