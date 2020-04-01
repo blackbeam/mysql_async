@@ -20,12 +20,14 @@ use self::{
     transaction::{Transaction, TxStatus},
 };
 use crate::{
-    conn::PendingResult,
     connection_like::ConnectionLike,
     consts::Command,
     error::*,
     prelude::FromRow,
-    queryable::stmt::{close_statement, execute_statement, get_statement, StatementLike},
+    queryable::{
+        query_result::{read_result_set, ResultSetMeta},
+        stmt::{close_statement, execute_statement, get_statement, StatementLike},
+    },
     BoxFuture, Column, Conn, Params, Row,
 };
 
@@ -34,7 +36,8 @@ pub mod stmt;
 pub mod transaction;
 
 pub trait Protocol: Send + 'static {
-    fn pending_result(columns: Arc<Vec<Column>>) -> PendingResult;
+    /// Returns `ResultSetMeta`, that corresponds to the current protocol.
+    fn result_set_meta(columns: Arc<Vec<Column>>) -> ResultSetMeta;
     fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row>;
     fn is_last_result_set_packet<T>(conn_like: &T, packet: &[u8]) -> bool
     where
@@ -42,7 +45,7 @@ pub trait Protocol: Send + 'static {
     {
         parse_ok_packet(
             packet,
-            conn_like.get_capabilities(),
+            conn_like.conn_ref().capabilities(),
             OkPacketKind::ResultSetTerminator,
         )
         .is_ok()
@@ -56,8 +59,8 @@ pub struct TextProtocol;
 pub struct BinaryProtocol;
 
 impl Protocol for TextProtocol {
-    fn pending_result(columns: Arc<Vec<Column>>) -> PendingResult {
-        PendingResult::Text(columns)
+    fn result_set_meta(columns: Arc<Vec<Column>>) -> ResultSetMeta {
+        ResultSetMeta::Text(columns)
     }
 
     fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row> {
@@ -68,8 +71,8 @@ impl Protocol for TextProtocol {
 }
 
 impl Protocol for BinaryProtocol {
-    fn pending_result(columns: Arc<Vec<Column>>) -> PendingResult {
-        PendingResult::Binary(columns)
+    fn result_set_meta(columns: Arc<Vec<Column>>) -> ResultSetMeta {
+        ResultSetMeta::Binary(columns)
     }
 
     fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row> {
@@ -83,8 +86,8 @@ impl Protocol for BinaryProtocol {
 /// where `Transaction` is dropped without an explicit call to `commit` or `rollback`.
 async fn cleanup<T: Queryable>(queryable: &mut T) -> Result<()> {
     queryable.conn_mut().drop_result().await?;
-    if queryable.get_tx_status() == TxStatus::RequiresRollback {
-        queryable.set_tx_status(TxStatus::None);
+    if queryable.conn_ref().get_tx_status() == TxStatus::RequiresRollback {
+        queryable.conn_mut().set_tx_status(TxStatus::None);
         queryable.exec_drop("ROLLBACK", ()).await?;
     }
     Ok(())
@@ -114,7 +117,7 @@ pub trait Queryable: crate::prelude::ConnectionLike {
             cleanup(self).await?;
             self.write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
                 .await?;
-            self.read_result_set().await
+            read_result_set(self).await
         }))
     }
 
@@ -133,7 +136,7 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()> {
         BoxFuture(Box::pin(async move {
             cleanup(self).await?;
-            self.stmt_cache_mut().remove(stmt.id());
+            self.conn_mut().stmt_cache_mut().remove(stmt.id());
             close_statement(self, stmt.id()).await
         }))
     }

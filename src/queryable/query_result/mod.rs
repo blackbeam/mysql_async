@@ -7,46 +7,52 @@
 // modified, or distributed except according to those terms.
 
 use mysql_common::row::convert::FromRowError;
+use mysql_common::{
+    io::ReadMysqlExt,
+    packets::{column_from_payload, parse_local_infile_packet},
+};
+use tokio::prelude::*;
 
 use std::{borrow::Cow, marker::PhantomData, result::Result as StdResult, sync::Arc};
 
-use self::QueryResultInner::*;
 use crate::{
-    consts::StatusFlags,
+    consts::{CapabilityFlags, StatusFlags},
     error::*,
     prelude::{ConnectionLike, FromRow, Protocol},
     Column, Row,
 };
 
-enum QueryResultInner {
+/// Result set metadata.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum ResultSetMeta {
+    /// Text result set, that may contain rows.
+    Text(Arc<Vec<Column>>),
+    /// Binary result set, that may contain rows.
+    Binary(Arc<Vec<Column>>),
+    /// Result with no rows.
     Empty,
-    WithRows(Arc<Vec<Column>>),
 }
 
-impl QueryResultInner {
-    fn new(columns: Option<Arc<Vec<Column>>>) -> Self {
-        match columns {
-            Some(columns) => WithRows(columns),
-            None => Empty,
-        }
-    }
-
+impl ResultSetMeta {
     fn columns(&self) -> Option<&Arc<Vec<Column>>> {
         match self {
-            WithRows(columns) => Some(columns),
-            Empty => None,
+            ResultSetMeta::Text(columns) | ResultSetMeta::Binary(columns) => Some(columns),
+            ResultSetMeta::Empty => None,
         }
     }
 
-    fn make_empty(&mut self) {
-        *self = Empty
+    fn into_columns(self) -> Option<Arc<Vec<Column>>> {
+        match self {
+            ResultSetMeta::Text(columns) | ResultSetMeta::Binary(columns) => Some(columns),
+            ResultSetMeta::Empty => None,
+        }
     }
 }
 
 /// Result of a query or statement execution.
 pub struct QueryResult<'a, T: ?Sized, P> {
     conn_like: &'a mut T,
-    inner: QueryResultInner,
+    meta: ResultSetMeta,
     __phantom: PhantomData<P>,
 }
 
@@ -55,27 +61,21 @@ where
     P: Protocol,
     T: ConnectionLike,
 {
-    pub(crate) fn new(
-        conn_like: &'a mut T,
-        columns: Option<Arc<Vec<Column>>>,
-    ) -> QueryResult<'a, T, P> {
+    pub(crate) fn new(conn_like: &'a mut T, meta: ResultSetMeta) -> QueryResult<'a, T, P> {
         QueryResult {
             conn_like,
-            inner: QueryResultInner::new(columns),
+            meta,
             __phantom: PhantomData,
         }
     }
 
     pub(crate) fn disassemble(self) -> (&'a mut T, Option<Arc<Vec<Column>>>) {
-        match self.inner {
-            WithRows(columns) => (self.conn_like, Some(columns)),
-            Empty => (self.conn_like, None),
-        }
+        (self.conn_like, self.meta.into_columns())
     }
 
     fn make_empty(&mut self) {
-        self.conn_like.set_pending_result(None);
-        self.inner.make_empty();
+        self.conn_like.conn_mut().set_pending_result(None);
+        self.meta = ResultSetMeta::Empty;
     }
 
     async fn get_row_raw(&mut self) -> Result<Option<Vec<u8>>> {
@@ -87,9 +87,9 @@ where
 
         if P::is_last_result_set_packet(&*self.conn_like, &packet) {
             if self.more_results_exists() {
-                self.conn_like.sync_seq_id();
-                let next_set = self.conn_like.read_result_set::<P>().await?;
-                self.inner = next_set.inner;
+                self.conn_like.conn_mut().sync_seq_id();
+                let next_set = read_result_set::<_, P>(self.conn_like.conn_mut()).await?;
+                self.meta = next_set.meta;
                 Ok(None)
             } else {
                 self.make_empty();
@@ -102,11 +102,11 @@ where
 
     /// Returns next row, if any.
     ///
-    /// Requires that `self.inner` matches `WithRows(..)`.
+    /// Requires that `self.meta` is not `Empty`.
     pub(crate) async fn get_row(&mut self) -> Result<Option<Row>> {
         let packet = self.get_row_raw().await?;
         if let Some(packet) = packet {
-            let columns = self.inner.columns().expect("must be here");
+            let columns = self.meta.columns().expect("must be here");
             let row = P::read_result_set_row(&packet, columns.clone())?;
             Ok(Some(row))
         } else {
@@ -116,22 +116,22 @@ where
 
     /// Last insert id, if any.
     pub fn last_insert_id(&self) -> Option<u64> {
-        self.conn_like.get_last_insert_id()
+        self.conn_like.conn_ref().last_insert_id()
     }
 
     /// Number of affected rows, as reported by the server, or `0`.
     pub fn affected_rows(&self) -> u64 {
-        self.conn_like.get_affected_rows()
+        self.conn_like.conn_ref().affected_rows()
     }
 
     /// Text information, as reported by the server, or an empty string.
     pub fn info(&self) -> Cow<'_, str> {
-        self.conn_like.get_info()
+        self.conn_like.conn_ref().info()
     }
 
     /// Number of warnings, as reported by the server, or `0`.
     pub fn warnings(&self) -> u16 {
-        self.conn_like.get_warnings()
+        self.conn_like.conn_ref().get_warnings()
     }
 
     /// `true` if there is no more rows nor result sets in this query.
@@ -145,7 +145,8 @@ where
     /// of the connection.
     fn more_results_exists(&self) -> bool {
         self.conn_like
-            .get_status()
+            .conn_ref()
+            .status()
             .contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS)
     }
 
@@ -153,7 +154,7 @@ where
     ///
     /// If `false` then there is no rows possible (for example UPDATE query).
     fn has_rows(&self) -> bool {
-        matches!(self.inner, WithRows(..))
+        !matches!(self.meta, ResultSetMeta::Empty)
     }
 
     /// Returns a future that collects result set of this query result.
@@ -331,7 +332,7 @@ where
             if !self.has_rows() {
                 if self.more_results_exists() {
                     let (inner, _) = self.disassemble();
-                    self = inner.read_result_set().await?;
+                    self = read_result_set(inner).await?;
                 } else {
                     break;
                 }
@@ -344,8 +345,10 @@ where
     }
 
     /// Returns a reference to a columns list of this query result.
+    ///
+    /// Empty list means, that this result set was never meant to contain rows.
     pub fn columns_ref(&self) -> &[Column] {
-        self.inner
+        self.meta
             .columns()
             .map(|columns| &***columns)
             .unwrap_or_default()
@@ -353,6 +356,86 @@ where
 
     /// Returns a copy of a columns list of this query result.
     pub fn columns(&self) -> Option<Arc<Vec<Column>>> {
-        self.inner.columns().cloned()
+        self.meta.columns().cloned()
+    }
+}
+
+/// Helper, that reads result set from a server.
+pub(crate) async fn read_result_set<'a, T, P>(conn_like: &'a mut T) -> Result<QueryResult<'a, T, P>>
+where
+    T: ConnectionLike,
+    P: Protocol,
+{
+    let packet = conn_like.read_packet().await?;
+    match packet.get(0) {
+        Some(0x00) => Ok(QueryResult::new(conn_like, ResultSetMeta::Empty)),
+        Some(0xFB) => handle_local_infile(conn_like, &*packet).await,
+        _ => handle_result_set(conn_like, &*packet).await,
+    }
+}
+
+/// Helper that handles local infile packet.
+pub(crate) async fn handle_local_infile<'a, T: ?Sized, P>(
+    this: &'a mut T,
+    packet: &[u8],
+) -> Result<QueryResult<'a, T, P>>
+where
+    P: Protocol,
+    T: ConnectionLike + Sized,
+{
+    let local_infile = parse_local_infile_packet(&*packet)?;
+    let (local_infile, handler) = match this.conn_mut().opts().get_local_infile_handler() {
+        Some(handler) => ((local_infile.into_owned(), handler)),
+        None => return Err(DriverError::NoLocalInfileHandler.into()),
+    };
+    let mut reader = handler.handle(local_infile.file_name_ref()).await?;
+
+    let mut buf = [0; 4096];
+    loop {
+        let read = reader.read(&mut buf[..]).await?;
+        this.write_packet(&buf[..read]).await?;
+
+        if read == 0 {
+            break;
+        }
+    }
+
+    this.read_packet().await?;
+    Ok(QueryResult::new(this, ResultSetMeta::Empty))
+}
+
+/// Helper that handles result set packet.
+pub(crate) async fn handle_result_set<'a, T: Sized, P>(
+    this: &'a mut T,
+    mut packet: &[u8],
+) -> Result<QueryResult<'a, T, P>>
+where
+    P: Protocol,
+    T: ConnectionLike,
+{
+    let column_count = packet.read_lenenc_int()?;
+    let packets = this.read_packets(column_count as usize).await?;
+    let columns = packets
+        .into_iter()
+        .map(|packet| column_from_payload(packet).map_err(Error::from))
+        .collect::<Result<Vec<Column>>>()?;
+
+    if !this
+        .conn_ref()
+        .capabilities()
+        .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
+    {
+        this.read_packet().await?;
+    }
+
+    if column_count > 0 {
+        let columns = Arc::new(columns);
+        let meta = P::result_set_meta(columns.clone());
+        this.conn_mut().set_pending_result(Some(meta.clone()));
+        Ok(QueryResult::new(this, meta))
+    } else {
+        this.conn_mut()
+            .set_pending_result(Some(ResultSetMeta::Empty));
+        Ok(QueryResult::new(this, ResultSetMeta::Empty))
     }
 }

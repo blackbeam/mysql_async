@@ -129,11 +129,11 @@ impl<'a, T: Queryable> Transaction<'a, T> {
             readonly,
         } = options;
 
-        if conn_like.get_tx_status() != TxStatus::None {
+        if conn_like.conn_ref().get_tx_status() != TxStatus::None {
             return Err(DriverError::NestedTransaction.into());
         }
 
-        if readonly.is_some() && conn_like.get_server_version() < (5, 6, 5) {
+        if readonly.is_some() && conn_like.conn_ref().server_version() < (5, 6, 5) {
             return Err(DriverError::ReadOnlyTransNotSupported.into());
         }
 
@@ -158,7 +158,7 @@ impl<'a, T: Queryable> Transaction<'a, T> {
             conn_like.query_drop("START TRANSACTION").await?
         };
 
-        conn_like.set_tx_status(TxStatus::InTransaction);
+        conn_like.conn_mut().set_tx_status(TxStatus::InTransaction);
         Ok(Transaction(conn_like))
     }
 
@@ -166,7 +166,7 @@ impl<'a, T: Queryable> Transaction<'a, T> {
     pub async fn commit(mut self) -> Result<()> {
         let result = self.0.query_iter("COMMIT").await?;
         result.drop_result().await?;
-        self.set_tx_status(TxStatus::None);
+        self.conn_mut().set_tx_status(TxStatus::None);
         Ok(())
     }
 
@@ -174,96 +174,26 @@ impl<'a, T: Queryable> Transaction<'a, T> {
     pub async fn rollback(mut self) -> Result<()> {
         let result = self.0.query_iter("ROLLBACK").await?;
         result.drop_result().await?;
-        self.set_tx_status(TxStatus::None);
+        self.conn_mut().set_tx_status(TxStatus::None);
         Ok(())
     }
 }
 
 impl<T: ConnectionLike> Drop for Transaction<'_, T> {
     fn drop(&mut self) {
-        if self.get_tx_status() == TxStatus::InTransaction {
-            self.set_tx_status(TxStatus::RequiresRollback);
+        let conn = self.conn_mut();
+        if conn.get_tx_status() == TxStatus::InTransaction {
+            conn.set_tx_status(TxStatus::RequiresRollback);
         }
     }
 }
 
 impl<'a, T: ConnectionLike> ConnectionLike for Transaction<'a, T> {
-    fn conn_mut(&mut self) -> &mut crate::Conn {
-        self.0.conn_mut()
+    fn conn_ref(&self) -> &crate::Conn {
+        self.0.conn_ref()
     }
 
-    fn stream_mut(&mut self) -> &mut crate::io::Stream {
-        self.0.stream_mut()
-    }
-    fn get_affected_rows(&self) -> u64 {
-        self.0.get_affected_rows()
-    }
-    fn get_capabilities(&self) -> crate::consts::CapabilityFlags {
-        self.0.get_capabilities()
-    }
-    fn get_tx_status(&self) -> TxStatus {
-        self.0.get_tx_status()
-    }
-    fn get_last_insert_id(&self) -> Option<u64> {
-        self.0.get_last_insert_id()
-    }
-    fn get_info(&self) -> std::borrow::Cow<'_, str> {
-        self.0.get_info()
-    }
-    fn get_warnings(&self) -> u16 {
-        self.0.get_warnings()
-    }
-    fn get_local_infile_handler(
-        &self,
-    ) -> Option<std::sync::Arc<dyn crate::local_infile_handler::LocalInfileHandler>> {
-        self.0.get_local_infile_handler()
-    }
-    fn get_max_allowed_packet(&self) -> usize {
-        self.0.get_max_allowed_packet()
-    }
-    fn get_opts(&self) -> &crate::Opts {
-        self.0.get_opts()
-    }
-    fn get_pending_result(&self) -> Option<&crate::conn::PendingResult> {
-        self.0.get_pending_result()
-    }
-    fn get_server_version(&self) -> (u16, u16, u16) {
-        self.0.get_server_version()
-    }
-    fn get_status(&self) -> crate::consts::StatusFlags {
-        self.0.get_status()
-    }
-    fn set_last_ok_packet(&mut self, ok_packet: Option<mysql_common::packets::OkPacket<'static>>) {
-        self.0.set_last_ok_packet(ok_packet)
-    }
-    fn set_tx_status(&mut self, tx_status: TxStatus) {
-        self.0.set_tx_status(tx_status)
-    }
-    fn set_pending_result(&mut self, meta: Option<crate::conn::PendingResult>) {
-        self.0.set_pending_result(meta)
-    }
-    fn set_status(&mut self, status: crate::consts::StatusFlags) {
-        self.0.set_status(status)
-    }
-    fn reset_seq_id(&mut self) {
-        self.0.reset_seq_id()
-    }
-    fn sync_seq_id(&mut self) {
-        self.0.sync_seq_id()
-    }
-    fn touch(&mut self) -> () {
-        self.0.touch()
-    }
-    fn on_disconnect(&mut self) {
-        self.0.on_disconnect()
-    }
-    fn connection_id(&self) -> u32 {
-        self.0.connection_id()
-    }
-    fn stmt_cache_ref(&self) -> &crate::conn::stmt_cache::StmtCache {
-        self.0.stmt_cache_ref()
-    }
-    fn stmt_cache_mut(&mut self) -> &mut crate::conn::stmt_cache::StmtCache {
-        self.0.stmt_cache_mut()
+    fn conn_mut(&mut self) -> &mut crate::Conn {
+        self.0.conn_mut()
     }
 }

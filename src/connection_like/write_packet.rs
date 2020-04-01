@@ -41,6 +41,7 @@ where
         if self.data.is_some() {
             let codec = Pin::new(
                 self.conn_like
+                    .conn_mut()
                     .stream_mut()
                     .codec
                     .as_mut()
@@ -52,6 +53,7 @@ where
         if let Some(data) = self.data.take() {
             let codec = Pin::new(
                 self.conn_like
+                    .conn_mut()
                     .stream_mut()
                     .codec
                     .as_mut()
@@ -63,6 +65,7 @@ where
 
         let codec = Pin::new(
             self.conn_like
+                .conn_mut()
                 .stream_mut()
                 .codec
                 .as_mut()

@@ -16,7 +16,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{connection_like::ConnectionLike, consts::StatusFlags, error::*};
+use crate::{connection_like::ConnectionLike, error::*};
 
 /// Reads some number of packets.
 #[derive(Debug)]
@@ -44,30 +44,32 @@ impl<'a, T: ConnectionLike> Future for ReadPackets<'a, T> {
         loop {
             if self.n > 0 {
                 let packet_opt =
-                    ready!(Pin::new(self.conn_like.stream_mut()).poll_next(cx)).transpose()?;
+                    ready!(Pin::new(self.conn_like.conn_mut().stream_mut()).poll_next(cx))
+                        .transpose()?;
                 match packet_opt {
                     Some(packet) => {
-                        let kind = if self.conn_like.get_pending_result().is_some() {
+                        let kind = if self.conn_like.conn_ref().get_pending_result().is_some() {
                             OkPacketKind::ResultSetTerminator
                         } else {
                             OkPacketKind::Other
                         };
 
-                        if let Ok(ok_packet) =
-                            parse_ok_packet(&*packet, self.conn_like.get_capabilities(), kind)
-                        {
-                            self.conn_like.set_status(ok_packet.status_flags());
-                            self.conn_like
-                                .set_last_ok_packet(Some(ok_packet.into_owned()));
+                        if let Ok(ok_packet) = parse_ok_packet(
+                            &*packet,
+                            self.conn_like.conn_ref().capabilities(),
+                            kind,
+                        ) {
+                            self.conn_like.conn_mut().handle_ok(ok_packet.into_owned());
                         } else if let Ok(err_packet) =
-                            parse_err_packet(&*packet, self.conn_like.get_capabilities())
+                            parse_err_packet(&*packet, self.conn_like.conn_ref().capabilities())
                         {
-                            self.conn_like.set_status(StatusFlags::empty());
-                            self.conn_like.set_last_ok_packet(None);
+                            self.conn_like
+                                .conn_mut()
+                                .handle_err(err_packet.clone().into_owned());
                             return Err(err_packet.into()).into();
                         }
 
-                        self.conn_like.touch();
+                        self.conn_like.conn_mut().touch();
                         self.packets.push(packet);
                         self.n -= 1;
                         continue;

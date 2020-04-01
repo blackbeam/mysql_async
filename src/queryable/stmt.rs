@@ -21,7 +21,10 @@ use crate::{
     connection_like::ConnectionLike,
     consts::{CapabilityFlags, Command},
     error::*,
-    queryable::{query_result::QueryResult, BinaryProtocol},
+    queryable::{
+        query_result::{read_result_set, QueryResult},
+        BinaryProtocol,
+    },
     Column, Params, Value,
 };
 
@@ -31,11 +34,12 @@ where
     U: StatementLike + ?Sized,
 {
     let (named_params, raw_query) = stmt_like.info()?;
-    let stmt_inner = if let Some(stmt_inner) = conn_like.get_cached_stmt(raw_query.as_ref()) {
-        stmt_inner
-    } else {
-        prepare_statement(conn_like, raw_query).await?
-    };
+    let stmt_inner =
+        if let Some(stmt_inner) = conn_like.conn_mut().get_cached_stmt(raw_query.as_ref()) {
+            stmt_inner
+        } else {
+            prepare_statement(conn_like, raw_query).await?
+        };
     Ok(Statement::new(stmt_inner, named_params))
 }
 
@@ -62,7 +66,8 @@ where
             .map_err(Error::from)?;
 
         if !conn_like
-            .get_capabilities()
+            .conn_ref()
+            .capabilities()
             .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
         {
             conn_like.read_packet().await?;
@@ -78,7 +83,7 @@ where
         .await?;
 
     let packet = conn_like.read_packet().await?;
-    let mut inner_stmt = StmtInner::from_payload(&*packet, conn_like.connection_id(), raw_query)?;
+    let mut inner_stmt = StmtInner::from_payload(&*packet, conn_like.conn_ref().id(), raw_query)?;
 
     if inner_stmt.num_params() > 0 {
         let params = read_column_defs(conn_like, inner_stmt.num_params()).await?;
@@ -92,7 +97,7 @@ where
 
     let inner_stmt = Arc::new(inner_stmt);
 
-    if let Some(old_stmt) = conn_like.cache_stmt(&inner_stmt) {
+    if let Some(old_stmt) = conn_like.conn_mut().cache_stmt(&inner_stmt) {
         close_statement(conn_like, old_stmt.id()).await?;
     }
 
@@ -142,7 +147,7 @@ where
                 }
 
                 conn_like.write_command_raw(body).await?;
-                break conn_like.read_result_set().await;
+                break read_result_set(conn_like).await;
             }
             Params::Named(_) => {
                 if statement.named_params.is_none() {
@@ -169,7 +174,7 @@ where
 
                 let (body, _) = ComStmtExecuteRequestBuilder::new(statement.id()).build(&[]);
                 conn_like.write_command_raw(body).await?;
-                break conn_like.read_result_set().await;
+                break read_result_set(conn_like).await;
             }
         }
     }
