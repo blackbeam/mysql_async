@@ -95,7 +95,7 @@ async fn cleanup<T: Queryable>(queryable: &mut T) -> Result<()> {
 
 pub trait Queryable: crate::prelude::ConnectionLike {
     /// Executes `COM_PING`.
-    fn ping<'a>(&'a mut self) -> BoxFuture<'a, ()> {
+    fn ping(&mut self) -> BoxFuture<'_, ()> {
         BoxFuture(Box::pin(async move {
             cleanup(self).await?;
             self.write_command_raw(vec![Command::COM_PING as u8])

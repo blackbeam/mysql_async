@@ -171,7 +171,7 @@ where
     /// It'll panic if any row isn't convertible to `R` (i.e. programmer error or unknown schema).
     /// * In case of programmer error see [`FromRow`] docs;
     /// * In case of unknown schema use [`QueryResult::try_collect`].
-    pub async fn collect<'b, R>(&mut self) -> Result<Vec<R>>
+    pub async fn collect<R>(&mut self) -> Result<Vec<R>>
     where
         R: FromRow + Send + 'static,
     {
@@ -205,7 +205,7 @@ where
     /// It'll panic if any row isn't convertible to `R` (i.e. programmer error or unknown schema).
     /// * In case of programmer error see `FromRow` docs;
     /// * In case of unknown schema use [`QueryResult::try_collect`].
-    pub async fn collect_and_drop<'b, R>(mut self) -> Result<Vec<R>>
+    pub async fn collect_and_drop<R>(mut self) -> Result<Vec<R>>
     where
         R: FromRow + Send + 'static,
     {

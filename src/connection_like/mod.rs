@@ -21,12 +21,12 @@ pub trait ConnectionLike: Send + Sized {
     fn conn_ref(&self) -> &crate::Conn;
     fn conn_mut(&mut self) -> &mut crate::Conn;
 
-    fn read_packet<'a>(&'a mut self) -> ReadPacket<'a, Self> {
+    fn read_packet(&mut self) -> ReadPacket<'_, Self> {
         ReadPacket::new(self)
     }
 
     /// Returns future that reads packets from a server.
-    fn read_packets<'a>(&'a mut self, n: usize) -> ReadPackets<'a, Self> {
+    fn read_packets(&mut self, n: usize) -> ReadPackets<'_, Self> {
         ReadPackets::new(self, n)
     }
 
@@ -38,7 +38,7 @@ pub trait ConnectionLike: Send + Sized {
     }
 
     /// Returns future that sends full command body to a server.
-    fn write_command_raw<'a>(&'a mut self, body: Vec<u8>) -> WritePacket<'a, Self> {
+    fn write_command_raw(&mut self, body: Vec<u8>) -> WritePacket<'_, Self> {
         debug_assert!(body.len() > 0);
         self.conn_mut().reset_seq_id();
         self.write_packet(body)
