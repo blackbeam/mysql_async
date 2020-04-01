@@ -26,7 +26,7 @@ use crate::{
     prelude::FromRow,
     queryable::{
         query_result::{read_result_set, ResultSetMeta},
-        stmt::{close_statement, execute_statement, get_statement, StatementLike},
+        stmt::StatementLike,
     },
     BoxFuture, Column, Conn, Params, Row,
 };
@@ -128,7 +128,7 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     {
         BoxFuture(Box::pin(async move {
             cleanup(self).await?;
-            get_statement(self, query.as_ref()).await
+            self.conn_mut().get_statement(query.as_ref()).await
         }))
     }
 
@@ -137,7 +137,7 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         BoxFuture(Box::pin(async move {
             cleanup(self).await?;
             self.conn_mut().stmt_cache_mut().remove(stmt.id());
-            close_statement(self, stmt.id()).await
+            self.conn_mut().close_statement(stmt.id()).await
         }))
     }
 
@@ -146,7 +146,7 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         &'a mut self,
         stmt: &'b Q,
         params: P,
-    ) -> BoxFuture<'b, QueryResult<'a, Self, BinaryProtocol>>
+    ) -> BoxFuture<'b, QueryResult<'a, crate::Conn, BinaryProtocol>>
     where
         Q: StatementLike + ?Sized + 'a,
         P: Into<Params>,
@@ -154,8 +154,8 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         let params = params.into();
         BoxFuture(Box::pin(async move {
             cleanup(self).await?;
-            let statement = get_statement(self, stmt).await?;
-            execute_statement(self, &statement, params).await
+            let statement = self.conn_mut().get_statement(stmt).await?;
+            self.conn_mut().execute_statement(&statement, params).await
         }))
     }
 
@@ -245,9 +245,10 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     {
         BoxFuture(Box::pin(async move {
             cleanup(self).await?;
-            let statement = get_statement(self, stmt).await?;
+            let statement = self.conn_mut().get_statement(stmt).await?;
             for params in params_iter {
-                execute_statement(self, &statement, params)
+                self.conn_mut()
+                    .execute_statement(&statement, params)
                     .await?
                     .drop_result()
                     .await?;
