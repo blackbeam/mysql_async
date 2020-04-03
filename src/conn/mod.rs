@@ -12,8 +12,9 @@ use mysql_common::{
     constants::DEFAULT_MAX_ALLOWED_PACKET,
     crypto,
     packets::{
-        parse_auth_switch_request, parse_handshake_packet, AuthPlugin, AuthSwitchRequest,
-        HandshakeResponse, OkPacket, SslRequest,
+        parse_auth_switch_request, parse_err_packet, parse_handshake_packet, parse_ok_packet,
+        AuthPlugin, AuthSwitchRequest, ErrPacket, HandshakeResponse, OkPacket, OkPacketKind,
+        SslRequest,
     },
 };
 
@@ -24,22 +25,22 @@ use std::{
     mem,
     pin::Pin,
     str::FromStr,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
 use crate::{
     conn::{pool::Pool, stmt_cache::StmtCache},
     connection_like::ConnectionLike,
-    consts::{self, CapabilityFlags},
+    consts::{CapabilityFlags, Command, StatusFlags},
     error::*,
     io::Stream,
-    local_infile_handler::LocalInfileHandler,
     opts::Opts,
     queryable::{
-        query_result::QueryResult, transaction::TxStatus, BinaryProtocol, Queryable, TextProtocol,
+        query_result::{QueryResult, ResultSetMeta},
+        transaction::TxStatus,
+        BinaryProtocol, Queryable, TextProtocol,
     },
-    Column, OptsBuilder,
+    OptsBuilder,
 };
 
 pub mod pool;
@@ -70,25 +71,18 @@ fn disconnect(mut conn: Conn) {
     }
 }
 
-#[derive(Debug)]
-pub enum PendingResult {
-    Text(Arc<Vec<Column>>),
-    Binary(Arc<Vec<Column>>),
-    Empty,
-}
-
 /// Mysql connection
 struct ConnInner {
     stream: Option<Stream>,
     id: u32,
     version: (u16, u16, u16),
-    max_allowed_packet: usize,
     socket: Option<String>,
-    capabilities: consts::CapabilityFlags,
-    status: consts::StatusFlags,
+    capabilities: CapabilityFlags,
+    status: StatusFlags,
     last_ok_packet: Option<OkPacket<'static>>,
+    last_err_packet: Option<ErrPacket<'static>>,
     pool: Option<Pool>,
-    has_result: Option<PendingResult>,
+    has_result: Option<ResultSetMeta>,
     tx_status: TxStatus,
     opts: Opts,
     last_io: Instant,
@@ -120,10 +114,10 @@ impl ConnInner {
     fn empty(opts: Opts) -> ConnInner {
         ConnInner {
             capabilities: opts.get_capabilities(),
-            status: consts::StatusFlags::empty(),
+            status: StatusFlags::empty(),
             last_ok_packet: None,
+            last_err_packet: None,
             stream: None,
-            max_allowed_packet: DEFAULT_MAX_ALLOWED_PACKET,
             version: (0, 0, 0),
             id: 0,
             has_result: None,
@@ -140,6 +134,17 @@ impl ConnInner {
             disconnected: false,
         }
     }
+
+    /// Returns mutable reference to a connection stream.
+    ///
+    /// # Panic
+    ///
+    /// Will panic if stream is already taken.
+    fn stream_mut(&mut self) -> &mut Stream {
+        self.stream
+            .as_mut()
+            .expect("call to stream_mut on invalid connection")
+    }
 }
 
 #[derive(Debug)]
@@ -149,7 +154,7 @@ pub struct Conn {
 
 impl Conn {
     /// Returns connection identifier.
-    pub fn connection_id(&self) -> u32 {
+    pub fn id(&self) -> u32 {
         self.inner.id
     }
 
@@ -157,13 +162,116 @@ impl Conn {
     /// `AUTO_INCREMENT` attribute. Returns `None` if there was no previous query on the connection
     /// or if the query did not update an AUTO_INCREMENT value.
     pub fn last_insert_id(&self) -> Option<u64> {
-        self.get_last_insert_id()
+        self.inner
+            .last_ok_packet
+            .as_ref()
+            .and_then(|ok| ok.last_insert_id())
     }
 
     /// Returns the number of rows affected by the last `INSERT`, `UPDATE`, `REPLACE` or `DELETE`
     /// query.
     pub fn affected_rows(&self) -> u64 {
-        self.get_affected_rows()
+        self.inner
+            .last_ok_packet
+            .as_ref()
+            .map(|ok| ok.affected_rows())
+            .unwrap_or_default()
+    }
+
+    /// Text information, as reported by the server in the last OK packet, or an empty string.
+    pub fn info(&self) -> Cow<'_, str> {
+        self.inner
+            .last_ok_packet
+            .as_ref()
+            .and_then(|ok| ok.info_str())
+            .unwrap_or_else(|| "".into())
+    }
+
+    /// Number of warnings, as reported by the server in the last OK packet, or `0`.
+    pub fn get_warnings(&self) -> u16 {
+        self.inner
+            .last_ok_packet
+            .as_ref()
+            .map(|ok| ok.warnings())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn stream_mut(&mut self) -> &mut Stream {
+        self.inner.stream_mut()
+    }
+
+    pub(crate) fn capabilities(&self) -> CapabilityFlags {
+        self.inner.capabilities
+    }
+
+    /// Will update last IO time for this connection.
+    pub(crate) fn touch(&mut self) {
+        self.inner.last_io = Instant::now();
+    }
+
+    /// Will set packet sequence id to `0`.
+    pub(crate) fn reset_seq_id(&mut self) {
+        if let Some(stream) = self.inner.stream.as_mut() {
+            stream.reset_seq_id();
+        }
+    }
+
+    /// Will syncronize sequence ids between compressed and uncompressed codecs.
+    pub(crate) fn sync_seq_id(&mut self) {
+        if let Some(stream) = self.inner.stream.as_mut() {
+            stream.sync_seq_id();
+        }
+    }
+
+    /// Handles OK packet.
+    pub(crate) fn handle_ok(&mut self, ok_packet: OkPacket<'static>) {
+        self.inner.status = ok_packet.status_flags();
+        self.inner.last_err_packet = None;
+        self.inner.last_ok_packet = Some(ok_packet);
+    }
+
+    /// Handles ERR packet.
+    pub(crate) fn handle_err(&mut self, err_packet: ErrPacket<'static>) {
+        self.inner.status = StatusFlags::empty();
+        self.inner.last_ok_packet = None;
+        self.inner.last_err_packet = Some(err_packet);
+    }
+
+    /// Returns the current transaction status.
+    pub(crate) fn get_tx_status(&self) -> TxStatus {
+        self.inner.tx_status
+    }
+
+    /// Sets the given transaction status for this connection.
+    pub(crate) fn set_tx_status(&mut self, tx_status: TxStatus) {
+        self.inner.tx_status = tx_status;
+    }
+
+    /// Returns pending result metadata, if any.
+    ///
+    /// If `Some(_)`, then result is not yet consumed.
+    pub(crate) fn get_pending_result(&self) -> Option<&ResultSetMeta> {
+        self.inner.has_result.as_ref()
+    }
+
+    /// Sets the given pening result metadata for this connection.
+    pub(crate) fn set_pending_result(&mut self, meta: Option<ResultSetMeta>) {
+        self.inner.has_result = meta;
+    }
+
+    /// Returns current status flags.
+    pub(crate) fn status(&self) -> StatusFlags {
+        self.inner.status
+    }
+
+    /// Returns server version.
+    pub fn server_version(&self) -> (u16, u16, u16) {
+        self.inner.version
+    }
+
+    /// Returns connection options.
+    pub fn opts(&self) -> &Opts {
+        &self.inner.opts
     }
 
     fn take_stream(&mut self) -> Stream {
@@ -172,9 +280,8 @@ impl Conn {
 
     /// Disconnects this connection from server.
     pub async fn disconnect(mut self) -> Result<()> {
-        self.on_disconnect();
-        self.write_command_data(crate::consts::Command::COM_QUIT, &[])
-            .await?;
+        self.inner.disconnected = true;
+        self.write_command_data(Command::COM_QUIT, &[]).await?;
         let stream = self.take_stream();
         stream.close().await?;
         Ok(())
@@ -251,12 +358,8 @@ impl Conn {
             let ssl_request = SslRequest::new(self.inner.capabilities);
             self.write_packet(ssl_request.as_ref()).await?;
             let conn = self;
-            let ssl_opts = conn
-                .get_opts()
-                .get_ssl_opts()
-                .cloned()
-                .expect("unreachable");
-            let domain = conn.get_opts().get_ip_or_hostname().into();
+            let ssl_opts = conn.opts().get_ssl_opts().cloned().expect("unreachable");
+            let domain = conn.opts().get_ip_or_hostname().into();
             conn.stream_mut().make_secure(domain, ssl_opts).await?;
             Ok(())
         } else {
@@ -276,7 +379,7 @@ impl Conn {
             self.inner.opts.get_user(),
             self.inner.opts.get_db_name(),
             &self.inner.auth_plugin,
-            self.get_capabilities(),
+            self.capabilities(),
             &Default::default(), // TODO: Add support
         );
 
@@ -327,7 +430,7 @@ impl Conn {
 
     fn switch_to_compression(&mut self) -> Result<()> {
         if self
-            .get_capabilities()
+            .capabilities()
             .contains(CapabilityFlags::CLIENT_COMPRESS)
         {
             if let Some(compression) = self.inner.opts.get_compression() {
@@ -403,6 +506,74 @@ impl Conn {
             }
             _ => Err(DriverError::UnexpectedPacket { payload: packet }.into()),
         }
+    }
+
+    fn handle_packet(&mut self, packet: &[u8]) -> Result<()> {
+        let kind = if self.get_pending_result().is_some() {
+            OkPacketKind::ResultSetTerminator
+        } else {
+            OkPacketKind::Other
+        };
+
+        if let Ok(ok_packet) = parse_ok_packet(&*packet, self.capabilities(), kind) {
+            self.handle_ok(ok_packet.into_owned());
+        } else if let Ok(err_packet) = parse_err_packet(&*packet, self.capabilities()) {
+            self.handle_err(err_packet.clone().into_owned());
+            return Err(err_packet.into()).into();
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn read_packet(&mut self) -> Result<Vec<u8>> {
+        let packet = crate::io::ReadPacket::new(self).await.map_err(|io_err| {
+            self.inner.stream.take();
+            self.inner.disconnected = true;
+            Error::from(io_err)
+        })?;
+        self.handle_packet(&*packet)?;
+        Ok(packet)
+    }
+
+    /// Returns future that reads packets from a server.
+    pub(crate) async fn read_packets(&mut self, n: usize) -> Result<Vec<Vec<u8>>> {
+        let mut packets = Vec::with_capacity(n);
+        for _ in 0..n {
+            packets.push(self.read_packet().await?);
+        }
+        Ok(packets)
+    }
+
+    pub(crate) async fn write_packet<T>(&mut self, data: T) -> Result<()>
+    where
+        T: Into<Vec<u8>>,
+    {
+        crate::io::WritePacket::new(self, data.into())
+            .await
+            .map_err(|io_err| {
+                self.inner.stream.take();
+                self.inner.disconnected = true;
+                From::from(io_err)
+            })
+    }
+
+    /// Returns future that sends full command body to a server.
+    pub(crate) async fn write_command_raw(&mut self, body: Vec<u8>) -> Result<()> {
+        debug_assert!(body.len() > 0);
+        self.conn_mut().reset_seq_id();
+        self.write_packet(body).await
+    }
+
+    /// Returns future that writes command to a server.
+    pub(crate) async fn write_command_data<T>(&mut self, cmd: Command, cmd_data: T) -> Result<()>
+    where
+        T: AsRef<[u8]>,
+    {
+        let cmd_data = cmd_data.as_ref();
+        let mut body = Vec::with_capacity(1 + cmd_data.len());
+        body.push(cmd as u8);
+        body.extend_from_slice(cmd_data);
+        self.write_command_raw(body).await
     }
 
     async fn drop_packet(&mut self) -> Result<()> {
@@ -528,7 +699,7 @@ impl Conn {
         let pool = self.inner.pool.clone();
 
         if self.inner.version > (5, 7, 2) {
-            self.write_command_data(consts::Command::COM_RESET_CONNECTION, &[])
+            self.write_command_data(Command::COM_RESET_CONNECTION, &[])
                 .await?;
             self.read_packet().await?;
         } else {
@@ -552,20 +723,20 @@ impl Conn {
 
     pub(crate) async fn drop_result(&mut self) -> Result<()> {
         match self.inner.has_result.take() {
-            Some(PendingResult::Text(columns)) => {
-                QueryResult::<'_, _, TextProtocol>::new(self, Some(columns))
+            Some(meta @ ResultSetMeta::Text(_)) => {
+                QueryResult::<'_, _, TextProtocol>::new(self, meta)
                     .drop_result()
                     .await?;
                 Ok(())
             }
-            Some(PendingResult::Binary(columns)) => {
-                QueryResult::<'_, _, BinaryProtocol>::new(self, Some(columns))
+            Some(meta @ ResultSetMeta::Binary(_)) => {
+                QueryResult::<'_, _, BinaryProtocol>::new(self, meta)
                     .drop_result()
                     .await?;
                 Ok(())
             }
-            Some(PendingResult::Empty) => {
-                QueryResult::<'_, _, TextProtocol>::new(self, None)
+            Some(meta @ ResultSetMeta::Empty) => {
+                QueryResult::<'_, _, TextProtocol>::new(self, meta)
                     .drop_result()
                     .await?;
                 Ok(())
@@ -589,123 +760,12 @@ impl Conn {
 }
 
 impl ConnectionLike for Conn {
-    fn conn_mut(&mut self) -> &mut crate::Conn {
+    fn conn_ref(&self) -> &crate::Conn {
         self
     }
 
-    fn connection_id(&self) -> u32 {
-        self.connection_id()
-    }
-
-    fn stream_mut(&mut self) -> &mut Stream {
-        self.inner.stream.as_mut().expect("Logic error: stream")
-    }
-
-    fn get_affected_rows(&self) -> u64 {
-        self.inner
-            .last_ok_packet
-            .as_ref()
-            .map(|ok| ok.affected_rows())
-            .unwrap_or_default()
-    }
-
-    fn get_capabilities(&self) -> consts::CapabilityFlags {
-        self.inner.capabilities
-    }
-
-    fn get_tx_status(&self) -> TxStatus {
-        self.inner.tx_status
-    }
-
-    fn get_last_insert_id(&self) -> Option<u64> {
-        self.inner
-            .last_ok_packet
-            .as_ref()
-            .and_then(|ok| ok.last_insert_id())
-    }
-
-    fn get_info(&self) -> Cow<'_, str> {
-        self.inner
-            .last_ok_packet
-            .as_ref()
-            .and_then(|ok| ok.info_str())
-            .unwrap_or_else(|| "".into())
-    }
-
-    fn get_warnings(&self) -> u16 {
-        self.inner
-            .last_ok_packet
-            .as_ref()
-            .map(|ok| ok.warnings())
-            .unwrap_or_default()
-    }
-
-    fn get_local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>> {
-        self.inner.opts.get_local_infile_handler()
-    }
-
-    fn get_max_allowed_packet(&self) -> usize {
-        self.inner.max_allowed_packet
-    }
-
-    fn get_opts(&self) -> &Opts {
-        &self.inner.opts
-    }
-
-    fn get_pending_result(&self) -> Option<&PendingResult> {
-        self.inner.has_result.as_ref()
-    }
-
-    fn get_server_version(&self) -> (u16, u16, u16) {
-        self.inner.version
-    }
-
-    fn get_status(&self) -> consts::StatusFlags {
-        self.inner.status
-    }
-
-    fn set_last_ok_packet(&mut self, ok_packet: Option<OkPacket<'static>>) {
-        self.inner.last_ok_packet = ok_packet;
-    }
-
-    fn set_tx_status(&mut self, tx_status: TxStatus) {
-        self.inner.tx_status = tx_status;
-    }
-
-    fn set_pending_result(&mut self, meta: Option<PendingResult>) {
-        self.inner.has_result = meta;
-    }
-
-    fn set_status(&mut self, status: consts::StatusFlags) {
-        self.inner.status = status;
-    }
-
-    fn reset_seq_id(&mut self) {
-        if let Some(stream) = self.inner.stream.as_mut() {
-            stream.reset_seq_id();
-        }
-    }
-
-    fn sync_seq_id(&mut self) {
-        if let Some(stream) = self.inner.stream.as_mut() {
-            stream.sync_seq_id();
-        }
-    }
-
-    fn touch(&mut self) {
-        self.inner.last_io = Instant::now();
-    }
-
-    fn on_disconnect(&mut self) {
-        self.inner.disconnected = true;
-    }
-
-    fn stmt_cache_ref(&self) -> &StmtCache {
-        &self.inner.stmt_cache
-    }
-
-    fn stmt_cache_mut(&mut self) -> &mut StmtCache {
-        &mut self.inner.stmt_cache
+    fn conn_mut(&mut self) -> &mut crate::Conn {
+        self
     }
 }
 
@@ -756,9 +816,16 @@ mod test {
         let mut tx = conn.start_transaction(Default::default()).await?;
         tx.query_drop("INSERT INTO mysql.foo (id) VALUES (42)")
             .await?;
-        tx.exec_iter("SELECT * FROM mysql.foo", ()).await?;
+        tx.exec_iter("SELECT COUNT(*) FROM mysql.foo", ()).await?;
         drop(tx);
         conn.ping().await?;
+
+        let count: u8 = conn
+            .query_first("SELECT COUNT(*) FROM mysql.foo")
+            .await?
+            .unwrap_or_default();
+
+        assert_eq!(count, 0);
 
         Ok(())
     }
@@ -887,8 +954,6 @@ mod test {
 
     #[tokio::test]
     async fn should_hold_stmt_cache_size_bound() -> super::Result<()> {
-        use crate::connection_like::ConnectionLike;
-
         let mut opts = OptsBuilder::from_opts(get_opts());
         opts.stmt_cache_size(3);
         let mut conn = Conn::new(opts).await?;
@@ -1383,99 +1448,58 @@ mod test {
 
     #[cfg(feature = "nightly")]
     mod bench {
-        use futures_util::try_future::TryFutureExt;
-
         use crate::{conn::Conn, queryable::Queryable, test_misc::get_opts};
 
         #[bench]
         fn simple_exec(bencher: &mut test::Bencher) {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut conn = runtime.block_on(Conn::new(get_opts())).unwrap();
 
             bencher.iter(|| {
-                let conn = conn_opt.take().unwrap();
-                conn_opt = Some(runtime.block_on(conn.query_drop("DO 1")).unwrap());
+                runtime.block_on(conn.query_drop("DO 1")).unwrap();
             });
 
-            runtime
-                .block_on(conn_opt.take().unwrap().disconnect())
-                .unwrap();
-            runtime.shutdown_on_idle();
+            runtime.block_on(conn.disconnect()).unwrap();
         }
 
         #[bench]
         fn select_large_string(bencher: &mut test::Bencher) {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut conn = runtime.block_on(Conn::new(get_opts())).unwrap();
 
             bencher.iter(|| {
-                let conn = conn_opt.take().unwrap();
-                conn_opt = Some(
-                    runtime
-                        .block_on(conn.query_drop("SELECT REPEAT('A', 10000)"))
-                        .unwrap(),
-                );
+                runtime
+                    .block_on(conn.query_drop("SELECT REPEAT('A', 10000)"))
+                    .unwrap();
             });
 
-            runtime
-                .block_on(conn_opt.take().unwrap().disconnect())
-                .unwrap();
-            runtime.shutdown_on_idle();
+            runtime.block_on(conn.disconnect()).unwrap();
         }
 
         #[bench]
         fn prepared_exec(bencher: &mut test::Bencher) {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            let mut stmt_opt = Some(
-                runtime
-                    .block_on(Conn::new(get_opts()).and_then(|conn| conn.prepare("DO 1")))
-                    .unwrap(),
-            );
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut conn = runtime.block_on(Conn::new(get_opts())).unwrap();
+            let stmt = runtime.block_on(conn.prep("DO 1")).unwrap();
 
             bencher.iter(|| {
-                let stmt = stmt_opt.take().unwrap();
-                stmt_opt = Some(
-                    runtime
-                        .block_on(stmt.execute(()).and_then(|result| result.drop_result()))
-                        .unwrap(),
-                );
+                runtime.block_on(conn.exec_drop(&stmt, ())).unwrap();
             });
 
-            runtime
-                .block_on(
-                    stmt_opt
-                        .take()
-                        .unwrap()
-                        .close()
-                        .and_then(|conn| conn.disconnect()),
-                )
-                .unwrap();
-            runtime.shutdown_on_idle();
+            runtime.block_on(conn.close(stmt)).unwrap();
+            runtime.block_on(conn.disconnect()).unwrap();
         }
 
         #[bench]
         fn prepare_and_exec(bencher: &mut test::Bencher) {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut conn = runtime.block_on(Conn::new(get_opts())).unwrap();
 
             bencher.iter(|| {
-                let conn = conn_opt.take().unwrap();
-                conn_opt = Some(
-                    runtime
-                        .block_on(
-                            conn.prepare("SELECT ?")
-                                .and_then(|stmt| stmt.execute((0,)))
-                                .and_then(|result| result.drop_result())
-                                .and_then(|stmt| stmt.close()),
-                        )
-                        .unwrap(),
-                );
+                runtime.block_on(conn.exec_drop("SELECT ?", (0,))).unwrap();
             });
 
-            runtime
-                .block_on(conn_opt.take().unwrap().disconnect())
-                .unwrap();
-            runtime.shutdown_on_idle();
+            runtime.block_on(conn.disconnect()).unwrap();
         }
     }
 }

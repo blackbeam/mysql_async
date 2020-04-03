@@ -8,13 +8,15 @@
 
 use bytes::BufMut;
 use pin_project::pin_project;
+use tokio::{io::Error, prelude::*};
+
 use std::{
+    io,
+    mem::MaybeUninit,
+    path::Path,
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::{io::Error, prelude::*};
-
-use std::{io, mem::MaybeUninit, path::Path};
 
 /// Unix domain socket connection on unix, or named pipe connection on windows.
 #[pin_project]

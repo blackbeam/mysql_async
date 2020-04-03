@@ -21,168 +21,12 @@ use crate::{
     connection_like::ConnectionLike,
     consts::{CapabilityFlags, Command},
     error::*,
-    queryable::{query_result::QueryResult, BinaryProtocol},
+    queryable::{
+        query_result::{read_result_set, QueryResult},
+        BinaryProtocol,
+    },
     Column, Params, Value,
 };
-
-pub(crate) async fn get_statement<T, U>(conn_like: &mut T, stmt_like: &U) -> Result<Statement>
-where
-    T: ConnectionLike,
-    U: StatementLike + ?Sized,
-{
-    let (named_params, raw_query) = stmt_like.info()?;
-    let stmt_inner = if let Some(stmt_inner) = conn_like.get_cached_stmt(raw_query.as_ref()) {
-        stmt_inner
-    } else {
-        prepare_statement(conn_like, raw_query).await?
-    };
-    Ok(Statement::new(stmt_inner, named_params))
-}
-
-pub(crate) async fn prepare_statement<'a, T>(
-    conn_like: &'a mut T,
-    raw_query: Cow<'_, str>,
-) -> Result<Arc<StmtInner>>
-where
-    T: ConnectionLike,
-{
-    /// Requires `num > 0`.
-    async fn read_column_defs<T, U>(conn_like: &mut T, num: U) -> Result<Vec<Column>>
-    where
-        T: ConnectionLike,
-        U: Into<usize>,
-    {
-        let num = num.into();
-        debug_assert!(num > 0);
-        let packets = conn_like.read_packets(num).await?;
-        let defs = packets
-            .into_iter()
-            .map(column_from_payload)
-            .collect::<std::result::Result<Vec<Column>, _>>()
-            .map_err(Error::from)?;
-
-        if !conn_like
-            .get_capabilities()
-            .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
-        {
-            conn_like.read_packet().await?;
-        }
-
-        Ok(defs)
-    }
-
-    let raw_query: Arc<str> = raw_query.into_owned().into_boxed_str().into();
-
-    conn_like
-        .write_command_data(Command::COM_STMT_PREPARE, raw_query.as_bytes())
-        .await?;
-
-    let packet = conn_like.read_packet().await?;
-    let mut inner_stmt = StmtInner::from_payload(&*packet, conn_like.connection_id(), raw_query)?;
-
-    if inner_stmt.num_params() > 0 {
-        let params = read_column_defs(conn_like, inner_stmt.num_params()).await?;
-        inner_stmt = inner_stmt.with_params(params);
-    }
-
-    if inner_stmt.num_columns() > 0 {
-        let columns = read_column_defs(conn_like, inner_stmt.num_columns()).await?;
-        inner_stmt = inner_stmt.with_columns(columns);
-    }
-
-    let inner_stmt = Arc::new(inner_stmt);
-
-    if let Some(old_stmt) = conn_like.cache_stmt(&inner_stmt) {
-        close_statement(conn_like, old_stmt.id()).await?;
-    }
-
-    Ok(inner_stmt)
-}
-
-pub(crate) async fn execute_statement<'a, T, P>(
-    conn_like: &'a mut T,
-    statement: &Statement,
-    params: P,
-) -> Result<QueryResult<'a, T, BinaryProtocol>>
-where
-    T: ConnectionLike,
-    P: Into<Params>,
-{
-    let mut params = params.into();
-    loop {
-        match params {
-            Params::Positional(params) => {
-                if statement.num_params() as usize != params.len() {
-                    Err(DriverError::StmtParamsMismatch {
-                        required: statement.num_params(),
-                        supplied: params.len() as u16,
-                    })?
-                }
-
-                let params = params.into_iter().collect::<Vec<_>>();
-
-                let (body, as_long_data) =
-                    ComStmtExecuteRequestBuilder::new(statement.id()).build(&*params);
-
-                if as_long_data {
-                    for (i, value) in params.into_iter().enumerate() {
-                        if let Value::Bytes(bytes) = value {
-                            let chunks = bytes.chunks(MAX_PAYLOAD_LEN - 6);
-                            let chunks = chunks.chain(if bytes.is_empty() {
-                                Some(&[][..])
-                            } else {
-                                None
-                            });
-                            for chunk in chunks {
-                                let com = ComStmtSendLongData::new(statement.id(), i, chunk);
-                                conn_like.write_command_raw(com.into()).await?;
-                            }
-                        }
-                    }
-                }
-
-                conn_like.write_command_raw(body).await?;
-                break conn_like.read_result_set().await;
-            }
-            Params::Named(_) => {
-                if statement.named_params.is_none() {
-                    let error = DriverError::NamedParamsForPositionalQuery.into();
-                    return Err(error);
-                }
-
-                params = match params.into_positional(statement.named_params.as_ref().unwrap()) {
-                    Ok(positional_params) => positional_params,
-                    Err(error) => return Err(error.into()),
-                };
-
-                continue;
-            }
-            Params::Empty => {
-                if statement.num_params() > 0 {
-                    let error = DriverError::StmtParamsMismatch {
-                        required: statement.num_params(),
-                        supplied: 0,
-                    }
-                    .into();
-                    return Err(error);
-                }
-
-                let (body, _) = ComStmtExecuteRequestBuilder::new(statement.id()).build(&[]);
-                conn_like.write_command_raw(body).await?;
-                break conn_like.read_result_set().await;
-            }
-        }
-    }
-}
-
-pub(crate) async fn close_statement<T>(conn_like: &mut T, id: u32) -> Result<()>
-where
-    T: ConnectionLike,
-{
-    conn_like
-        .write_command_raw(ComStmtClose::new(id).into())
-        .await
-}
 
 pub trait StatementLike: Send + Sync {
     /// Returns raw statement query coupled with its nemed parameters.
@@ -310,5 +154,171 @@ impl Statement {
 
     pub fn num_columns(&self) -> u16 {
         self.inner.num_columns()
+    }
+}
+
+impl crate::Conn {
+    /// Low-level helpers, that reads the given number of column packets from server.
+    ///
+    /// Requires `num > 0`.
+    async fn read_column_defs<U>(&mut self, num: U) -> Result<Vec<Column>>
+    where
+        U: Into<usize>,
+    {
+        let num = num.into();
+        debug_assert!(num > 0);
+        let packets = self.read_packets(num).await?;
+        let defs = packets
+            .into_iter()
+            .map(column_from_payload)
+            .collect::<std::result::Result<Vec<Column>, _>>()
+            .map_err(Error::from)?;
+
+        if !self
+            .conn_ref()
+            .capabilities()
+            .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
+        {
+            self.read_packet().await?;
+        }
+
+        Ok(defs)
+    }
+
+    /// Helper, that retrieves `Statement` from `StatementLike`.
+    pub(crate) async fn get_statement<U>(&mut self, stmt_like: &U) -> Result<Statement>
+    where
+        U: StatementLike + ?Sized,
+    {
+        let (named_params, raw_query) = stmt_like.info()?;
+        let stmt_inner = if let Some(stmt_inner) = self.get_cached_stmt(raw_query.as_ref()) {
+            stmt_inner
+        } else {
+            self.prepare_statement(raw_query).await?
+        };
+        Ok(Statement::new(stmt_inner, named_params))
+    }
+
+    /// Low-level helper, that prepares the given statement.
+    ///
+    /// `raw_query` is a query with `?` placeholders (if any).
+    async fn prepare_statement(&mut self, raw_query: Cow<'_, str>) -> Result<Arc<StmtInner>> {
+        let raw_query: Arc<str> = raw_query.into_owned().into_boxed_str().into();
+
+        self.write_command_data(Command::COM_STMT_PREPARE, raw_query.as_bytes())
+            .await?;
+
+        let packet = self.read_packet().await?;
+        let mut inner_stmt = StmtInner::from_payload(&*packet, self.conn_ref().id(), raw_query)?;
+
+        if inner_stmt.num_params() > 0 {
+            let params = self.read_column_defs(inner_stmt.num_params()).await?;
+            inner_stmt = inner_stmt.with_params(params);
+        }
+
+        if inner_stmt.num_columns() > 0 {
+            let columns = self.read_column_defs(inner_stmt.num_columns()).await?;
+            inner_stmt = inner_stmt.with_columns(columns);
+        }
+
+        let inner_stmt = Arc::new(inner_stmt);
+
+        if let Some(old_stmt) = self.conn_mut().cache_stmt(&inner_stmt) {
+            self.close_statement(old_stmt.id()).await?;
+        }
+
+        Ok(inner_stmt)
+    }
+
+    /// Helper, that executes the given statement with the given params.
+    pub(crate) async fn execute_statement<P>(
+        &mut self,
+        statement: &Statement,
+        params: P,
+    ) -> Result<QueryResult<'_, Self, BinaryProtocol>>
+    where
+        P: Into<Params>,
+    {
+        let mut params = params.into();
+        loop {
+            match params {
+                Params::Positional(params) => {
+                    if statement.num_params() as usize != params.len() {
+                        Err(DriverError::StmtParamsMismatch {
+                            required: statement.num_params(),
+                            supplied: params.len() as u16,
+                        })?
+                    }
+
+                    let params = params.into_iter().collect::<Vec<_>>();
+
+                    let (body, as_long_data) =
+                        ComStmtExecuteRequestBuilder::new(statement.id()).build(&*params);
+
+                    if as_long_data {
+                        self.send_long_data(statement.id(), params.iter()).await?;
+                    }
+
+                    self.write_command_raw(body).await?;
+                    break read_result_set(self).await;
+                }
+                Params::Named(_) => {
+                    if statement.named_params.is_none() {
+                        let error = DriverError::NamedParamsForPositionalQuery.into();
+                        return Err(error);
+                    }
+
+                    params = match params.into_positional(statement.named_params.as_ref().unwrap())
+                    {
+                        Ok(positional_params) => positional_params,
+                        Err(error) => return Err(error.into()),
+                    };
+
+                    continue;
+                }
+                Params::Empty => {
+                    if statement.num_params() > 0 {
+                        let error = DriverError::StmtParamsMismatch {
+                            required: statement.num_params(),
+                            supplied: 0,
+                        }
+                        .into();
+                        return Err(error);
+                    }
+
+                    let (body, _) = ComStmtExecuteRequestBuilder::new(statement.id()).build(&[]);
+                    self.write_command_raw(body).await?;
+                    break read_result_set(self).await;
+                }
+            }
+        }
+    }
+
+    /// Helper, that sends all `Value::Bytes` in the given list of paramenters as long data.
+    async fn send_long_data<'a, I>(&mut self, statement_id: u32, params: I) -> Result<()>
+    where
+        I: Iterator<Item = &'a Value>,
+    {
+        for (i, value) in params.enumerate() {
+            if let Value::Bytes(bytes) = value {
+                let chunks = bytes.chunks(MAX_PAYLOAD_LEN - 6);
+                let chunks = chunks.chain(if bytes.is_empty() {
+                    Some(&[][..])
+                } else {
+                    None
+                });
+                for chunk in chunks {
+                    let com = ComStmtSendLongData::new(statement_id, i, chunk);
+                    self.write_command_raw(com.into()).await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Helper, that closes statement with the given id.
+    pub(crate) async fn close_statement(&mut self, id: u32) -> Result<()> {
+        self.write_command_raw(ComStmtClose::new(id).into()).await
     }
 }

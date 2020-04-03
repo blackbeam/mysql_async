@@ -54,15 +54,6 @@ impl StmtCache {
         }
     }
 
-    pub fn contains_query<T>(&self, key: &T) -> bool
-    where
-        QueryString: Borrow<T>,
-        T: Hash + Eq,
-        T: ?Sized,
-    {
-        self.query_map.contains_key(key)
-    }
-
     pub fn by_query<T>(&mut self, query: &T) -> Option<&Entry>
     where
         QueryString: Borrow<T>,
@@ -113,11 +104,40 @@ impl StmtCache {
         self.cache.iter()
     }
 
-    pub fn into_iter(mut self) -> impl Iterator<Item = (u32, Entry)> {
-        std::iter::from_fn(move || self.cache.pop_lru())
-    }
-
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.cache.len()
+    }
+}
+
+impl super::Conn {
+    #[cfg(test)]
+    pub(crate) fn stmt_cache_ref(&self) -> &StmtCache {
+        &self.inner.stmt_cache
+    }
+
+    pub(crate) fn stmt_cache_mut(&mut self) -> &mut StmtCache {
+        &mut self.inner.stmt_cache
+    }
+
+    /// Caches the given statement.
+    ///
+    /// Returns LRU statement on cache capacity overflow.
+    pub(crate) fn cache_stmt(&mut self, stmt: &Arc<StmtInner>) -> Option<Arc<StmtInner>> {
+        let query = stmt.raw_query.clone();
+        if self.inner.opts.get_stmt_cache_size() > 0 {
+            self.stmt_cache_mut().put(query, stmt.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Returns statement, if cached.
+    ///
+    /// `raw_query` is the query with `?` placeholders (not with `:<name>` placeholders).
+    pub(crate) fn get_cached_stmt(&mut self, raw_query: &str) -> Option<Arc<StmtInner>> {
+        self.stmt_cache_mut()
+            .by_query(raw_query)
+            .map(|entry| entry.stmt.clone())
     }
 }

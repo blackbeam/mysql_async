@@ -21,6 +21,8 @@ use super::{IdlingConn, Inner};
 use crate::{queryable::transaction::TxStatus, BoxFuture, Conn, PoolOptions};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+#[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub(crate) struct Recycler {
     inner: Arc<Inner>,
     discard: FuturesUnordered<BoxFuture<'static, ()>>,

@@ -15,7 +15,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{connection_like::ConnectionLike, error::*};
+use crate::{connection_like::ConnectionLike, error::IoError};
 
 pub struct WritePacket<'a, T: ?Sized> {
     conn_like: &'a mut T,
@@ -35,12 +35,13 @@ impl<'a, T> Future for WritePacket<'a, T>
 where
     T: ConnectionLike,
 {
-    type Output = Result<()>;
+    type Output = std::result::Result<(), IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.data.is_some() {
             let codec = Pin::new(
                 self.conn_like
+                    .conn_mut()
                     .stream_mut()
                     .codec
                     .as_mut()
@@ -52,6 +53,7 @@ where
         if let Some(data) = self.data.take() {
             let codec = Pin::new(
                 self.conn_like
+                    .conn_mut()
                     .stream_mut()
                     .codec
                     .as_mut()
@@ -63,13 +65,14 @@ where
 
         let codec = Pin::new(
             self.conn_like
+                .conn_mut()
                 .stream_mut()
                 .codec
                 .as_mut()
                 .expect("must be here"),
         );
 
-        ready!(codec.poll_flush(cx)).map_err(Error::from)?;
+        ready!(codec.poll_flush(cx))?;
 
         Poll::Ready(Ok(()))
     }

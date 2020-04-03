@@ -128,6 +128,17 @@ impl<T> Future for BoxFuture<'_, T> {
     }
 }
 
+impl<'a, T> std::fmt::Debug for BoxFuture<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("BoxFuture")
+            .field(&format!(
+                "dyn Future<Output = {}>",
+                std::any::type_name::<T>()
+            ))
+            .finish()
+    }
+}
+
 #[doc(inline)]
 pub use self::conn::Conn;
 

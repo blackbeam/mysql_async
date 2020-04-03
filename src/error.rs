@@ -19,8 +19,6 @@ use std::{borrow::Cow, io, result};
 /// Result type alias for this library.
 pub type Result<T> = result::Result<T, Error>;
 
-pub(crate) type StdResult<T, E> = result::Result<T, E>;
-
 /// This type enumerates library errors.
 #[derive(Debug, Error)]
 pub enum Error {
@@ -28,7 +26,7 @@ pub enum Error {
     Driver(#[source] DriverError),
 
     #[error("Input/output error: {}", _0)]
-    Io(#[source] io::Error),
+    Io(#[source] IoError),
 
     #[error("Other error: {}", _0)]
     Other(Cow<'static, str>),
@@ -36,11 +34,18 @@ pub enum Error {
     #[error("Server error: `{}'", _0)]
     Server(#[source] ServerError),
 
-    #[error("TLS error: `{}'", _0)]
-    Tls(#[source] native_tls::Error),
-
     #[error("URL error: `{}'", _0)]
     Url(#[source] UrlError),
+}
+
+/// This type enumerates IO errors.
+#[derive(Debug, Error)]
+pub enum IoError {
+    #[error("Input/output error: {}", _0)]
+    Io(#[source] io::Error),
+
+    #[error("TLS error: `{}'", _0)]
+    Tls(#[source] native_tls::Error),
 }
 
 /// This type represents MySql server error.
@@ -142,9 +147,21 @@ impl From<DriverError> for Error {
     }
 }
 
+impl From<IoError> for Error {
+    fn from(io: IoError) -> Self {
+        Error::Io(io)
+    }
+}
+
+impl From<io::Error> for IoError {
+    fn from(err: io::Error) -> Self {
+        IoError::Io(err)
+    }
+}
+
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
-        Error::Io(err)
+        Error::Io(err.into())
     }
 }
 
@@ -160,9 +177,9 @@ impl From<UrlError> for Error {
     }
 }
 
-impl From<native_tls::Error> for Error {
+impl From<native_tls::Error> for IoError {
     fn from(err: native_tls::Error) -> Self {
-        Error::Tls(err)
+        IoError::Tls(err)
     }
 }
 
@@ -237,15 +254,25 @@ impl From<ParseError> for Error {
     }
 }
 
-impl From<PacketCodecError> for Error {
+impl From<PacketCodecError> for IoError {
     fn from(err: PacketCodecError) -> Self {
         match err {
             PacketCodecError::Io(err) => err.into(),
-            PacketCodecError::PacketTooLarge => DriverError::PacketTooLarge.into(),
-            PacketCodecError::PacketsOutOfSync => DriverError::PacketOutOfOrder.into(),
+            PacketCodecError::PacketTooLarge => {
+                io::Error::new(io::ErrorKind::Other, "packet too large").into()
+            }
+            PacketCodecError::PacketsOutOfSync => {
+                io::Error::new(io::ErrorKind::Other, "packet out of order").into()
+            }
             PacketCodecError::BadCompressedPacketHeader => {
-                DriverError::BadCompressedPacketHeader.into()
+                io::Error::new(io::ErrorKind::Other, "bad compressed packet header").into()
             }
         }
+    }
+}
+
+impl From<PacketCodecError> for Error {
+    fn from(err: PacketCodecError) -> Self {
+        Error::Io(err.into())
     }
 }

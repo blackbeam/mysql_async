@@ -60,6 +60,7 @@ impl From<Conn> for IdlingConn {
 ///
 /// It is held under a single, non-asynchronous lock.
 /// This is fine as long as we never do expensive work while holding the lock!
+#[derive(Debug)]
 struct Exchange {
     waiting: VecDeque<Waker>,
     available: VecDeque<IdlingConn>,
@@ -86,6 +87,7 @@ impl Exchange {
     }
 }
 
+#[derive(Debug)]
 pub struct Inner {
     close: atomic::AtomicBool,
     closed: atomic::AtomicBool,
@@ -139,7 +141,7 @@ impl Pool {
 
     /// Returns a future that resolves to [`Conn`].
     pub fn get_conn(&self) -> GetConn {
-        new_get_conn(self)
+        GetConn::new(self)
     }
 
     /// Returns a future that disconnects this pool from the server and resolves to `()`.
@@ -233,11 +235,14 @@ impl Pool {
         exchange.spawn_futures_if_needed(&self.inner);
 
         loop {
-            if let Some(IdlingConn { conn, .. }) = exchange.available.pop_back() {
+            if let Some(IdlingConn { mut conn, .. }) = exchange.available.pop_back() {
                 if !conn.expired() {
                     return Poll::Ready(Ok(GetConn {
                         pool: Some(self.clone()),
-                        inner: GetConnInner::Done(Some(conn)),
+                        inner: GetConnInner::Checking(BoxFuture(Box::pin(async move {
+                            conn.stream_mut().check().await?;
+                            Ok(conn)
+                        }))),
                     }));
                 } else {
                     self.send_to_recycler(conn);
@@ -337,6 +342,60 @@ mod test {
         pool.get_conn().await?.ping().await?;
         pool.disconnect().await?;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_reconnect() -> super::Result<()> {
+        let mut master = crate::Conn::new(get_opts()).await?;
+
+        async fn test(master: &mut crate::Conn, opts: crate::OptsBuilder) -> super::Result<()> {
+            const NUM_CONNS: usize = 5;
+            let pool = Pool::new(opts);
+
+            // create some conns..
+            let connections = (0..NUM_CONNS).map(|_| {
+                crate::BoxFuture(Box::pin(async {
+                    let mut conn = pool.get_conn().await?;
+                    conn.ping().await?;
+                    Ok(conn)
+                }))
+            });
+
+            // collect ids..
+            let ids = try_join_all(connections)
+                .await?
+                .into_iter()
+                .map(|conn| (conn.id(),))
+                .collect::<Vec<_>>();
+
+            // get_conn should work if connection is available and alive
+            pool.get_conn().await?;
+
+            // now we'll kill connections..
+            master.exec_batch("KILL ?", ids).await?;
+
+            // now check, that they're still in the pool..
+            assert_eq!(ex_field!(pool, available).len(), NUM_CONNS);
+
+            // now get new connection..
+            let _conn = pool.get_conn().await?;
+
+            // now check, that broken connections are dropped
+            assert_eq!(ex_field!(pool, available).len(), 0);
+
+            drop(_conn);
+            pool.disconnect().await
+        }
+
+        let mut opts = get_opts();
+
+        println!("Check socket/pipe..");
+        test(&mut master, opts.clone()).await?;
+        opts.prefer_socket(false);
+        println!("Check tcp..");
+        test(&mut master, opts).await?;
+
+        master.disconnect().await
     }
 
     #[tokio::test]
@@ -567,6 +626,13 @@ mod test {
             .unwrap();
         drop(conns);
         drop(pool);
+
+        let pool = Pool::new(get_opts());
+        let conns = try_join_all((0..10).map(|_| pool.get_conn()))
+            .await
+            .unwrap();
+        drop(pool);
+        drop(conns);
         Ok(())
     }
 
@@ -637,19 +703,21 @@ mod test {
 
     #[cfg(feature = "nightly")]
     mod bench {
-        use futures_util::{future::FutureExt, try_future::TryFutureExt};
+        use futures_util::future::{FutureExt, TryFutureExt};
         use tokio::runtime::Runtime;
 
         use crate::{prelude::Queryable, test_misc::get_opts, Pool, PoolConstraints, PoolOptions};
         use std::time::Duration;
 
         #[bench]
-        fn connect(bencher: &mut test::Bencher) {
+        fn get_conn(bencher: &mut test::Bencher) {
             let mut runtime = Runtime::new().unwrap();
             let pool = Pool::new(get_opts());
 
             bencher.iter(|| {
-                let fut = pool.get_conn().and_then(|conn| conn.ping());
+                let fut = pool
+                    .get_conn()
+                    .and_then(|mut conn| async { conn.ping().await.map(|_| conn) });
                 runtime.block_on(fut).unwrap();
             });
 
@@ -658,7 +726,7 @@ mod test {
 
         #[bench]
         fn new_conn_on_pool_soft_boundary(bencher: &mut test::Bencher) {
-            let runtime = Runtime::new().unwrap();
+            let mut runtime = Runtime::new().unwrap();
 
             let mut opts = get_opts();
             let mut pool_opts = PoolOptions::with_constraints(PoolConstraints::new(0, 1).unwrap());
