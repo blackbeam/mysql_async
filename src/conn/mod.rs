@@ -1448,99 +1448,58 @@ mod test {
 
     #[cfg(feature = "nightly")]
     mod bench {
-        use futures_util::try_future::TryFutureExt;
-
         use crate::{conn::Conn, queryable::Queryable, test_misc::get_opts};
 
         #[bench]
         fn simple_exec(bencher: &mut test::Bencher) {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut conn = runtime.block_on(Conn::new(get_opts())).unwrap();
 
             bencher.iter(|| {
-                let conn = conn_opt.take().unwrap();
-                conn_opt = Some(runtime.block_on(conn.query_drop("DO 1")).unwrap());
+                runtime.block_on(conn.query_drop("DO 1")).unwrap();
             });
 
-            runtime
-                .block_on(conn_opt.take().unwrap().disconnect())
-                .unwrap();
-            runtime.shutdown_on_idle();
+            runtime.block_on(conn.disconnect()).unwrap();
         }
 
         #[bench]
         fn select_large_string(bencher: &mut test::Bencher) {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut conn = runtime.block_on(Conn::new(get_opts())).unwrap();
 
             bencher.iter(|| {
-                let conn = conn_opt.take().unwrap();
-                conn_opt = Some(
-                    runtime
-                        .block_on(conn.query_drop("SELECT REPEAT('A', 10000)"))
-                        .unwrap(),
-                );
+                runtime
+                    .block_on(conn.query_drop("SELECT REPEAT('A', 10000)"))
+                    .unwrap();
             });
 
-            runtime
-                .block_on(conn_opt.take().unwrap().disconnect())
-                .unwrap();
-            runtime.shutdown_on_idle();
+            runtime.block_on(conn.disconnect()).unwrap();
         }
 
         #[bench]
         fn prepared_exec(bencher: &mut test::Bencher) {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            let mut stmt_opt = Some(
-                runtime
-                    .block_on(Conn::new(get_opts()).and_then(|conn| conn.prepare("DO 1")))
-                    .unwrap(),
-            );
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut conn = runtime.block_on(Conn::new(get_opts())).unwrap();
+            let stmt = runtime.block_on(conn.prep("DO 1")).unwrap();
 
             bencher.iter(|| {
-                let stmt = stmt_opt.take().unwrap();
-                stmt_opt = Some(
-                    runtime
-                        .block_on(stmt.execute(()).and_then(|result| result.drop_result()))
-                        .unwrap(),
-                );
+                runtime.block_on(conn.exec_drop(&stmt, ())).unwrap();
             });
 
-            runtime
-                .block_on(
-                    stmt_opt
-                        .take()
-                        .unwrap()
-                        .close()
-                        .and_then(|conn| conn.disconnect()),
-                )
-                .unwrap();
-            runtime.shutdown_on_idle();
+            runtime.block_on(conn.close(stmt)).unwrap();
+            runtime.block_on(conn.disconnect()).unwrap();
         }
 
         #[bench]
         fn prepare_and_exec(bencher: &mut test::Bencher) {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            let mut conn_opt = Some(runtime.block_on(Conn::new(get_opts())).unwrap());
+            let mut runtime = tokio::runtime::Runtime::new().unwrap();
+            let mut conn = runtime.block_on(Conn::new(get_opts())).unwrap();
 
             bencher.iter(|| {
-                let conn = conn_opt.take().unwrap();
-                conn_opt = Some(
-                    runtime
-                        .block_on(
-                            conn.prepare("SELECT ?")
-                                .and_then(|stmt| stmt.execute((0,)))
-                                .and_then(|result| result.drop_result())
-                                .and_then(|stmt| stmt.close()),
-                        )
-                        .unwrap(),
-                );
+                runtime.block_on(conn.exec_drop("SELECT ?", (0,))).unwrap();
             });
 
-            runtime
-                .block_on(conn_opt.take().unwrap().disconnect())
-                .unwrap();
-            runtime.shutdown_on_idle();
+            runtime.block_on(conn.disconnect()).unwrap();
         }
     }
 }

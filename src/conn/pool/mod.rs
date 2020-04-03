@@ -639,19 +639,21 @@ mod test {
 
     #[cfg(feature = "nightly")]
     mod bench {
-        use futures_util::{future::FutureExt, try_future::TryFutureExt};
+        use futures_util::future::{FutureExt, TryFutureExt};
         use tokio::runtime::Runtime;
 
         use crate::{prelude::Queryable, test_misc::get_opts, Pool, PoolConstraints, PoolOptions};
         use std::time::Duration;
 
         #[bench]
-        fn connect(bencher: &mut test::Bencher) {
+        fn get_conn(bencher: &mut test::Bencher) {
             let mut runtime = Runtime::new().unwrap();
             let pool = Pool::new(get_opts());
 
             bencher.iter(|| {
-                let fut = pool.get_conn().and_then(|conn| conn.ping());
+                let fut = pool
+                    .get_conn()
+                    .and_then(|mut conn| async { conn.ping().await.map(|_| conn) });
                 runtime.block_on(fut).unwrap();
             });
 
@@ -660,7 +662,7 @@ mod test {
 
         #[bench]
         fn new_conn_on_pool_soft_boundary(bencher: &mut test::Bencher) {
-            let runtime = Runtime::new().unwrap();
+            let mut runtime = Runtime::new().unwrap();
 
             let mut opts = get_opts();
             let mut pool_opts = PoolOptions::with_constraints(PoolConstraints::new(0, 1).unwrap());
