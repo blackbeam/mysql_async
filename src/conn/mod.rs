@@ -1208,8 +1208,22 @@ mod test {
 
         let mut conn = Conn::new(get_opts()).await?;
         let stmt = conn.prep(r"SELECT :foo").await?;
+
+        {
+            let query = String::from("SELECT ?, ?");
+            let stmt = conn.prep(&*query).await?;
+            conn.close(stmt).await?;
+            {
+                let mut conn = Conn::new(get_opts()).await?;
+                let stmt = conn.prep(&*query).await?;
+                conn.close(stmt).await?;
+                conn.disconnect().await?;
+            }
+        }
+
         conn.close(stmt).await?;
         conn.disconnect().await?;
+
         Ok(())
     }
 

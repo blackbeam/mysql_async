@@ -8,6 +8,7 @@
 
 use mysql_common::{
     constants::MAX_PAYLOAD_LEN,
+    named_params::parse_named_params,
     packets::{
         column_from_payload, parse_stmt_packet, ComStmtClose, ComStmtExecuteRequestBuilder,
         ComStmtSendLongData, StmtPacket,
@@ -17,7 +18,6 @@ use mysql_common::{
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
-    conn::named_params::parse_named_params,
     connection_like::ConnectionLike,
     consts::{CapabilityFlags, Command},
     error::*,
@@ -28,23 +28,34 @@ use crate::{
     Column, Params, Value,
 };
 
+pub enum ToStatementResult<'a> {
+    Immediate(Statement),
+    Mediate(crate::BoxFuture<'a, Statement>),
+}
+
 pub trait StatementLike: Send + Sync {
-    /// Returns raw statement query coupled with its nemed parameters.
-    fn info(&self) -> Result<(Option<Vec<String>>, Cow<str>)>;
+    /// Returns statement.
+    fn to_statement<'a>(&'a self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>;
 }
 
 impl StatementLike for str {
-    fn info(&self) -> Result<(Option<Vec<String>>, Cow<str>)> {
-        parse_named_params(self).map_err(From::from)
+    /// Returns statement.
+    fn to_statement<'a>(&'a self, conn: &'a mut crate::Conn) -> ToStatementResult<'a> {
+        let fut = crate::BoxFuture(Box::pin(async move {
+            let (named_params, raw_query) = parse_named_params(self)?;
+            let inner_stmt = match conn.get_cached_stmt(&*raw_query) {
+                Some(inner_stmt) => inner_stmt,
+                None => conn.prepare_statement(raw_query).await?,
+            };
+            Ok(Statement::new(inner_stmt, named_params))
+        }));
+        ToStatementResult::Mediate(fut)
     }
 }
 
 impl StatementLike for Statement {
-    fn info(&self) -> Result<(Option<Vec<String>>, Cow<str>)> {
-        Ok((
-            self.named_params.clone(),
-            self.inner.raw_query.as_ref().into(),
-        ))
+    fn to_statement<'a>(&'a self, _conn: &'a mut crate::Conn) -> ToStatementResult<'static> {
+        ToStatementResult::Immediate(self.clone())
     }
 }
 
@@ -190,13 +201,10 @@ impl crate::Conn {
     where
         U: StatementLike + ?Sized,
     {
-        let (named_params, raw_query) = stmt_like.info()?;
-        let stmt_inner = if let Some(stmt_inner) = self.get_cached_stmt(raw_query.as_ref()) {
-            stmt_inner
-        } else {
-            self.prepare_statement(raw_query).await?
-        };
-        Ok(Statement::new(stmt_inner, named_params))
+        match stmt_like.to_statement(self) {
+            ToStatementResult::Immediate(statement) => Ok(statement),
+            ToStatementResult::Mediate(statement) => statement.await,
+        }
     }
 
     /// Low-level helper, that prepares the given statement.

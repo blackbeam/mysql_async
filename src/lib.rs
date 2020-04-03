@@ -203,13 +203,15 @@ pub mod prelude {
     #[doc(inline)]
     pub use crate::local_infile_handler::LocalInfileHandler;
     #[doc(inline)]
-    pub use crate::queryable::stmt::StatementLike;
-    #[doc(inline)]
     pub use crate::queryable::Queryable;
     #[doc(inline)]
     pub use mysql_common::row::convert::FromRow;
     #[doc(inline)]
     pub use mysql_common::value::convert::{ConvIr, FromValue, ToValue};
+
+    /// Everything that is statement.
+    pub trait StatementLike: crate::queryable::stmt::StatementLike {}
+    impl<T: crate::queryable::stmt::StatementLike> StatementLike for T {}
 
     /// Everything that is connection.
     pub trait ConnectionLike: crate::connection_like::ConnectionLike {}
