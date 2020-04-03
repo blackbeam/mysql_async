@@ -22,9 +22,11 @@ use crate::{
 #[derive(Debug)]
 pub(crate) enum GetConnInner {
     New,
-    Done(Option<Conn>),
+    Done,
     // TODO: one day this should be an existential
     Connecting(BoxFuture<'static, Conn>),
+    /// This future will check, that idling connection is alive.
+    Checking(BoxFuture<'static, Conn>),
 }
 
 impl GetConnInner {
@@ -49,6 +51,18 @@ impl GetConn {
             inner: GetConnInner::New,
         }
     }
+
+    fn pool_mut(&mut self) -> &mut Pool {
+        self.pool
+            .as_mut()
+            .expect("GetConn::poll polled after returning Async::Ready")
+    }
+
+    fn pool_take(&mut self) -> Pool {
+        self.pool
+            .take()
+            .expect("GetConn::poll polled after returning Async::Ready")
+    }
 }
 
 // this manual implementation of Future may seem stupid, but we sort
@@ -59,46 +73,31 @@ impl Future for GetConn {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
             match self.inner {
-                GetConnInner::New => match ready!(Pin::new(
-                    self.pool
-                        .as_mut()
-                        .expect("GetConn::poll polled after returning Async::Ready")
-                )
-                .poll_new_conn(cx))?
-                .inner
-                .take()
+                GetConnInner::New => match ready!(Pin::new(self.pool_mut()).poll_new_conn(cx))?
+                    .inner
+                    .take()
                 {
-                    GetConnInner::Done(Some(conn)) => {
-                        self.inner = GetConnInner::Done(Some(conn));
-                    }
                     GetConnInner::Connecting(conn_fut) => {
                         self.inner = GetConnInner::Connecting(conn_fut);
                     }
-                    GetConnInner::Done(None) => unreachable!(
+                    GetConnInner::Checking(conn_fut) => {
+                        self.inner = GetConnInner::Checking(conn_fut);
+                    }
+                    GetConnInner::Done => unreachable!(
                         "Pool::poll_new_conn never gives out already-consumed GetConns"
                     ),
                     GetConnInner::New => {
                         unreachable!("Pool::poll_new_conn never gives out GetConnInner::New")
                     }
                 },
-                GetConnInner::Done(ref mut c @ Some(_)) => {
-                    let mut c = c.take().unwrap();
-                    c.inner.pool = Some(
-                        self.pool
-                            .take()
-                            .expect("GetConn::poll polled after returning Async::Ready"),
-                    );
-                    return Poll::Ready(Ok(c));
-                }
-                GetConnInner::Done(None) => {
+                GetConnInner::Done => {
                     unreachable!("GetConn::poll polled after returning Async::Ready");
                 }
                 GetConnInner::Connecting(ref mut f) => {
                     let result = ready!(Pin::new(f).poll(cx));
-                    let pool = self
-                        .pool
-                        .take()
-                        .expect("GetConn::poll polled after returning Async::Ready");
+                    let pool = self.pool_take();
+
+                    self.inner = GetConnInner::Done;
 
                     return match result {
                         Ok(mut c) => {
@@ -110,6 +109,26 @@ impl Future for GetConn {
                             Poll::Ready(Err(e))
                         }
                     };
+                }
+                GetConnInner::Checking(ref mut f) => {
+                    let result = ready!(Pin::new(f).poll(cx));
+                    match result {
+                        Ok(mut checked_conn) => {
+                            self.inner = GetConnInner::Done;
+
+                            let pool = self.pool_take();
+                            checked_conn.inner.pool = Some(pool);
+                            return Poll::Ready(Ok(checked_conn));
+                        }
+                        Err(_) => {
+                            // Idling connection is broken. We'll drop it and try again.
+                            self.inner = GetConnInner::New;
+
+                            let pool = self.pool_mut();
+                            pool.cancel_connection();
+                            continue;
+                        }
+                    }
                 }
             }
         }

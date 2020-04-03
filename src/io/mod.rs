@@ -20,7 +20,12 @@ use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 use std::{
     fmt,
     fs::File,
-    io::{self, Read},
+    future::Future,
+    io::{
+        self,
+        ErrorKind::{Other, UnexpectedEof},
+        Read,
+    },
     mem::MaybeUninit,
     net::ToSocketAddrs,
     ops::{Deref, DerefMut},
@@ -79,7 +84,45 @@ pub(crate) enum Endpoint {
     Socket(#[pin] Socket),
 }
 
+/// This future will check that TcpStream is live.
+///
+/// This check is similar to a one, implemented by GitHub team for the go-sql-driver/mysql.
+#[derive(Debug)]
+struct CheckTcpStream<'a>(&'a mut TcpStream);
+
+impl Future for CheckTcpStream<'_> {
+    type Output = io::Result<()>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let buf = &mut [0_u8];
+        match self.0.poll_peek(cx, buf) {
+            Poll::Ready(Ok(0)) => Poll::Ready(Err(io::Error::new(UnexpectedEof, "broken pipe"))),
+            Poll::Ready(Ok(_)) => Poll::Ready(Err(io::Error::new(Other, "unexpected read"))),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+            Poll::Pending => Poll::Ready(Ok(())),
+        }
+    }
+}
+
 impl Endpoint {
+    /// Checks, that connection is alive.
+    async fn check(&mut self) -> std::result::Result<(), IoError> {
+        match self {
+            Endpoint::Plain(Some(stream)) => {
+                CheckTcpStream(stream).await?;
+                Ok(())
+            }
+            Endpoint::Secure(tls_stream) => {
+                CheckTcpStream(tls_stream.get_mut()).await?;
+                Ok(())
+            }
+            Endpoint::Socket(socket) => {
+                socket.write(&[]).await?;
+                Ok(())
+            }
+            Endpoint::Plain(None) => unreachable!(),
+        }
+    }
+
     pub fn is_secure(&self) -> bool {
         if let Endpoint::Secure(_) = self {
             true
@@ -379,6 +422,14 @@ impl Stream {
         if let Some(codec) = self.codec.as_mut() {
             codec.codec_mut().compress(level);
         }
+    }
+
+    /// Checks, that connection is alive.
+    pub(crate) async fn check(&mut self) -> std::result::Result<(), IoError> {
+        if let Some(codec) = self.codec.as_mut() {
+            codec.get_mut().check().await?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn close(mut self) -> std::result::Result<(), IoError> {
