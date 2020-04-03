@@ -83,7 +83,7 @@ where
             return Ok(None);
         }
 
-        let packet: Vec<u8> = self.conn_like.read_packet().await?;
+        let packet: Vec<u8> = self.conn_like.conn_mut().read_packet().await?;
 
         if P::is_last_result_set_packet(&*self.conn_like, &packet) {
             if self.more_results_exists() {
@@ -366,7 +366,7 @@ where
     T: ConnectionLike,
     P: Protocol,
 {
-    let packet = conn_like.read_packet().await?;
+    let packet = conn_like.conn_mut().read_packet().await?;
     match packet.get(0) {
         Some(0x00) => Ok(QueryResult::new(conn_like, ResultSetMeta::Empty)),
         Some(0xFB) => handle_local_infile(conn_like, &*packet).await,
@@ -393,14 +393,14 @@ where
     let mut buf = [0; 4096];
     loop {
         let read = reader.read(&mut buf[..]).await?;
-        this.write_packet(&buf[..read]).await?;
+        this.conn_mut().write_packet(&buf[..read]).await?;
 
         if read == 0 {
             break;
         }
     }
 
-    this.read_packet().await?;
+    this.conn_mut().read_packet().await?;
     Ok(QueryResult::new(this, ResultSetMeta::Empty))
 }
 
@@ -414,7 +414,7 @@ where
     T: ConnectionLike,
 {
     let column_count = packet.read_lenenc_int()?;
-    let packets = this.read_packets(column_count as usize).await?;
+    let packets = this.conn_mut().read_packets(column_count as usize).await?;
     let columns = packets
         .into_iter()
         .map(|packet| column_from_payload(packet).map_err(Error::from))
@@ -425,7 +425,7 @@ where
         .capabilities()
         .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
     {
-        this.read_packet().await?;
+        this.conn_mut().read_packet().await?;
     }
 
     if column_count > 0 {

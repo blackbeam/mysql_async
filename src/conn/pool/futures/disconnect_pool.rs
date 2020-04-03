@@ -24,6 +24,8 @@ use std::sync::{atomic, Arc};
 ///
 /// **Note:** This Future won't resolve until all active connections, taken from it,
 /// are dropped or disonnected. Also all pending and new `GetConn`'s will resolve to error.
+#[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct DisconnectPool {
     pool_inner: Arc<Inner>,
 }

@@ -19,6 +19,7 @@ use crate::{
     BoxFuture,
 };
 
+#[derive(Debug)]
 pub(crate) enum GetConnInner {
     New,
     Done(Option<Conn>),
@@ -34,15 +35,19 @@ impl GetConnInner {
 }
 
 /// This future will take connection from a pool and resolve to [`Conn`].
+#[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct GetConn {
     pub(crate) pool: Option<Pool>,
     pub(crate) inner: GetConnInner,
 }
 
-pub fn new(pool: &Pool) -> GetConn {
-    GetConn {
-        pool: Some(pool.clone()),
-        inner: GetConnInner::New,
+impl GetConn {
+    pub(crate) fn new(pool: &Pool) -> GetConn {
+        GetConn {
+            pool: Some(pool.clone()),
+            inner: GetConnInner::New,
+        }
     }
 }
 

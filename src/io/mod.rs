@@ -6,6 +6,8 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+pub use self::{read_packet::ReadPacket, write_packet::WritePacket};
+
 use bytes::{BufMut, BytesMut};
 use futures_core::{ready, stream};
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -18,7 +20,7 @@ use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 use std::{
     fmt,
     fs::File,
-    io::Read,
+    io::{self, Read},
     mem::MaybeUninit,
     net::ToSocketAddrs,
     ops::{Deref, DerefMut},
@@ -28,9 +30,11 @@ use std::{
     time::Duration,
 };
 
-use crate::{error::*, io::socket::Socket, opts::SslOpts};
+use crate::{error::IoError, io::socket::Socket, opts::SslOpts};
 
+mod read_packet;
 mod socket;
+mod write_packet;
 
 #[derive(Debug, Default)]
 pub struct PacketCodec(PacketCodecInner);
@@ -51,18 +55,18 @@ impl DerefMut for PacketCodec {
 
 impl Decoder for PacketCodec {
     type Item = Vec<u8>;
-    type Error = Error;
+    type Error = IoError;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>> {
+    fn decode(&mut self, src: &mut BytesMut) -> std::result::Result<Option<Self::Item>, IoError> {
         Ok(self.0.decode(src)?)
     }
 }
 
 impl Encoder for PacketCodec {
     type Item = Vec<u8>;
-    type Error = Error;
+    type Error = IoError;
 
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<()> {
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> std::result::Result<(), IoError> {
         Ok(self.0.encode(item, dst)?)
     }
 }
@@ -84,7 +88,7 @@ impl Endpoint {
         }
     }
 
-    pub fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
+    pub fn set_keepalive_ms(&self, ms: Option<u32>) -> io::Result<()> {
         let ms = ms.map(|val| Duration::from_millis(u64::from(val)));
         match *self {
             Endpoint::Plain(Some(ref stream)) => stream.set_keepalive(ms)?,
@@ -95,7 +99,7 @@ impl Endpoint {
         Ok(())
     }
 
-    pub fn set_tcp_nodelay(&self, val: bool) -> Result<()> {
+    pub fn set_tcp_nodelay(&self, val: bool) -> io::Result<()> {
         match *self {
             Endpoint::Plain(Some(ref stream)) => stream.set_nodelay(val)?,
             Endpoint::Plain(None) => unreachable!(),
@@ -105,7 +109,11 @@ impl Endpoint {
         Ok(())
     }
 
-    pub async fn make_secure(&mut self, domain: String, ssl_opts: SslOpts) -> Result<()> {
+    pub async fn make_secure(
+        &mut self,
+        domain: String,
+        ssl_opts: SslOpts,
+    ) -> std::result::Result<(), IoError> {
         if let Endpoint::Socket(_) = self {
             // inapplicable
             return Ok(());
@@ -168,7 +176,7 @@ impl AsyncRead for Endpoint {
         self: Pin<&mut Self>,
         cx: &mut Context,
         buf: &mut [u8],
-    ) -> Poll<StdResult<usize, tokio::io::Error>> {
+    ) -> Poll<std::result::Result<usize, tokio::io::Error>> {
         #[project]
         match self.project() {
             Endpoint::Plain(ref mut stream) => {
@@ -193,7 +201,7 @@ impl AsyncRead for Endpoint {
         self: Pin<&mut Self>,
         cx: &mut Context,
         buf: &mut B,
-    ) -> Poll<StdResult<usize, tokio::io::Error>>
+    ) -> Poll<std::result::Result<usize, tokio::io::Error>>
     where
         B: BufMut,
     {
@@ -214,7 +222,7 @@ impl AsyncWrite for Endpoint {
         self: Pin<&mut Self>,
         cx: &mut Context,
         buf: &[u8],
-    ) -> Poll<StdResult<usize, tokio::io::Error>> {
+    ) -> Poll<std::result::Result<usize, tokio::io::Error>> {
         #[project]
         match self.project() {
             Endpoint::Plain(ref mut stream) => {
@@ -226,7 +234,10 @@ impl AsyncWrite for Endpoint {
     }
 
     #[project]
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<StdResult<(), tokio::io::Error>> {
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+    ) -> Poll<std::result::Result<(), tokio::io::Error>> {
         #[project]
         match self.project() {
             Endpoint::Plain(ref mut stream) => Pin::new(stream.as_mut().unwrap()).poll_flush(cx),
@@ -239,7 +250,7 @@ impl AsyncWrite for Endpoint {
     fn poll_shutdown(
         self: Pin<&mut Self>,
         cx: &mut Context,
-    ) -> Poll<StdResult<(), tokio::io::Error>> {
+    ) -> Poll<std::result::Result<(), tokio::io::Error>> {
         #[project]
         match self.project() {
             Endpoint::Plain(ref mut stream) => Pin::new(stream.as_mut().unwrap()).poll_shutdown(cx),
@@ -275,7 +286,7 @@ impl Stream {
         }
     }
 
-    pub(crate) async fn connect_tcp<S>(addr: S) -> Result<Stream>
+    pub(crate) async fn connect_tcp<S>(addr: S) -> io::Result<Stream>
     where
         S: ToSocketAddrs,
     {
@@ -317,19 +328,23 @@ impl Stream {
         }
     }
 
-    pub(crate) async fn connect_socket<P: AsRef<Path>>(path: P) -> Result<Stream> {
+    pub(crate) async fn connect_socket<P: AsRef<Path>>(path: P) -> io::Result<Stream> {
         Ok(Stream::new(Socket::new(path).await?))
     }
 
-    pub(crate) fn set_keepalive_ms(&self, ms: Option<u32>) -> Result<()> {
+    pub(crate) fn set_keepalive_ms(&self, ms: Option<u32>) -> io::Result<()> {
         self.codec.as_ref().unwrap().get_ref().set_keepalive_ms(ms)
     }
 
-    pub(crate) fn set_tcp_nodelay(&self, val: bool) -> Result<()> {
+    pub(crate) fn set_tcp_nodelay(&self, val: bool) -> io::Result<()> {
         self.codec.as_ref().unwrap().get_ref().set_tcp_nodelay(val)
     }
 
-    pub(crate) async fn make_secure(&mut self, domain: String, ssl_opts: SslOpts) -> Result<()> {
+    pub(crate) async fn make_secure(
+        &mut self,
+        domain: String,
+        ssl_opts: SslOpts,
+    ) -> crate::error::Result<()> {
         let codec = self.codec.take().unwrap();
         let FramedParts { mut io, codec, .. } = codec.into_parts();
         io.make_secure(domain, ssl_opts).await?;
@@ -366,7 +381,7 @@ impl Stream {
         }
     }
 
-    pub(crate) async fn close(mut self) -> Result<()> {
+    pub(crate) async fn close(mut self) -> std::result::Result<(), IoError> {
         self.closed = true;
         if let Some(mut codec) = self.codec {
             use futures_sink::Sink;
@@ -377,7 +392,7 @@ impl Stream {
 }
 
 impl stream::Stream for Stream {
-    type Item = Result<Vec<u8>>;
+    type Item = std::result::Result<Vec<u8>, IoError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.closed {

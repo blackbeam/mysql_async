@@ -12,8 +12,9 @@ use mysql_common::{
     constants::DEFAULT_MAX_ALLOWED_PACKET,
     crypto,
     packets::{
-        parse_auth_switch_request, parse_handshake_packet, AuthPlugin, AuthSwitchRequest,
-        ErrPacket, HandshakeResponse, OkPacket, SslRequest,
+        parse_auth_switch_request, parse_err_packet, parse_handshake_packet, parse_ok_packet,
+        AuthPlugin, AuthSwitchRequest, ErrPacket, HandshakeResponse, OkPacket, OkPacketKind,
+        SslRequest,
     },
 };
 
@@ -505,6 +506,74 @@ impl Conn {
             }
             _ => Err(DriverError::UnexpectedPacket { payload: packet }.into()),
         }
+    }
+
+    fn handle_packet(&mut self, packet: &[u8]) -> Result<()> {
+        let kind = if self.get_pending_result().is_some() {
+            OkPacketKind::ResultSetTerminator
+        } else {
+            OkPacketKind::Other
+        };
+
+        if let Ok(ok_packet) = parse_ok_packet(&*packet, self.capabilities(), kind) {
+            self.handle_ok(ok_packet.into_owned());
+        } else if let Ok(err_packet) = parse_err_packet(&*packet, self.capabilities()) {
+            self.handle_err(err_packet.clone().into_owned());
+            return Err(err_packet.into()).into();
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn read_packet(&mut self) -> Result<Vec<u8>> {
+        let packet = crate::io::ReadPacket::new(self).await.map_err(|io_err| {
+            self.inner.stream.take();
+            self.inner.disconnected = true;
+            Error::from(io_err)
+        })?;
+        self.handle_packet(&*packet)?;
+        Ok(packet)
+    }
+
+    /// Returns future that reads packets from a server.
+    pub(crate) async fn read_packets(&mut self, n: usize) -> Result<Vec<Vec<u8>>> {
+        let mut packets = Vec::with_capacity(n);
+        for _ in 0..n {
+            packets.push(self.read_packet().await?);
+        }
+        Ok(packets)
+    }
+
+    pub(crate) async fn write_packet<T>(&mut self, data: T) -> Result<()>
+    where
+        T: Into<Vec<u8>>,
+    {
+        crate::io::WritePacket::new(self, data.into())
+            .await
+            .map_err(|io_err| {
+                self.inner.stream.take();
+                self.inner.disconnected = true;
+                From::from(io_err)
+            })
+    }
+
+    /// Returns future that sends full command body to a server.
+    pub(crate) async fn write_command_raw(&mut self, body: Vec<u8>) -> Result<()> {
+        debug_assert!(body.len() > 0);
+        self.conn_mut().reset_seq_id();
+        self.write_packet(body).await
+    }
+
+    /// Returns future that writes command to a server.
+    pub(crate) async fn write_command_data<T>(&mut self, cmd: Command, cmd_data: T) -> Result<()>
+    where
+        T: AsRef<[u8]>,
+    {
+        let cmd_data = cmd_data.as_ref();
+        let mut body = Vec::with_capacity(1 + cmd_data.len());
+        body.push(cmd as u8);
+        body.extend_from_slice(cmd_data);
+        self.write_command_raw(body).await
     }
 
     async fn drop_packet(&mut self) -> Result<()> {

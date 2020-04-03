@@ -98,9 +98,10 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     fn ping(&mut self) -> BoxFuture<'_, ()> {
         BoxFuture(Box::pin(async move {
             cleanup(self).await?;
-            self.write_command_raw(vec![Command::COM_PING as u8])
+            self.conn_mut()
+                .write_command_raw(vec![Command::COM_PING as u8])
                 .await?;
-            self.read_packet().await?;
+            self.conn_mut().read_packet().await?;
             Ok(())
         }))
     }
@@ -115,7 +116,8 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     {
         BoxFuture(Box::pin(async move {
             cleanup(self).await?;
-            self.write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
+            self.conn_mut()
+                .write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
                 .await?;
             read_result_set(self).await
         }))

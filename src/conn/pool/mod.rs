@@ -60,6 +60,7 @@ impl From<Conn> for IdlingConn {
 ///
 /// It is held under a single, non-asynchronous lock.
 /// This is fine as long as we never do expensive work while holding the lock!
+#[derive(Debug)]
 struct Exchange {
     waiting: VecDeque<Waker>,
     available: VecDeque<IdlingConn>,
@@ -86,6 +87,7 @@ impl Exchange {
     }
 }
 
+#[derive(Debug)]
 pub struct Inner {
     close: atomic::AtomicBool,
     closed: atomic::AtomicBool,
@@ -139,7 +141,7 @@ impl Pool {
 
     /// Returns a future that resolves to [`Conn`].
     pub fn get_conn(&self) -> GetConn {
-        new_get_conn(self)
+        GetConn::new(self)
     }
 
     /// Returns a future that disconnects this pool from the server and resolves to `()`.
