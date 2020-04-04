@@ -384,7 +384,7 @@ where
     T: ConnectionLike + Sized,
 {
     let local_infile = parse_local_infile_packet(&*packet)?;
-    let (local_infile, handler) = match this.conn_mut().opts().get_local_infile_handler() {
+    let (local_infile, handler) = match this.conn_mut().opts().local_infile_handler() {
         Some(handler) => ((local_infile.into_owned(), handler)),
         None => return Err(DriverError::NoLocalInfileHandler.into()),
     };

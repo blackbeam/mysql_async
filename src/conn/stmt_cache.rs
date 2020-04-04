@@ -125,7 +125,7 @@ impl super::Conn {
     /// Returns LRU statement on cache capacity overflow.
     pub(crate) fn cache_stmt(&mut self, stmt: &Arc<StmtInner>) -> Option<Arc<StmtInner>> {
         let query = stmt.raw_query.clone();
-        if self.inner.opts.get_stmt_cache_size() > 0 {
+        if self.inner.opts.stmt_cache_size() > 0 {
             self.stmt_cache_mut().put(query, stmt.clone())
         } else {
             None

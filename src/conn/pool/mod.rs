@@ -21,7 +21,7 @@ use std::{
 use crate::{
     conn::{pool::futures::*, Conn},
     error::*,
-    opts::{Opts, PoolOptions},
+    opts::{Opts, PoolOpts},
     queryable::transaction::TxStatus,
     BoxFuture,
 };
@@ -66,7 +66,7 @@ struct Exchange {
     available: VecDeque<IdlingConn>,
     exist: usize,
     // only used to spawn the recycler the first time we're in async context
-    recycler: Option<(mpsc::UnboundedReceiver<Option<Conn>>, PoolOptions)>,
+    recycler: Option<(mpsc::UnboundedReceiver<Option<Conn>>, PoolOpts)>,
 }
 
 impl Exchange {
@@ -75,13 +75,13 @@ impl Exchange {
     fn spawn_futures_if_needed(&mut self, inner: &Arc<Inner>) {
         use recycler::Recycler;
         use ttl_check_inerval::TtlCheckInterval;
-        if let Some((dropped, pool_options)) = self.recycler.take() {
+        if let Some((dropped, pool_opts)) = self.recycler.take() {
             // Spawn the Recycler.
-            tokio::spawn(Recycler::new(pool_options.clone(), inner.clone(), dropped));
+            tokio::spawn(Recycler::new(pool_opts.clone(), inner.clone(), dropped));
 
             // Spawn the ttl check interval if `inactive_connection_ttl` isn't `0`
-            if pool_options.inactive_connection_ttl() > Duration::from_secs(0) {
-                tokio::spawn(TtlCheckInterval::new(pool_options, inner.clone()));
+            if pool_opts.inactive_connection_ttl() > Duration::from_secs(0) {
+                tokio::spawn(TtlCheckInterval::new(pool_opts, inner.clone()));
             }
         }
     }
@@ -115,7 +115,7 @@ impl Pool {
     /// Creates a new pool of connections.
     pub fn new<O: Into<Opts>>(opts: O) -> Pool {
         let opts = opts.into();
-        let pool_options = opts.get_pool_options().clone();
+        let pool_opts = opts.pool_opts().clone();
         let (tx, rx) = mpsc::unbounded_channel();
         Pool {
             opts,
@@ -123,10 +123,10 @@ impl Pool {
                 close: false.into(),
                 closed: false.into(),
                 exchange: Mutex::new(Exchange {
-                    available: VecDeque::with_capacity(pool_options.constraints().max()),
+                    available: VecDeque::with_capacity(pool_opts.constraints().max()),
                     waiting: VecDeque::new(),
                     exist: 0,
-                    recycler: Some((rx, pool_options)),
+                    recycler: Some((rx, pool_opts)),
                 }),
             }),
             drop: tx,
@@ -175,7 +175,7 @@ impl Pool {
             && !self.inner.close.load(atomic::Ordering::Acquire)
         {
             let mut exchange = self.inner.exchange.lock().unwrap();
-            if exchange.available.len() < self.opts.get_pool_options().active_bound() {
+            if exchange.available.len() < self.opts.pool_opts().active_bound() {
                 exchange.available.push_back(conn.into());
                 if let Some(w) = exchange.waiting.pop_front() {
                     w.wake();
@@ -254,7 +254,7 @@ impl Pool {
 
         // we didn't _immediately_ get one -- try to make one
         // we first try to just do a load so we don't do an unnecessary add then sub
-        if exchange.exist < self.opts.get_pool_options().constraints().max() {
+        if exchange.exist < self.opts.pool_opts().constraints().max() {
             // we are allowed to make a new connection, so we will!
             exchange.exist += 1;
 
@@ -291,8 +291,8 @@ mod test {
     use std::time::Duration;
 
     use crate::{
-        conn::pool::Pool, opts::PoolOptions, queryable::Queryable, test_misc::get_opts,
-        PoolConstraints, TransactionOptions,
+        conn::pool::Pool, opts::PoolOpts, queryable::Queryable, test_misc::get_opts,
+        PoolConstraints, TxOpts,
     };
 
     macro_rules! conn_ex_field {
@@ -422,16 +422,14 @@ mod test {
     #[tokio::test]
     async fn should_start_transaction() -> super::Result<()> {
         let constraints = PoolConstraints::new(1, 1).unwrap();
-        let opts = get_opts().pool_options(PoolOptions::default().with_constraints(constraints));
+        let opts = get_opts().pool_opts(PoolOpts::default().with_constraints(constraints));
         let pool = Pool::new(opts);
         pool.get_conn()
             .await?
             .query_drop("CREATE TABLE IF NOT EXISTS tmp(id int)")
             .await?;
         let mut conn = pool.get_conn().await?;
-        let mut tx = conn
-            .start_transaction(TransactionOptions::default())
-            .await?;
+        let mut tx = conn.start_transaction(TxOpts::default()).await?;
         tx.exec_batch("INSERT INTO tmp (id) VALUES (?)", vec![(1_u8,), (2_u8,)])
             .await?;
         tx.exec_drop("SELECT * FROM tmp", ()).await?;
@@ -457,12 +455,12 @@ mod test {
         const TTL_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
         let constraints = PoolConstraints::new(POOL_MIN, POOL_MAX).unwrap();
-        let pool_options = PoolOptions::default()
+        let pool_opts = PoolOpts::default()
             .with_constraints(constraints)
             .with_inactive_connection_ttl(INACTIVE_CONNECTION_TTL)
             .with_ttl_check_interval(TTL_CHECK_INTERVAL);
 
-        let pool = Pool::new(get_opts().pool_options(pool_options));
+        let pool = Pool::new(get_opts().pool_opts(pool_opts));
         let pool_clone = pool.clone();
         let conns = (0..POOL_MAX).map(|_| pool.get_conn()).collect::<Vec<_>>();
 
@@ -494,9 +492,9 @@ mod test {
         const POOL_MAX: usize = 10;
 
         let constraints = PoolConstraints::new(POOL_MIN, POOL_MAX).unwrap();
-        let pool_options = PoolOptions::default().with_constraints(constraints);
+        let pool_opts = PoolOpts::default().with_constraints(constraints);
 
-        let pool = Pool::new(get_opts().pool_options(pool_options));
+        let pool = Pool::new(get_opts().pool_opts(pool_opts));
         let pool_clone = pool.clone();
         let conns = (0..POOL_MAX).map(|_| pool.get_conn()).collect::<Vec<_>>();
 
@@ -539,7 +537,7 @@ mod test {
     #[tokio::test]
     async fn should_hold_bounds1() -> super::Result<()> {
         let constraints = PoolConstraints::new(1, 2).unwrap();
-        let opts = get_opts().pool_options(PoolOptions::default().with_constraints(constraints));
+        let opts = get_opts().pool_opts(PoolOpts::default().with_constraints(constraints));
         let pool = Pool::new(opts);
         let pool_clone = pool.clone();
 
@@ -696,7 +694,7 @@ mod test {
         use futures_util::future::{FutureExt, TryFutureExt};
         use tokio::runtime::Runtime;
 
-        use crate::{prelude::Queryable, test_misc::get_opts, Pool, PoolConstraints, PoolOptions};
+        use crate::{prelude::Queryable, test_misc::get_opts, Pool, PoolConstraints, PoolOpts};
         use std::time::Duration;
 
         #[bench]
@@ -719,9 +717,9 @@ mod test {
             let mut runtime = Runtime::new().unwrap();
 
             let mut opts = get_opts();
-            let mut pool_opts = PoolOptions::with_constraints(PoolConstraints::new(0, 1).unwrap());
+            let mut pool_opts = PoolOpts::with_constraints(PoolConstraints::new(0, 1).unwrap());
             pool_opts.set_inactive_connection_ttl(Duration::from_secs(1));
-            opts.pool_options(pool_opts);
+            opts.pool_opts(pool_opts);
 
             let pool = Pool::new(opts);
 

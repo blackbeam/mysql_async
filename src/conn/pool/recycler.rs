@@ -18,7 +18,7 @@ use std::{
 };
 
 use super::{IdlingConn, Inner};
-use crate::{queryable::transaction::TxStatus, BoxFuture, Conn, PoolOptions};
+use crate::{queryable::transaction::TxStatus, BoxFuture, Conn, PoolOpts};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 #[derive(Debug)]
@@ -32,13 +32,13 @@ pub(crate) struct Recycler {
     // Option<Conn> so that we have a way to send a "I didn't make a Conn after all" signal
     dropped: mpsc::UnboundedReceiver<Option<Conn>>,
     /// Pool options.
-    pool_opts: PoolOptions,
+    pool_opts: PoolOpts,
     eof: bool,
 }
 
 impl Recycler {
     pub fn new(
-        pool_opts: PoolOptions,
+        pool_opts: PoolOpts,
         inner: Arc<Inner>,
         dropped: UnboundedReceiver<Option<Conn>>,
     ) -> Self {

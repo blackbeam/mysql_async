@@ -125,8 +125,8 @@ impl ConnInner {
             tx_status: TxStatus::None,
             last_io: Instant::now(),
             wait_timeout: Duration::from_secs(0),
-            stmt_cache: StmtCache::new(opts.get_stmt_cache_size()),
-            socket: opts.get_socket().map(Into::into),
+            stmt_cache: StmtCache::new(opts.stmt_cache_size()),
+            socket: opts.socket().map(Into::into),
             opts,
             nonce: Vec::default(),
             auth_plugin: AuthPlugin::MysqlNativePassword,
@@ -317,8 +317,8 @@ impl Conn {
     fn setup_stream(&mut self) -> Result<()> {
         debug_assert!(self.inner.stream.is_some());
         if let Some(stream) = self.inner.stream.as_mut() {
-            stream.set_keepalive_ms(self.inner.opts.get_tcp_keepalive())?;
-            stream.set_tcp_nodelay(self.inner.opts.get_tcp_nodelay())?;
+            stream.set_keepalive_ms(self.inner.opts.tcp_keepalive())?;
+            stream.set_tcp_nodelay(self.inner.opts.tcp_nodelay())?;
         }
         Ok(())
     }
@@ -358,8 +358,8 @@ impl Conn {
             let ssl_request = SslRequest::new(self.inner.capabilities);
             self.write_packet(ssl_request.as_ref()).await?;
             let conn = self;
-            let ssl_opts = conn.opts().get_ssl_opts().cloned().expect("unreachable");
-            let domain = conn.opts().get_ip_or_hostname().into();
+            let ssl_opts = conn.opts().ssl_opts().cloned().expect("unreachable");
+            let domain = conn.opts().ip_or_hostname().into();
             conn.stream_mut().make_secure(domain, ssl_opts).await?;
             Ok(())
         } else {
@@ -371,13 +371,13 @@ impl Conn {
         let auth_data = self
             .inner
             .auth_plugin
-            .gen_data(self.inner.opts.get_pass(), &*self.inner.nonce);
+            .gen_data(self.inner.opts.pass(), &*self.inner.nonce);
 
         let handshake_response = HandshakeResponse::new(
             &auth_data,
             self.inner.version,
-            self.inner.opts.get_user(),
-            self.inner.opts.get_db_name(),
+            self.inner.opts.user(),
+            self.inner.opts.db_name(),
             &self.inner.auth_plugin,
             self.capabilities(),
             &Default::default(), // TODO: Add support
@@ -398,7 +398,7 @@ impl Conn {
             let plugin_data = self
                 .inner
                 .auth_plugin
-                .gen_data(self.inner.opts.get_pass(), &*self.inner.nonce)
+                .gen_data(self.inner.opts.pass(), &*self.inner.nonce)
                 .unwrap_or_else(Vec::new);
             self.write_packet(plugin_data).await?;
             self.continue_auth().await?;
@@ -433,7 +433,7 @@ impl Conn {
             .capabilities()
             .contains(CapabilityFlags::CLIENT_COMPRESS)
         {
-            if let Some(compression) = self.inner.opts.get_compression() {
+            if let Some(compression) = self.inner.opts.compression() {
                 if let Some(stream) = self.inner.stream.as_mut() {
                     stream.compress(compression);
                 }
@@ -455,12 +455,7 @@ impl Conn {
                     self.drop_packet().await
                 }
                 Some(0x04) => {
-                    let mut pass = self
-                        .inner
-                        .opts
-                        .get_pass()
-                        .map(Vec::from)
-                        .unwrap_or_default();
+                    let mut pass = self.inner.opts.pass().map(Vec::from).unwrap_or_default();
                     pass.push(0);
 
                     if self.is_secure() {
@@ -582,7 +577,7 @@ impl Conn {
     }
 
     async fn run_init_commands(&mut self) -> Result<()> {
-        let mut init: Vec<_> = self.inner.opts.get_init().iter().cloned().collect();
+        let mut init: Vec<_> = self.inner.opts.init().iter().cloned().collect();
 
         while let Some(query) = init.pop() {
             self.query_drop(query).await?;
@@ -597,10 +592,10 @@ impl Conn {
         let fut = Box::pin(async move {
             let mut conn = Conn::empty(opts.clone());
 
-            let stream = if let Some(path) = opts.get_socket() {
+            let stream = if let Some(path) = opts.socket() {
                 Stream::connect_socket(path.to_owned()).await?
             } else {
-                Stream::connect_tcp(opts.get_hostport_or_url()).await?
+                Stream::connect_tcp(opts.hostport_or_url()).await?
             };
 
             conn.inner.stream = Some(stream);
@@ -632,7 +627,7 @@ impl Conn {
     async fn reconnect_via_socket_if_needed(&mut self) -> Result<()> {
         if let Some(socket) = self.inner.socket.as_ref() {
             let opts = self.inner.opts.clone();
-            if opts.get_socket().is_none() {
+            if opts.socket().is_none() {
                 let opts = OptsBuilder::from_opts(opts).socket(Some(&**socket));
                 match Conn::new(opts).await {
                     Ok(conn) => {
@@ -651,7 +646,7 @@ impl Conn {
     ///
     /// Do nothing if socket address is already in [`Opts`] or if `prefer_socket` is `false`.
     async fn read_socket(&mut self) -> Result<()> {
-        if self.inner.opts.get_prefer_socket() && self.inner.socket.is_none() {
+        if self.inner.opts.prefer_socket() && self.inner.socket.is_none() {
             let row_opt = self.query_first("SELECT @@socket").await?;
             self.inner.socket = row_opt.unwrap_or((None,)).0;
         }
@@ -681,7 +676,7 @@ impl Conn {
         let ttl = self
             .inner
             .opts
-            .get_conn_ttl()
+            .conn_ttl()
             .unwrap_or(self.inner.wait_timeout);
         self.idling() > ttl
     }
@@ -771,7 +766,7 @@ impl ConnectionLike for Conn {
 #[cfg(test)]
 mod test {
     use crate::{
-        from_row, params, prelude::*, test_misc::get_opts, Conn, OptsBuilder, TransactionOptions,
+        from_row, params, prelude::*, test_misc::get_opts, Conn, OptsBuilder, TxOpts,
         WhiteListFsLocalInfileHandler,
     };
 
@@ -1128,7 +1123,7 @@ mod test {
         c.query_drop("CREATE TEMPORARY TABLE time_zone (Time_zone_id INT)")
             .await
             .unwrap();
-        let mut t = c.start_transaction(TransactionOptions::new()).await?;
+        let mut t = c.start_transaction(TxOpts::new()).await?;
         t.query_drop(QUERY).await?;
         let r = t.query_iter(QUERY).await?;
         let out = r.collect_and_drop::<u8>().await?;

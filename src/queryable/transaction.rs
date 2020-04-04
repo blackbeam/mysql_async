@@ -24,36 +24,44 @@ pub enum TxStatus {
 
 impl Conn {
     /// Returns a future that starts a transaction.
-    pub async fn start_transaction(
-        &mut self,
-        options: TransactionOptions,
-    ) -> Result<Transaction<'_, Self>> {
+    pub async fn start_transaction(&mut self, options: TxOpts) -> Result<Transaction<'_, Self>> {
         Transaction::new(self, options).await
     }
 }
 
 /// Transaction options.
+///
+/// Example:
+///
+/// ```
+/// # use mysql_async::*;
+/// # fn main() -> mysql_async::error::Result<()> {
+/// let tx_opts = TxOpts::default()
+///     .with_consistent_snapshot(true)
+///     .with_isolation_level(IsolationLevel::RepeatableRead);
+/// # Ok(()) }
+/// ```
 #[derive(Eq, PartialEq, Debug, Hash, Clone, Default)]
-pub struct TransactionOptions {
+pub struct TxOpts {
     consistent_snapshot: bool,
     isolation_level: Option<IsolationLevel>,
     readonly: Option<bool>,
 }
 
-impl TransactionOptions {
+impl TxOpts {
     /// Creates a default instance.
-    pub fn new() -> TransactionOptions {
-        TransactionOptions::default()
+    pub fn new() -> TxOpts {
+        TxOpts::default()
     }
 
-    /// See [`TransactionOptions::consistent_snapshot`].
-    pub fn set_consistent_snapshot(&mut self, value: bool) -> &mut Self {
+    /// See [`TxOpts::consistent_snapshot`].
+    pub fn with_consistent_snapshot(&mut self, value: bool) -> &mut Self {
         self.consistent_snapshot = value;
         self
     }
 
-    /// See [`TransactionOptions::isolation_level`].
-    pub fn set_isolation_level<T>(&mut self, value: T) -> &mut Self
+    /// See [`TxOpts::isolation_level`].
+    pub fn with_isolation_level<T>(&mut self, value: T) -> &mut Self
     where
         T: Into<Option<IsolationLevel>>,
     {
@@ -61,8 +69,8 @@ impl TransactionOptions {
         self
     }
 
-    /// See [`TransactionOptions::readonly`].
-    pub fn set_readonly<T>(&mut self, value: T) -> &mut Self
+    /// See [`TxOpts::readonly`].
+    pub fn with_readonly<T>(&mut self, value: T) -> &mut Self
     where
         T: Into<Option<bool>>,
     {
@@ -119,11 +127,8 @@ impl fmt::Display for IsolationLevel {
 pub struct Transaction<'a, T: ConnectionLike>(&'a mut T);
 
 impl<'a, T: Queryable> Transaction<'a, T> {
-    pub(crate) async fn new(
-        conn_like: &'a mut T,
-        options: TransactionOptions,
-    ) -> Result<Transaction<'a, T>> {
-        let TransactionOptions {
+    pub(crate) async fn new(conn_like: &'a mut T, options: TxOpts) -> Result<Transaction<'a, T>> {
+        let TxOpts {
             consistent_snapshot,
             isolation_level,
             readonly,

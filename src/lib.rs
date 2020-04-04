@@ -150,7 +150,7 @@ pub use self::queryable::transaction::IsolationLevel;
 
 #[doc(inline)]
 pub use self::opts::{
-    Opts, OptsBuilder, PoolConstraints, PoolOptions, SslOpts, DEFAULT_INACTIVE_CONNECTION_TTL,
+    Opts, OptsBuilder, PoolConstraints, PoolOpts, SslOpts, DEFAULT_INACTIVE_CONNECTION_TTL,
     DEFAULT_POOL_CONSTRAINTS, DEFAULT_STMT_CACHE_SIZE, DEFAULT_TTL_CHECK_INTERVAL,
 };
 
@@ -185,7 +185,7 @@ pub use mysql_common::value::json::{Deserialized, Serialized};
 pub use self::queryable::query_result::QueryResult;
 
 #[doc(inline)]
-pub use self::queryable::transaction::{Transaction, TransactionOptions};
+pub use self::queryable::transaction::{Transaction, TxOpts};
 
 #[doc(inline)]
 pub use self::queryable::{BinaryProtocol, TextProtocol};
@@ -243,7 +243,7 @@ pub mod test_misc {
             if let Ok(url) = env::var("DATABASE_URL") {
                 let opts = Opts::from_url(&url).expect("DATABASE_URL invalid");
                 if opts
-                    .get_db_name()
+                    .db_name()
                     .expect("a database name is required")
                     .is_empty()
                 {

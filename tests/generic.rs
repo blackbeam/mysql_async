@@ -14,7 +14,7 @@ fn get_url() -> String {
     if let Ok(url) = env::var("DATABASE_URL") {
         let opts = Opts::from_url(&url).expect("DATABASE_URL invalid");
         if opts
-            .get_db_name()
+            .db_name()
             .expect("a database name is required")
             .is_empty()
         {

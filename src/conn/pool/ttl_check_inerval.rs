@@ -19,7 +19,7 @@ use std::{
 };
 
 use super::Inner;
-use crate::PoolOptions;
+use crate::PoolOpts;
 use futures_core::task::{Context, Poll};
 use std::pin::Pin;
 
@@ -33,17 +33,17 @@ pub(crate) struct TtlCheckInterval {
     inner: Arc<Inner>,
     #[pin]
     interval: StreamFuture<Interval>,
-    pool_options: PoolOptions,
+    pool_opts: PoolOpts,
 }
 
 impl TtlCheckInterval {
     /// Creates new `TtlCheckInterval`.
-    pub fn new(pool_options: PoolOptions, inner: Arc<Inner>) -> Self {
-        let interval = time::interval(pool_options.ttl_check_interval()).into_future();
+    pub fn new(pool_opts: PoolOpts, inner: Arc<Inner>) -> Self {
+        let interval = time::interval(pool_opts.ttl_check_interval()).into_future();
         Self {
             inner,
             interval,
-            pool_options,
+            pool_opts,
         }
     }
 
@@ -52,11 +52,11 @@ impl TtlCheckInterval {
         let mut exchange = self.inner.exchange.lock().unwrap();
 
         let num_idling = exchange.available.len();
-        let num_to_drop = num_idling.saturating_sub(self.pool_options.constraints().min());
+        let num_to_drop = num_idling.saturating_sub(self.pool_opts.constraints().min());
 
         for _ in 0..num_to_drop {
             let idling_conn = exchange.available.pop_front().unwrap();
-            if idling_conn.elapsed() > self.pool_options.inactive_connection_ttl() {
+            if idling_conn.elapsed() > self.pool_opts.inactive_connection_ttl() {
                 assert!(idling_conn.conn.inner.pool.is_none());
                 let inner = self.inner.clone();
                 tokio::spawn(idling_conn.conn.disconnect().then(move |_| {
