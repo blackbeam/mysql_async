@@ -26,13 +26,31 @@ use crate::{
     local_infile_handler::{LocalInfileHandler, LocalInfileHandlerObject},
 };
 
-const DEFAULT_POOL_CONSTRAINTS: PoolConstraints = PoolConstraints { min: 10, max: 100 };
+/// Default pool constraints.
+pub const DEFAULT_POOL_CONSTRAINTS: PoolConstraints = PoolConstraints { min: 10, max: 100 };
+
+//
 const_assert!(
     _DEFAULT_POOL_CONSTRAINTS_ARE_CORRECT,
     DEFAULT_POOL_CONSTRAINTS.min <= DEFAULT_POOL_CONSTRAINTS.max,
 );
-const DEFAULT_STMT_CACHE_SIZE: usize = 10;
+
+/// Each connection will cache up to this number of statements by default.
+pub const DEFAULT_STMT_CACHE_SIZE: usize = 32;
+
+/// Default server port.
 const DEFAULT_PORT: u16 = 3306;
+
+/// Default `inactive_connection_ttl` of a pool.
+///
+/// `0` value means, that connection will be dropped immediately
+/// if it is outside of the pool's lower bound.
+pub const DEFAULT_INACTIVE_CONNECTION_TTL: Duration = Duration::from_secs(0);
+
+/// Default `ttl_check_interval` of a pool.
+///
+/// It isn't used if `inactive_connection_ttl` is `0`.
+pub const DEFAULT_TTL_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Represents information about a host and port combination that can be converted
 /// into socket addresses using to_socket_addrs.
@@ -76,7 +94,6 @@ impl HostPortOrUrl {
         }
     }
 
-    #[doc(hidden)]
     pub fn is_loopback(&self) -> bool {
         match self {
             Self::HostPort(host, _) => {
@@ -100,18 +117,15 @@ impl HostPortOrUrl {
     }
 }
 
-/// Default `inactive_connection_ttl` of a pool.
-///
-/// `0` value means, that connection will be dropped immediately
-/// if it is outside of the pool's lower bound.
-pub const DEFAULT_INACTIVE_CONNECTION_TTL: Duration = Duration::from_secs(0);
-
-/// Default `ttl_check_interval` of a pool.
-///
-/// It isn't used if `inactive_connection_ttl` is `0`.
-pub const DEFAULT_TTL_CHECK_INTERVAL: Duration = Duration::from_secs(30);
-
 /// Ssl Options.
+///
+/// ```
+/// # use mysql_async::SslOpts;
+/// # use std::path::Path;
+/// let ssl_opts = SslOpts::default()
+///     .with_pkcs12_path(Some(Path::new("/path")))
+///     .with_password(Some("******"));
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub struct SslOpts {
     pkcs12_path: Option<Cow<'static, Path>>,
@@ -123,39 +137,36 @@ pub struct SslOpts {
 
 impl SslOpts {
     /// Sets path to the pkcs12 archive.
-    pub fn set_pkcs12_path<T: Into<Cow<'static, Path>>>(
-        &mut self,
-        pkcs12_path: Option<T>,
-    ) -> &mut Self {
+    pub fn with_pkcs12_path<T: Into<Cow<'static, Path>>>(mut self, pkcs12_path: Option<T>) -> Self {
         self.pkcs12_path = pkcs12_path.map(Into::into);
         self
     }
 
     /// Sets the password for a pkcs12 archive (defaults to `None`).
-    pub fn set_password<T: Into<Cow<'static, str>>>(&mut self, password: Option<T>) -> &mut Self {
+    pub fn with_password<T: Into<Cow<'static, str>>>(mut self, password: Option<T>) -> Self {
         self.password = password.map(Into::into);
         self
     }
 
     /// Sets path to a der certificate of the root that connector will trust.
-    pub fn set_root_cert_path<T: Into<Cow<'static, Path>>>(
-        &mut self,
+    pub fn with_root_cert_path<T: Into<Cow<'static, Path>>>(
+        mut self,
         root_cert_path: Option<T>,
-    ) -> &mut Self {
+    ) -> Self {
         self.root_cert_path = root_cert_path.map(Into::into);
         self
     }
 
     /// The way to not validate the server's domain
     /// name against its certificate (defaults to `false`).
-    pub fn set_danger_skip_domain_validation(&mut self, value: bool) -> &mut Self {
+    pub fn with_danger_skip_domain_validation(mut self, value: bool) -> Self {
         self.skip_domain_validation = value;
         self
     }
 
     /// If `true` then client will accept invalid certificate (expired, not trusted, ..)
     /// (defaults to `false`).
-    pub fn set_danger_accept_invalid_certs(&mut self, value: bool) -> &mut Self {
+    pub fn with_danger_accept_invalid_certs(mut self, value: bool) -> Self {
         self.accept_invalid_certs = value;
         self
     }
@@ -182,6 +193,14 @@ impl SslOpts {
 }
 
 /// Connection pool options.
+///
+/// ```
+/// # use mysql_async::{PoolOptions, PoolConstraints};
+/// # use std::time::Duration;
+/// let pool_opts = PoolOptions::default()
+///     .with_constraints(PoolConstraints::new(15, 30).unwrap())
+///     .with_inactive_connection_ttl(Duration::from_secs(60));
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct PoolOptions {
     constraints: PoolConstraints,
@@ -191,30 +210,9 @@ pub struct PoolOptions {
 
 impl PoolOptions {
     /// Creates the default [`PoolOptions`] with the given constraints.
-    pub const fn with_constraints(constraints: PoolConstraints) -> Self {
-        Self {
-            constraints,
-            inactive_connection_ttl: DEFAULT_INACTIVE_CONNECTION_TTL,
-            ttl_check_interval: DEFAULT_TTL_CHECK_INTERVAL,
-        }
-    }
-
-    /// Creates a [`PoolOptions`].
-    pub const fn new(
-        constraints: PoolConstraints,
-        inactive_connection_ttl: Duration,
-        ttl_check_interval: Duration,
-    ) -> Self {
-        Self {
-            constraints,
-            inactive_connection_ttl,
-            ttl_check_interval,
-        }
-    }
-
-    /// Sets pool constraints.
-    pub fn set_constraints(&mut self, constraints: PoolConstraints) {
+    pub fn with_constraints(mut self, constraints: PoolConstraints) -> Self {
         self.constraints = constraints;
+        self
     }
 
     /// Returns pool constraints.
@@ -227,8 +225,9 @@ impl PoolOptions {
     /// [`DEFAULT_INACTIVE_CONNECTION_TTL`]).
     ///
     /// Note that it may, actually, idle longer because of [`PoolOptions::ttl_check_interval`].
-    pub fn set_inactive_connection_ttl(&mut self, ttl: Duration) {
+    pub fn with_inactive_connection_ttl(mut self, ttl: Duration) -> Self {
         self.inactive_connection_ttl = ttl;
+        self
     }
 
     /// Returns a `inactive_connection_ttl` value.
@@ -240,12 +239,13 @@ impl PoolOptions {
     /// (defaults to [`DEFAULT_TTL_CHECK_INTERVAL`]).
     ///
     /// If `interval` is less than one second, then [`DEFAULT_TTL_CHECK_INTERVAL`] will be used.
-    pub fn set_ttl_check_interval(&mut self, interval: Duration) {
+    pub fn with_ttl_check_interval(mut self, interval: Duration) -> Self {
         if interval < Duration::from_secs(1) {
             self.ttl_check_interval = DEFAULT_TTL_CHECK_INTERVAL
         } else {
             self.ttl_check_interval = interval;
         }
+        self
     }
 
     /// Returns a `ttl_check_interval` value.
@@ -569,8 +569,6 @@ pub struct PoolConstraints {
 
 impl PoolConstraints {
     /// Creates new [`PoolConstraints`] if constraints are valid (`min <= max`).
-    ///
-    /// `inactive_connection_ttl` will have the default value.
     pub fn new(min: usize, max: usize) -> Option<PoolConstraints> {
         if min <= max {
             Some(PoolConstraints { min, max })
@@ -605,17 +603,21 @@ impl From<PoolConstraints> for (usize, usize) {
 
 /// Provides a way to build [`Opts`].
 ///
-/// ```ignore
-/// // You can create new default builder
-/// let mut builder = OptsBuilder::new();
-/// builder.ip_or_hostname(Some("foo"))
-///        .db_name(Some("bar"))
-///        .ssl_opts(Some(("/foo/cert.pem", None::<(String, String)>)));
+/// ```
+/// # use mysql_async::OptsBuilder;
+/// // You can use the default builder
+/// let existing_opts = OptsBuilder::default()
+///     .ip_or_hostname("foo")
+///     .db_name(Some("bar"))
+///     // ..
+/// # ;
 ///
 /// // Or use existing T: Into<Opts>
-/// let mut builder = OptsBuilder::from_opts(existing_opts);
-/// builder.ip_or_hostname(Some("foo"))
-///        .db_name(Some("bar"));
+/// let builder = OptsBuilder::from(existing_opts)
+///     .ip_or_hostname("baz")
+///     .tcp_port(33306)
+///     // ..
+/// # ;
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct OptsBuilder {
@@ -636,10 +638,6 @@ impl Default for OptsBuilder {
 }
 
 impl OptsBuilder {
-    pub fn new() -> Self {
-        OptsBuilder::default()
-    }
-
     pub fn from_opts<T: Into<Opts>>(opts: T) -> Self {
         let opts = opts.into();
 
@@ -651,43 +649,43 @@ impl OptsBuilder {
     }
 
     /// Address of mysql server (defaults to `127.0.0.1`). Hostnames should also work.
-    pub fn ip_or_hostname<T: Into<String>>(&mut self, ip_or_hostname: T) -> &mut Self {
+    pub fn ip_or_hostname<T: Into<String>>(mut self, ip_or_hostname: T) -> Self {
         self.ip_or_hostname = ip_or_hostname.into();
         self
     }
 
     /// TCP port of mysql server (defaults to `3306`).
-    pub fn tcp_port(&mut self, tcp_port: u16) -> &mut Self {
+    pub fn tcp_port(mut self, tcp_port: u16) -> Self {
         self.tcp_port = tcp_port;
         self
     }
 
     /// User (defaults to `None`).
-    pub fn user<T: Into<String>>(&mut self, user: Option<T>) -> &mut Self {
+    pub fn user<T: Into<String>>(mut self, user: Option<T>) -> Self {
         self.opts.user = user.map(Into::into);
         self
     }
 
     /// Password (defaults to `None`).
-    pub fn pass<T: Into<String>>(&mut self, pass: Option<T>) -> &mut Self {
+    pub fn pass<T: Into<String>>(mut self, pass: Option<T>) -> Self {
         self.opts.pass = pass.map(Into::into);
         self
     }
 
     /// Database name (defaults to `None`).
-    pub fn db_name<T: Into<String>>(&mut self, db_name: Option<T>) -> &mut Self {
+    pub fn db_name<T: Into<String>>(mut self, db_name: Option<T>) -> Self {
         self.opts.db_name = db_name.map(Into::into);
         self
     }
 
     /// Commands to execute on each new database connection.
-    pub fn init<T: Into<String>>(&mut self, init: Vec<T>) -> &mut Self {
+    pub fn init<T: Into<String>>(mut self, init: Vec<T>) -> Self {
         self.opts.init = init.into_iter().map(Into::into).collect();
         self
     }
 
     /// TCP keep alive timeout in milliseconds (defaults to `None`).
-    pub fn tcp_keepalive<T: Into<u32>>(&mut self, tcp_keepalive: Option<T>) -> &mut Self {
+    pub fn tcp_keepalive<T: Into<u32>>(mut self, tcp_keepalive: Option<T>) -> Self {
         self.opts.tcp_keepalive = tcp_keepalive.map(Into::into);
         self
     }
@@ -696,13 +694,13 @@ impl OptsBuilder {
     ///
     /// Setting this option to false re-enables Nagle's algorithm, which can cause unusually high
     /// latency (~40ms) but may increase maximum throughput. See #132.
-    pub fn tcp_nodelay(&mut self, nodelay: bool) -> &mut Self {
+    pub fn tcp_nodelay(mut self, nodelay: bool) -> Self {
         self.opts.tcp_nodelay = nodelay;
         self
     }
 
     /// Handler for local infile requests (defaults to `None`).
-    pub fn local_infile_handler<T>(&mut self, handler: Option<T>) -> &mut Self
+    pub fn local_infile_handler<T>(mut self, handler: Option<T>) -> Self
     where
         T: LocalInfileHandler + 'static,
     {
@@ -711,14 +709,14 @@ impl OptsBuilder {
     }
 
     /// Connection pool options (defaults to `PoolOptions::default()`).
-    pub fn pool_options<T: Into<Option<PoolOptions>>>(&mut self, pool_options: T) -> &mut Self {
+    pub fn pool_options<T: Into<Option<PoolOptions>>>(mut self, pool_options: T) -> Self {
         self.opts.pool_options = pool_options.into().unwrap_or_default();
         self
     }
 
     /// Pool will close connection if time since last IO exceeds this number of seconds
     /// (defaults to `wait_timeout`. `None` to reset to default).
-    pub fn conn_ttl<T: Into<Option<Duration>>>(&mut self, conn_ttl: T) -> &mut Self {
+    pub fn conn_ttl<T: Into<Option<Duration>>>(mut self, conn_ttl: T) -> Self {
         self.opts.conn_ttl = conn_ttl.into();
         self
     }
@@ -726,7 +724,7 @@ impl OptsBuilder {
     /// Number of prepared statements cached on the client side (per connection). Defaults to `10`.
     ///
     /// Call with `None` to reset to default.
-    pub fn stmt_cache_size<T>(&mut self, cache_size: T) -> &mut Self
+    pub fn stmt_cache_size<T>(mut self, cache_size: T) -> Self
     where
         T: Into<Option<usize>>,
     {
@@ -735,7 +733,7 @@ impl OptsBuilder {
     }
 
     /// Driver will require SSL connection if this option isn't `None` (default to `None`).
-    pub fn ssl_opts<T: Into<Option<SslOpts>>>(&mut self, ssl_opts: T) -> &mut Self {
+    pub fn ssl_opts<T: Into<Option<SslOpts>>>(mut self, ssl_opts: T) -> Self {
         self.opts.ssl_opts = ssl_opts.into();
         self
     }
@@ -751,13 +749,13 @@ impl OptsBuilder {
     ///
     /// Library will query the `@@socket` server variable to get socket address,
     /// and this address may be incorrect in some cases (i.e. docker).
-    pub fn prefer_socket<T: Into<Option<bool>>>(&mut self, prefer_socket: T) -> &mut Self {
+    pub fn prefer_socket<T: Into<Option<bool>>>(mut self, prefer_socket: T) -> Self {
         self.opts.prefer_socket = prefer_socket.into().unwrap_or(true);
         self
     }
 
     /// Path to unix socket (or named pipe on Windows) (defaults to `None`).
-    pub fn socket<T: Into<String>>(&mut self, socket: Option<T>) -> &mut Self {
+    pub fn socket<T: Into<String>>(mut self, socket: Option<T>) -> Self {
         self.opts.socket = socket.map(Into::into);
         self
     }
@@ -772,10 +770,7 @@ impl OptsBuilder {
     /// * `0`, ..., `9`.
     ///
     /// Note that compression level defined here will affect only outgoing packets.
-    pub fn compression<T: Into<Option<crate::Compression>>>(
-        &mut self,
-        compression: T,
-    ) -> &mut Self {
+    pub fn compression<T: Into<Option<crate::Compression>>>(mut self, compression: T) -> Self {
         self.opts.compression = compression.into();
         self
     }
@@ -883,9 +878,12 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
             }
         } else if key == "inactive_connection_ttl" {
             match u64::from_str(&*value) {
-                Ok(value) => opts
-                    .pool_options
-                    .set_inactive_connection_ttl(Duration::from_secs(value)),
+                Ok(value) => {
+                    opts.pool_options = opts
+                        .pool_options
+                        .clone()
+                        .with_inactive_connection_ttl(Duration::from_secs(value))
+                }
                 _ => {
                     return Err(UrlError::InvalidParamValue {
                         param: "inactive_connection_ttl".into(),
@@ -895,9 +893,12 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
             }
         } else if key == "ttl_check_interval" {
             match u64::from_str(&*value) {
-                Ok(value) => opts
-                    .pool_options
-                    .set_ttl_check_interval(Duration::from_secs(value)),
+                Ok(value) => {
+                    opts.pool_options = opts
+                        .pool_options
+                        .clone()
+                        .with_ttl_check_interval(Duration::from_secs(value))
+                }
                 _ => {
                     return Err(UrlError::InvalidParamValue {
                         param: "ttl_check_interval".into(),
@@ -984,7 +985,7 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
     }
 
     if let Some(pool_constraints) = PoolConstraints::new(pool_min, pool_max) {
-        opts.pool_options.set_constraints(pool_constraints);
+        opts.pool_options = opts.pool_options.clone().with_constraints(pool_constraints);
     } else {
         return Err(UrlError::InvalidPoolConstraints {
             min: pool_min,
@@ -1017,12 +1018,11 @@ mod test {
     use std::str::FromStr;
 
     #[test]
-    fn test_builer_eq_url() {
+    fn test_builder_eq_url() {
         const URL: &str = "mysql://iq-controller@localhost/iq_controller";
 
         let url_opts = super::Opts::from_str(URL).unwrap();
-        let mut builder = super::OptsBuilder::new();
-        builder
+        let builder = super::OptsBuilder::default()
             .user(Some("iq-controller"))
             .ip_or_hostname("localhost")
             .db_name(Some("iq_controller"));

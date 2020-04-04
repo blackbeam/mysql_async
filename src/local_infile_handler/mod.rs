@@ -21,7 +21,7 @@ pub mod builtin;
 /// Simple handler example:
 ///
 /// ```rust
-/// # use mysql_async::{prelude::*, test_misc::get_opts};
+/// # use mysql_async::{prelude::*, test_misc::get_opts, OptsBuilder};
 /// # use tokio::prelude::*;
 /// # use std::env;
 /// # #[tokio::main]
@@ -39,8 +39,8 @@ pub mod builtin;
 ///
 /// # let database_url = get_opts();
 ///
-/// let mut opts = mysql_async::OptsBuilder::from_opts(database_url);
-/// opts.local_infile_handler(Some(ExampleHandler(b"foobar")));
+/// let opts = OptsBuilder::from_opts(database_url)
+///     .local_infile_handler(Some(ExampleHandler(b"foobar")));
 ///
 /// let pool = mysql_async::Pool::new(opts);
 ///

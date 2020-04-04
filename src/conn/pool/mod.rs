@@ -377,6 +377,8 @@ mod test {
             // now check, that they're still in the pool..
             assert_eq!(ex_field!(pool, available).len(), NUM_CONNS);
 
+            tokio::time::delay_for(std::time::Duration::from_millis(500)).await;
+
             // now get new connection..
             let _conn = pool.get_conn().await?;
 
@@ -387,13 +389,11 @@ mod test {
             pool.disconnect().await
         }
 
-        let mut opts = get_opts();
-
         println!("Check socket/pipe..");
-        test(&mut master, opts.clone()).await?;
-        opts.prefer_socket(false);
+        test(&mut master, get_opts()).await?;
+
         println!("Check tcp..");
-        test(&mut master, opts).await?;
+        test(&mut master, get_opts().prefer_socket(false)).await?;
 
         master.disconnect().await
     }
@@ -421,10 +421,8 @@ mod test {
 
     #[tokio::test]
     async fn should_start_transaction() -> super::Result<()> {
-        let mut opts = get_opts();
-        opts.pool_options(PoolOptions::with_constraints(
-            PoolConstraints::new(1, 1).unwrap(),
-        ));
+        let constraints = PoolConstraints::new(1, 1).unwrap();
+        let opts = get_opts().pool_options(PoolOptions::default().with_constraints(constraints));
         let pool = Pool::new(opts);
         pool.get_conn()
             .await?
@@ -459,14 +457,12 @@ mod test {
         const TTL_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
         let constraints = PoolConstraints::new(POOL_MIN, POOL_MAX).unwrap();
-        let pool_options =
-            PoolOptions::new(constraints, INACTIVE_CONNECTION_TTL, TTL_CHECK_INTERVAL);
+        let pool_options = PoolOptions::default()
+            .with_constraints(constraints)
+            .with_inactive_connection_ttl(INACTIVE_CONNECTION_TTL)
+            .with_ttl_check_interval(TTL_CHECK_INTERVAL);
 
-        // Clean
-        let mut opts = get_opts();
-        opts.pool_options(pool_options);
-
-        let pool = Pool::new(opts);
+        let pool = Pool::new(get_opts().pool_options(pool_options));
         let pool_clone = pool.clone();
         let conns = (0..POOL_MAX).map(|_| pool.get_conn()).collect::<Vec<_>>();
 
@@ -498,13 +494,9 @@ mod test {
         const POOL_MAX: usize = 10;
 
         let constraints = PoolConstraints::new(POOL_MIN, POOL_MAX).unwrap();
-        let pool_options = PoolOptions::with_constraints(constraints);
+        let pool_options = PoolOptions::default().with_constraints(constraints);
 
-        // Clean
-        let mut opts = get_opts();
-        opts.pool_options(pool_options);
-
-        let pool = Pool::new(opts);
+        let pool = Pool::new(get_opts().pool_options(pool_options));
         let pool_clone = pool.clone();
         let conns = (0..POOL_MAX).map(|_| pool.get_conn()).collect::<Vec<_>>();
 
@@ -546,10 +538,8 @@ mod test {
 
     #[tokio::test]
     async fn should_hold_bounds1() -> super::Result<()> {
-        let mut opts = get_opts();
-        opts.pool_options(PoolOptions::with_constraints(
-            PoolConstraints::new(1, 2).unwrap(),
-        ));
+        let constraints = PoolConstraints::new(1, 2).unwrap();
+        let opts = get_opts().pool_options(PoolOptions::default().with_constraints(constraints));
         let pool = Pool::new(opts);
         let pool_clone = pool.clone();
 

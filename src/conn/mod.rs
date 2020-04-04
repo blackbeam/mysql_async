@@ -633,9 +633,8 @@ impl Conn {
         if let Some(socket) = self.inner.socket.as_ref() {
             let opts = self.inner.opts.clone();
             if opts.get_socket().is_none() {
-                let mut builder = OptsBuilder::from_opts(opts);
-                builder.socket(Some(&**socket));
-                match Conn::new(builder).await {
+                let opts = OptsBuilder::from_opts(opts).socket(Some(&**socket));
+                match Conn::new(opts).await {
                     Ok(conn) => {
                         let old_conn = std::mem::replace(self, conn);
                         // tidy up the old connection
@@ -784,17 +783,13 @@ mod test {
 
     #[tokio::test]
     async fn should_connect_without_database() -> super::Result<()> {
-        let mut opts = get_opts();
-
         // no database name
-        opts.db_name(None::<String>);
-        let mut conn: Conn = Conn::new(opts.clone()).await?;
+        let mut conn: Conn = Conn::new(get_opts().db_name(None::<String>)).await?;
         conn.ping().await?;
         conn.disconnect().await?;
 
         // empty database name
-        opts.db_name(Some(""));
-        let mut conn: Conn = Conn::new(opts).await?;
+        let mut conn: Conn = Conn::new(get_opts().db_name(Some(""))).await?;
         conn.ping().await?;
         conn.disconnect().await?;
 
@@ -870,8 +865,8 @@ mod test {
                 .unwrap();
             };
 
-            let mut opts = get_opts();
-            opts.user(Some("test_user"))
+            let opts = get_opts()
+                .user(Some("test_user"))
                 .pass(Some(pass))
                 .db_name(None::<String>);
             let result = Conn::new(opts).await;
@@ -905,9 +900,8 @@ mod test {
 
     #[tokio::test]
     async fn should_execute_init_queries_on_new_connection() -> super::Result<()> {
-        let mut opts_builder = OptsBuilder::from_opts(get_opts());
-        opts_builder.init(vec!["SET @a = 42", "SET @b = 'foo'"]);
-        let mut conn = Conn::new(opts_builder).await?;
+        let opts = OptsBuilder::from_opts(get_opts()).init(vec!["SET @a = 42", "SET @b = 'foo'"]);
+        let mut conn = Conn::new(opts).await?;
         let result: Vec<(u8, String)> = conn.query("SELECT @a, @b").await?;
         conn.disconnect().await?;
         assert_eq!(result, vec![(42, "foo".into())]);
@@ -926,8 +920,7 @@ mod test {
 
     #[tokio::test]
     async fn should_not_cache_statements_if_stmt_cache_size_is_zero() -> super::Result<()> {
-        let mut opts = OptsBuilder::from_opts(get_opts());
-        opts.stmt_cache_size(0);
+        let opts = OptsBuilder::from_opts(get_opts()).stmt_cache_size(0);
 
         let mut conn = Conn::new(opts).await?;
         conn.exec_drop("DO ?", (1_u8,)).await?;
@@ -954,8 +947,7 @@ mod test {
 
     #[tokio::test]
     async fn should_hold_stmt_cache_size_bound() -> super::Result<()> {
-        let mut opts = OptsBuilder::from_opts(get_opts());
-        opts.stmt_cache_size(3);
+        let opts = OptsBuilder::from_opts(get_opts()).stmt_cache_size(3);
         let mut conn = Conn::new(opts).await?;
         conn.exec_drop("DO 1", ()).await?;
         conn.exec_drop("DO 2", ()).await?;
@@ -1406,8 +1398,8 @@ mod test {
         let file_path = file_path.path();
         let file_name = Path::new(file_path.file_name().unwrap());
 
-        let mut opts = OptsBuilder::from_opts(get_opts());
-        opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[file_name][..])));
+        let opts = OptsBuilder::from_opts(get_opts())
+            .local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[file_name][..])));
 
         let mut conn = Conn::new(opts).await.unwrap();
         conn.query_drop("CREATE TEMPORARY TABLE tmp (a TEXT);")

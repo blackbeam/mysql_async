@@ -151,7 +151,7 @@ pub use self::queryable::transaction::IsolationLevel;
 #[doc(inline)]
 pub use self::opts::{
     Opts, OptsBuilder, PoolConstraints, PoolOptions, SslOpts, DEFAULT_INACTIVE_CONNECTION_TTL,
-    DEFAULT_TTL_CHECK_INTERVAL,
+    DEFAULT_POOL_CONSTRAINTS, DEFAULT_STMT_CACHE_SIZE, DEFAULT_TTL_CHECK_INTERVAL,
 };
 
 #[doc(inline)]
@@ -258,17 +258,14 @@ pub mod test_misc {
 
     pub fn get_opts() -> OptsBuilder {
         let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
-        // to suppress warning on unused mut
-        builder.stmt_cache_size(None);
         if test_ssl() {
-            builder.prefer_socket(false);
-            let mut ssl_opts = SslOpts::default();
-            ssl_opts.set_danger_skip_domain_validation(true);
-            ssl_opts.set_danger_accept_invalid_certs(true);
-            builder.ssl_opts(ssl_opts);
+            let ssl_opts = SslOpts::default()
+                .with_danger_skip_domain_validation(true)
+                .with_danger_accept_invalid_certs(true);
+            builder = builder.prefer_socket(false).ssl_opts(ssl_opts);
         }
         if test_compression() {
-            builder.compression(crate::Compression::default());
+            builder = builder.compression(crate::Compression::default());
         }
         builder
     }
