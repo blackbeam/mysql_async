@@ -327,6 +327,7 @@ impl crate::Conn {
 
     /// Helper, that closes statement with the given id.
     pub(crate) async fn close_statement(&mut self, id: u32) -> Result<()> {
+        self.stmt_cache_mut().remove(id);
         self.write_command_raw(ComStmtClose::new(id).into()).await
     }
 }
