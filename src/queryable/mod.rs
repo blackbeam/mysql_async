@@ -20,14 +20,10 @@ use self::{
     transaction::{Transaction, TxStatus},
 };
 use crate::{
-    connection_like::ConnectionLike,
-    consts::Command,
+    consts::{CapabilityFlags, Command},
     error::*,
     prelude::FromRow,
-    queryable::{
-        query_result::{read_result_set, ResultSetMeta},
-        stmt::StatementLike,
-    },
+    queryable::{query_result::ResultSetMeta, stmt::StatementLike},
     BoxFuture, Column, Conn, Params, Row,
 };
 
@@ -39,16 +35,8 @@ pub trait Protocol: Send + 'static {
     /// Returns `ResultSetMeta`, that corresponds to the current protocol.
     fn result_set_meta(columns: Arc<Vec<Column>>) -> ResultSetMeta;
     fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row>;
-    fn is_last_result_set_packet<T>(conn_like: &T, packet: &[u8]) -> bool
-    where
-        T: ConnectionLike,
-    {
-        parse_ok_packet(
-            packet,
-            conn_like.conn_ref().capabilities(),
-            OkPacketKind::ResultSetTerminator,
-        )
-        .is_ok()
+    fn is_last_result_set_packet(capabilities: CapabilityFlags, packet: &[u8]) -> bool {
+        parse_ok_packet(packet, capabilities, OkPacketKind::ResultSetTerminator).is_ok()
     }
 }
 
@@ -82,22 +70,37 @@ impl Protocol for BinaryProtocol {
     }
 }
 
-/// The only purpose of this function at the moment is to rollback a transaction in cases,
-/// where `Transaction` is dropped without an explicit call to `commit` or `rollback`.
-async fn cleanup<T: Queryable>(queryable: &mut T) -> Result<()> {
-    queryable.conn_mut().drop_result().await?;
-    if queryable.conn_ref().get_tx_status() == TxStatus::RequiresRollback {
-        queryable.conn_mut().set_tx_status(TxStatus::None);
-        queryable.exec_drop("ROLLBACK", ()).await?;
+impl Conn {
+    /// The only purpose of this function is to rollback a transaction or to drop query result
+    /// in cases, where `Transaction` was dropped without an explicit call to `commit`
+    /// or `rollback`, or where `QueryResult` was dropped without being consumed.
+    pub(crate) async fn clean_dirty(&mut self) -> Result<()> {
+        self.drop_result().await?;
+        if self.get_tx_status() == TxStatus::RequiresRollback {
+            self.set_tx_status(TxStatus::None);
+            self.exec_drop("ROLLBACK", ()).await?;
+        }
+        Ok(())
     }
-    Ok(())
+
+    /// Low level function that performs a text query.
+    pub(crate) async fn raw_query<'a, Q>(&'a mut self, query: Q) -> Result<()>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+    {
+        self.clean_dirty().await?;
+        self.write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
+            .await?;
+        self.read_result_set::<TextProtocol>().await?;
+        Ok(())
+    }
 }
 
 pub trait Queryable: crate::prelude::ConnectionLike {
     /// Executes `COM_PING`.
     fn ping(&mut self) -> BoxFuture<'_, ()> {
         BoxFuture(Box::pin(async move {
-            cleanup(self).await?;
+            self.conn_mut().clean_dirty().await?;
             self.conn_mut()
                 .write_command_raw(vec![Command::COM_PING as u8])
                 .await?;
@@ -107,19 +110,13 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     }
 
     /// Performs the given query.
-    fn query_iter<'a, Q>(
-        &'a mut self,
-        query: Q,
-    ) -> BoxFuture<'a, QueryResult<'a, Self, TextProtocol>>
+    fn query_iter<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, QueryResult<'a, TextProtocol>>
     where
         Q: AsRef<str> + Send + Sync + 'a,
     {
         BoxFuture(Box::pin(async move {
-            cleanup(self).await?;
-            self.conn_mut()
-                .write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
-                .await?;
-            read_result_set(self).await
+            self.conn_mut().raw_query(query).await?;
+            Ok(QueryResult::new(self.conn_mut()))
         }))
     }
 
@@ -129,7 +126,7 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         Q: AsRef<str> + Sync + Send + 'a,
     {
         BoxFuture(Box::pin(async move {
-            cleanup(self).await?;
+            self.conn_mut().clean_dirty().await?;
             self.conn_mut().get_statement(query.as_ref()).await
         }))
     }
@@ -137,7 +134,7 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     /// Closes the given statement.
     fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()> {
         BoxFuture(Box::pin(async move {
-            cleanup(self).await?;
+            self.conn_mut().clean_dirty().await?;
             self.conn_mut().stmt_cache_mut().remove(stmt.id());
             self.conn_mut().close_statement(stmt.id()).await
         }))
@@ -148,16 +145,19 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         &'a mut self,
         stmt: &'b Q,
         params: P,
-    ) -> BoxFuture<'b, QueryResult<'a, crate::Conn, BinaryProtocol>>
+    ) -> BoxFuture<'b, QueryResult<'a, BinaryProtocol>>
     where
         Q: StatementLike + ?Sized + 'a,
         P: Into<Params>,
     {
         let params = params.into();
         BoxFuture(Box::pin(async move {
-            cleanup(self).await?;
+            self.conn_mut().clean_dirty().await?;
             let statement = self.conn_mut().get_statement(stmt).await?;
-            self.conn_mut().execute_statement(&statement, params).await
+            self.conn_mut()
+                .execute_statement(&statement, params)
+                .await?;
+            Ok(QueryResult::new(self.conn_mut()))
         }))
     }
 
@@ -246,12 +246,13 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         P: Into<Params> + Send,
     {
         BoxFuture(Box::pin(async move {
-            cleanup(self).await?;
+            self.conn_mut().clean_dirty().await?;
             let statement = self.conn_mut().get_statement(stmt).await?;
             for params in params_iter {
                 self.conn_mut()
                     .execute_statement(&statement, params)
-                    .await?
+                    .await?;
+                QueryResult::<BinaryProtocol>::new(self.conn_mut())
                     .drop_result()
                     .await?;
             }
@@ -356,7 +357,7 @@ pub trait Queryable: crate::prelude::ConnectionLike {
 }
 
 impl Queryable for Conn {}
-impl<T: Queryable> Queryable for Transaction<'_, T> {}
+impl Queryable for Transaction<'_> {}
 
 #[cfg(test)]
 mod tests {

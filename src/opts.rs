@@ -233,7 +233,7 @@ impl PoolOpts {
     /// ```
     /// # use mysql_async::*;
     /// # use std::time::Duration;
-    /// # fn main() -> mysql_async::error::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://localhost/db?inactive_connection_ttl=60")?;
     /// assert_eq!(opts.pool_opts().inactive_connection_ttl(), Duration::from_secs(60));
     /// # Ok(()) }
@@ -260,7 +260,7 @@ impl PoolOpts {
     /// ```
     /// # use mysql_async::*;
     /// # use std::time::Duration;
-    /// # fn main() -> mysql_async::error::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://localhost/db?ttl_check_interval=60")?;
     /// assert_eq!(opts.pool_opts().ttl_check_interval(), Duration::from_secs(60));
     /// # Ok(()) }
@@ -446,7 +446,7 @@ impl Opts {
     ///
     /// ```
     /// # use mysql_async::*;
-    /// # fn main() -> mysql_async::error::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://user@localhost/database_name")?;
     /// assert_eq!(opts.user(), Some("user"));
     /// # Ok(()) }
@@ -463,7 +463,7 @@ impl Opts {
     ///
     /// ```
     /// # use mysql_async::*;
-    /// # fn main() -> mysql_async::error::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://user:pass%20word@localhost/database_name")?;
     /// assert_eq!(opts.pass(), Some("pass word"));
     /// # Ok(()) }
@@ -480,7 +480,7 @@ impl Opts {
     ///
     /// ```
     /// # use mysql_async::*;
-    /// # fn main() -> mysql_async::error::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://localhost/database_name")?;
     /// assert_eq!(opts.db_name(), Some("database_name"));
     /// # Ok(()) }
@@ -502,7 +502,7 @@ impl Opts {
     ///
     /// ```
     /// # use mysql_async::*;
-    /// # fn main() -> mysql_async::error::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://localhost/db?tcp_keepalive=10000")?;
     /// assert_eq!(opts.tcp_keepalive(), Some(10_000));
     /// # Ok(()) }
@@ -522,7 +522,7 @@ impl Opts {
     ///
     /// ```
     /// # use mysql_async::*;
-    /// # fn main() -> mysql_async::error::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://localhost/db?tcp_nodelay=false")?;
     /// assert_eq!(opts.tcp_nodelay(), false);
     /// # Ok(()) }
@@ -555,7 +555,7 @@ impl Opts {
     /// ```
     /// # use mysql_async::*;
     /// # use std::time::Duration;
-    /// # fn main() -> mysql_async::error::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://localhost/db?conn_ttl=360")?;
     /// assert_eq!(opts.conn_ttl(), Some(Duration::from_secs(360)));
     /// # Ok(()) }
@@ -580,7 +580,7 @@ impl Opts {
     ///
     /// ```
     /// # use mysql_async::*;
-    /// # fn main() -> mysql_async::error::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://localhost/db?stmt_cache_size=128")?;
     /// assert_eq!(opts.stmt_cache_size(), 128);
     /// # Ok(()) }
@@ -612,7 +612,7 @@ impl Opts {
     ///
     /// ```
     /// # use mysql_async::*;
-    /// # fn main() -> mysql_async::error::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://localhost/db?prefer_socket=false")?;
     /// assert_eq!(opts.prefer_socket(), false);
     /// # Ok(()) }
@@ -629,7 +629,7 @@ impl Opts {
     ///
     /// ```
     /// # use mysql_async::*;
-    /// # fn main() -> mysql_async::error::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://localhost/db?socket=%2Fpath%2Fto%2Fsocket")?;
     /// assert_eq!(opts.socket(), Some("/path/to/socket"));
     /// # Ok(()) }
@@ -720,7 +720,7 @@ impl PoolConstraints {
     ///
     /// ```
     /// # use mysql_async::*;
-    /// # fn main() -> mysql_async::error::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://localhost/db?pool_min=0&pool_max=151")?;
     /// assert_eq!(opts.pool_opts().constraints(), PoolConstraints::new(0, 151).unwrap());
     /// # Ok(()) }

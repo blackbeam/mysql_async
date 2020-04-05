@@ -171,7 +171,7 @@ impl Pool {
             && !conn.inner.disconnected
             && !conn.expired()
             && conn.inner.tx_status == TxStatus::None
-            && conn.inner.has_result.is_none()
+            && conn.inner.pending_result.is_none()
             && !self.inner.close.load(atomic::Ordering::Acquire)
         {
             let mut exchange = self.inner.exchange.lock().unwrap();
@@ -716,12 +716,12 @@ mod test {
         fn new_conn_on_pool_soft_boundary(bencher: &mut test::Bencher) {
             let mut runtime = Runtime::new().unwrap();
 
-            let mut opts = get_opts();
-            let mut pool_opts = PoolOpts::with_constraints(PoolConstraints::new(0, 1).unwrap());
-            pool_opts.set_inactive_connection_ttl(Duration::from_secs(1));
-            opts.pool_opts(pool_opts);
+            let pool_constraints = PoolConstraints::new(0, 1).unwrap();
+            let pool_opts = PoolOpts::default()
+                .with_constraints(pool_constraints)
+                .with_inactive_connection_ttl(Duration::from_secs(1));
 
-            let pool = Pool::new(opts);
+            let pool = Pool::new(get_opts().pool_opts(pool_opts));
 
             bencher.iter(|| {
                 let fut = pool.get_conn().map(drop);

@@ -6,7 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use mysql_async::{error::*, prelude::*, Opts, Pool, QueryResult};
+use mysql_async::{prelude::*, Error, Opts, Pool, QueryResult, Result};
 
 use std::{env, io};
 
@@ -26,24 +26,20 @@ fn get_url() -> String {
     }
 }
 
-pub async fn get_all_results<'a, TupleType, T, P>(
-    mut result: QueryResult<'a, T, P>,
+pub async fn get_all_results<'a, TupleType, P>(
+    mut result: QueryResult<'a, P>,
 ) -> Result<Vec<TupleType>>
 where
     TupleType: FromRow + Send + 'static,
     P: Protocol + Send + 'static,
-    T: ConnectionLike + Sized + Send + 'static,
 {
     Ok(result.collect().await?)
 }
 
-pub async fn get_single_result<'a, TupleType, T, P>(
-    result: QueryResult<'a, T, P>,
-) -> Result<TupleType>
+pub async fn get_single_result<'a, TupleType, P>(result: QueryResult<'a, P>) -> Result<TupleType>
 where
     TupleType: FromRow + Send + 'static,
     P: Protocol + Send + 'static,
-    T: ConnectionLike + Sized + Send + 'static,
 {
     let mut data = get_all_results(result).await?;
     if data.len() != 1 {
@@ -58,9 +54,7 @@ async fn use_generic_code() {
     let pool = Pool::new(Opts::from_url(&*get_url()).unwrap());
     let mut conn = pool.get_conn().await.unwrap();
     let result = conn.query_iter("SELECT 1, 2, 3").await.unwrap();
-    let result = get_single_result::<(u8, u8, u8), _, _>(result)
-        .await
-        .unwrap();
+    let result = get_single_result::<(u8, u8, u8), _>(result).await.unwrap();
     drop(conn);
     pool.disconnect().await.unwrap();
     assert_eq!(result, (1, 2, 3));

@@ -15,31 +15,32 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{connection_like::ConnectionLike, error::IoError};
+use crate::{
+    connection_like::{Connection, ConnectionLike},
+    error::IoError,
+};
 
 /// Reads a packet.
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct ReadPacket<'a, T: ?Sized> {
-    conn_like: &'a mut T,
-}
+pub struct ReadPacket<'a>(Connection<'a>);
 
-impl<'a, T: ?Sized> ReadPacket<'a, T> {
-    pub(crate) fn new(conn_like: &'a mut T) -> Self {
-        Self { conn_like }
+impl<'a> ReadPacket<'a> {
+    pub(crate) fn new<T: Into<Connection<'a>>>(conn: T) -> Self {
+        Self(conn.into())
     }
 }
 
-impl<'a, T: ConnectionLike> Future for ReadPacket<'a, T> {
+impl<'a> Future for ReadPacket<'a> {
     type Output = std::result::Result<Vec<u8>, IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let packet_opt =
-            ready!(Pin::new(self.conn_like.conn_mut().stream_mut()).poll_next(cx)).transpose()?;
+            ready!(Pin::new(self.0.conn_mut().stream_mut()).poll_next(cx)).transpose()?;
 
         match packet_opt {
             Some(packet) => {
-                self.conn_like.conn_mut().touch();
+                self.0.conn_mut().touch();
                 return Poll::Ready(Ok(packet));
             }
             None => {

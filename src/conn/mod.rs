@@ -82,7 +82,7 @@ struct ConnInner {
     last_ok_packet: Option<OkPacket<'static>>,
     last_err_packet: Option<ErrPacket<'static>>,
     pool: Option<Pool>,
-    has_result: Option<ResultSetMeta>,
+    pending_result: Option<ResultSetMeta>,
     tx_status: TxStatus,
     opts: Opts,
     last_io: Instant,
@@ -101,7 +101,7 @@ impl fmt::Debug for ConnInner {
             .field("connection id", &self.id)
             .field("server version", &self.version)
             .field("pool", &self.pool)
-            .field("has result", &self.has_result.is_some())
+            .field("pending_result", &self.pending_result)
             .field("tx_status", &self.tx_status)
             .field("stream", &self.stream)
             .field("options", &self.opts)
@@ -120,7 +120,7 @@ impl ConnInner {
             stream: None,
             version: (0, 0, 0),
             id: 0,
-            has_result: None,
+            pending_result: None,
             pool: None,
             tx_status: TxStatus::None,
             last_io: Instant::now(),
@@ -251,12 +251,12 @@ impl Conn {
     ///
     /// If `Some(_)`, then result is not yet consumed.
     pub(crate) fn get_pending_result(&self) -> Option<&ResultSetMeta> {
-        self.inner.has_result.as_ref()
+        self.inner.pending_result.as_ref()
     }
 
     /// Sets the given pening result metadata for this connection.
     pub(crate) fn set_pending_result(&mut self, meta: Option<ResultSetMeta>) {
-        self.inner.has_result = meta;
+        self.inner.pending_result = meta;
     }
 
     /// Returns current status flags.
@@ -521,11 +521,13 @@ impl Conn {
     }
 
     pub(crate) async fn read_packet(&mut self) -> Result<Vec<u8>> {
-        let packet = crate::io::ReadPacket::new(self).await.map_err(|io_err| {
-            self.inner.stream.take();
-            self.inner.disconnected = true;
-            Error::from(io_err)
-        })?;
+        let packet = crate::io::ReadPacket::new(&mut *self)
+            .await
+            .map_err(|io_err| {
+                self.inner.stream.take();
+                self.inner.disconnected = true;
+                Error::from(io_err)
+            })?;
         self.handle_packet(&*packet)?;
         Ok(packet)
     }
@@ -543,7 +545,7 @@ impl Conn {
     where
         T: Into<Vec<u8>>,
     {
-        crate::io::WritePacket::new(self, data.into())
+        crate::io::WritePacket::new(&mut *self, data.into())
             .await
             .map_err(|io_err| {
                 self.inner.stream.take();
@@ -716,21 +718,15 @@ impl Conn {
     }
 
     pub(crate) async fn drop_result(&mut self) -> Result<()> {
-        match self.inner.has_result.take() {
-            Some(meta @ ResultSetMeta::Text(_)) => {
-                QueryResult::<'_, _, TextProtocol>::new(self, meta)
+        match self.inner.pending_result.as_ref() {
+            Some(ResultSetMeta::Text(_)) => {
+                QueryResult::<'_, TextProtocol>::new(self)
                     .drop_result()
                     .await?;
                 Ok(())
             }
-            Some(meta @ ResultSetMeta::Binary(_)) => {
-                QueryResult::<'_, _, BinaryProtocol>::new(self, meta)
-                    .drop_result()
-                    .await?;
-                Ok(())
-            }
-            Some(meta @ ResultSetMeta::Empty) => {
-                QueryResult::<'_, _, TextProtocol>::new(self, meta)
+            Some(ResultSetMeta::Binary(_)) => {
+                QueryResult::<'_, BinaryProtocol>::new(self)
                     .drop_result()
                     .await?;
                 Ok(())
@@ -741,7 +737,7 @@ impl Conn {
 
     async fn cleanup(mut self) -> Result<Self> {
         loop {
-            if self.inner.has_result.is_some() {
+            if self.inner.pending_result.is_some() {
                 self.drop_result().await?;
             } else if self.inner.tx_status != TxStatus::None {
                 self.rollback_transaction().await?;

@@ -20,7 +20,7 @@
 //! ### Example
 //!
 //! ```rust
-//! # use mysql_async::test_misc::get_opts;
+//! # use mysql_async::{Result, test_misc::get_opts};
 //! use mysql_async::prelude::*;
 //! # use std::env;
 //!
@@ -32,7 +32,7 @@
 //! }
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<(), mysql_async::error::Error> {
+//! async fn main() -> Result<()> {
 //!     let payments = vec![
 //!         Payment { customer_id: 1, amount: 2, account_name: None },
 //!         Payment { customer_id: 3, amount: 4, account_name: Some("foo".into()) },
@@ -108,17 +108,18 @@ mod macros;
 mod conn;
 mod connection_like;
 /// Errors used in this crate
-pub mod error;
+mod error;
 mod io;
 mod local_infile_handler;
 mod opts;
+mod query;
 mod queryable;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct BoxFuture<'a, T>(Pin<Box<dyn Future<Output = Result<T, error::Error>> + Send + 'a>>);
+pub struct BoxFuture<'a, T>(Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>);
 
 impl<T> Future for BoxFuture<'_, T> {
-    type Output = Result<T, error::Error>;
+    type Output = Result<T>;
 
     fn poll(
         mut self: Pin<&mut Self>,
@@ -144,6 +145,12 @@ pub use self::conn::Conn;
 
 #[doc(inline)]
 pub use self::conn::pool::Pool;
+
+#[doc(inline)]
+pub use self::error::{DriverError, Error, IoError, ParseError, Result, ServerError, UrlError};
+
+#[doc(inline)]
+pub use self::query::QueryWithParams;
 
 #[doc(inline)]
 pub use self::queryable::transaction::IsolationLevel;
@@ -202,6 +209,8 @@ pub mod futures {
 pub mod prelude {
     #[doc(inline)]
     pub use crate::local_infile_handler::LocalInfileHandler;
+    #[doc(inline)]
+    pub use crate::query::{BatchQuery, BinQuery, TextQuery, WithParams};
     #[doc(inline)]
     pub use crate::queryable::Queryable;
     #[doc(inline)]

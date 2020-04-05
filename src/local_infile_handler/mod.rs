@@ -21,11 +21,11 @@ pub mod builtin;
 /// Simple handler example:
 ///
 /// ```rust
-/// # use mysql_async::{prelude::*, test_misc::get_opts, OptsBuilder};
+/// # use mysql_async::{prelude::*, test_misc::get_opts, OptsBuilder, Result, Error};
 /// # use tokio::prelude::*;
 /// # use std::env;
 /// # #[tokio::main]
-/// # async fn main() -> Result<(), mysql_async::error::Error> {
+/// # async fn main() -> Result<()> {
 /// #
 /// /// This example hanlder will return contained bytes in response to a local infile request.
 /// struct ExampleHandler(&'static [u8]);
@@ -48,16 +48,16 @@ pub mod builtin;
 /// conn.query_drop("CREATE TEMPORARY TABLE tmp (a TEXT);").await?;
 /// match conn.query_drop("LOAD DATA LOCAL INFILE 'baz' INTO TABLE tmp;").await {
 ///     Ok(()) => (),
-///     Err(mysql_async::error::Error::Server(ref err)) if err.code == 1148 => {
+///     Err(Error::Server(ref err)) if err.code == 1148 => {
 ///         // The used command is not allowed with this MySQL version
 ///         return Ok(());
 ///     },
-///     Err(mysql_async::error::Error::Server(ref err)) if err.code == 3948 => {
+///     Err(Error::Server(ref err)) if err.code == 3948 => {
 ///         // Loading local data is disabled;
 ///         // this must be enabled on both the client and server sides
 ///         return Ok(());
 ///     }
-///     e@Err(_) => e.unwrap(),
+///     e @ Err(_) => e.unwrap(),
 /// };
 /// let result: Vec<String> = conn.exec("SELECT * FROM tmp", ()).await?;
 ///

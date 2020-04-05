@@ -15,32 +15,32 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{connection_like::ConnectionLike, error::IoError};
+use crate::{
+    connection_like::{Connection, ConnectionLike},
+    error::IoError,
+};
 
-pub struct WritePacket<'a, T: ?Sized> {
-    conn_like: &'a mut T,
+pub struct WritePacket<'a> {
+    conn: Connection<'a>,
     data: Option<Vec<u8>>,
 }
 
-impl<'a, T: ?Sized> WritePacket<'a, T> {
-    pub(crate) fn new(conn_like: &'a mut T, data: Vec<u8>) -> WritePacket<'a, T> {
+impl<'a> WritePacket<'a> {
+    pub(crate) fn new<T: Into<Connection<'a>>>(conn: T, data: Vec<u8>) -> WritePacket<'a> {
         Self {
-            conn_like,
+            conn: conn.into(),
             data: Some(data),
         }
     }
 }
 
-impl<'a, T> Future for WritePacket<'a, T>
-where
-    T: ConnectionLike,
-{
+impl<'a> Future for WritePacket<'a> {
     type Output = std::result::Result<(), IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.data.is_some() {
             let codec = Pin::new(
-                self.conn_like
+                self.conn
                     .conn_mut()
                     .stream_mut()
                     .codec
@@ -52,7 +52,7 @@ where
 
         if let Some(data) = self.data.take() {
             let codec = Pin::new(
-                self.conn_like
+                self.conn
                     .conn_mut()
                     .stream_mut()
                     .codec
@@ -64,7 +64,7 @@ where
         }
 
         let codec = Pin::new(
-            self.conn_like
+            self.conn
                 .conn_mut()
                 .stream_mut()
                 .codec

@@ -21,10 +21,7 @@ use crate::{
     connection_like::ConnectionLike,
     consts::{CapabilityFlags, Command},
     error::*,
-    queryable::{
-        query_result::{read_result_set, QueryResult},
-        BinaryProtocol,
-    },
+    queryable::BinaryProtocol,
     Column, Params, Value,
 };
 
@@ -169,10 +166,10 @@ impl Statement {
 }
 
 impl crate::Conn {
-    /// Low-level helpers, that reads the given number of column packets from server.
+    /// Low-level helpers, that reads the given number of column packets terminated by EOF packet.
     ///
     /// Requires `num > 0`.
-    async fn read_column_defs<U>(&mut self, num: U) -> Result<Vec<Column>>
+    pub(crate) async fn read_column_defs<U>(&mut self, num: U) -> Result<Vec<Column>>
     where
         U: Into<usize>,
     {
@@ -243,7 +240,7 @@ impl crate::Conn {
         &mut self,
         statement: &Statement,
         params: P,
-    ) -> Result<QueryResult<'_, Self, BinaryProtocol>>
+    ) -> Result<()>
     where
         P: Into<Params>,
     {
@@ -268,7 +265,8 @@ impl crate::Conn {
                     }
 
                     self.write_command_raw(body).await?;
-                    break read_result_set(self).await;
+                    self.read_result_set::<BinaryProtocol>().await?;
+                    break;
                 }
                 Params::Named(_) => {
                     if statement.named_params.is_none() {
@@ -296,10 +294,12 @@ impl crate::Conn {
 
                     let (body, _) = ComStmtExecuteRequestBuilder::new(statement.id()).build(&[]);
                     self.write_command_raw(body).await?;
-                    break read_result_set(self).await;
+                    self.read_result_set::<BinaryProtocol>().await?;
+                    break;
                 }
             }
         }
+        Ok(())
     }
 
     /// Helper, that sends all `Value::Bytes` in the given list of paramenters as long data.
