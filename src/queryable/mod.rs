@@ -71,9 +71,12 @@ impl Protocol for BinaryProtocol {
 }
 
 impl Conn {
-    /// The only purpose of this function is to rollback a transaction or to drop query result
-    /// in cases, where `Transaction` was dropped without an explicit call to `commit`
-    /// or `rollback`, or where `QueryResult` was dropped without being consumed.
+    /// The purpose of this function is to rollback a transaction or to drop query result in cases,
+    /// where `Transaction` was dropped without an explicit call to `commit` or `rollback`,
+    /// or where `QueryResult` was dropped without being consumed.
+    ///
+    /// The only difference betwee this function and [`Conn::cleanup`] is that this function
+    /// won't rollback existing transaction.
     pub(crate) async fn clean_dirty(&mut self) -> Result<()> {
         self.drop_result().await?;
         if self.get_tx_status() == TxStatus::RequiresRollback {
@@ -88,7 +91,6 @@ impl Conn {
     where
         Q: AsRef<str> + Send + Sync + 'a,
     {
-        self.clean_dirty().await?;
         self.write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
             .await?;
         self.read_result_set::<TextProtocol>().await?;
@@ -100,7 +102,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     /// Executes `COM_PING`.
     fn ping(&mut self) -> BoxFuture<'_, ()> {
         BoxFuture(Box::pin(async move {
-            self.conn_mut().clean_dirty().await?;
             self.conn_mut()
                 .write_command_raw(vec![Command::COM_PING as u8])
                 .await?;
@@ -126,7 +127,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         Q: AsRef<str> + Sync + Send + 'a,
     {
         BoxFuture(Box::pin(async move {
-            self.conn_mut().clean_dirty().await?;
             self.conn_mut().get_statement(query.as_ref()).await
         }))
     }
@@ -134,7 +134,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     /// Closes the given statement.
     fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()> {
         BoxFuture(Box::pin(async move {
-            self.conn_mut().clean_dirty().await?;
             self.conn_mut().stmt_cache_mut().remove(stmt.id());
             self.conn_mut().close_statement(stmt.id()).await
         }))
@@ -152,7 +151,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     {
         let params = params.into();
         BoxFuture(Box::pin(async move {
-            self.conn_mut().clean_dirty().await?;
             let statement = self.conn_mut().get_statement(stmt).await?;
             self.conn_mut()
                 .execute_statement(&statement, params)
@@ -246,7 +244,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         P: Into<Params> + Send,
     {
         BoxFuture(Box::pin(async move {
-            self.conn_mut().clean_dirty().await?;
             let statement = self.conn_mut().get_statement(stmt).await?;
             for params in params_iter {
                 self.conn_mut()

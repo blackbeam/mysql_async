@@ -557,7 +557,8 @@ impl Conn {
     /// Returns future that sends full command body to a server.
     pub(crate) async fn write_command_raw(&mut self, body: Vec<u8>) -> Result<()> {
         debug_assert!(body.len() > 0);
-        self.conn_mut().reset_seq_id();
+        self.clean_dirty().await?;
+        self.reset_seq_id();
         self.write_packet(body).await
     }
 
@@ -735,6 +736,9 @@ impl Conn {
         }
     }
 
+    /// This function will drop pending result and rollback a transaction, if needed.
+    ///
+    /// The purpose of this function, is to cleanup the connection while returning it to a [`Pool`].
     async fn cleanup(mut self) -> Result<Self> {
         loop {
             if self.inner.pending_result.is_some() {

@@ -266,7 +266,6 @@ where
                 ToConnectionResult::Mediate(fut) => fut.await?,
             };
 
-            conn.conn_mut().clean_dirty().await?;
             let statement = conn.conn_mut().get_statement(query).await?;
             conn.conn_mut()
                 .execute_statement(&statement, params)
@@ -326,15 +325,12 @@ where
                 ToConnectionResult::Mediate(fut) => fut.await?,
             };
 
-            conn.conn_mut().clean_dirty().await?;
-
             let statement = conn.conn_mut().get_statement(query).await?;
 
             for params in params {
                 conn.conn_mut()
                     .execute_statement(&statement, params)
                     .await?;
-                conn.conn_mut().clean_dirty().await?;
             }
 
             Ok(())
