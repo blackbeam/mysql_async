@@ -10,7 +10,6 @@ use tokio::sync::mpsc;
 
 use std::{
     collections::VecDeque,
-    fmt,
     pin::Pin,
     str::FromStr,
     sync::{atomic, Arc, Mutex},
@@ -22,7 +21,7 @@ use crate::{
     conn::{pool::futures::*, Conn},
     error::*,
     opts::{Opts, PoolOpts},
-    queryable::transaction::TxStatus,
+    queryable::transaction::{Transaction, TxOpts, TxStatus},
     BoxFuture,
 };
 
@@ -99,16 +98,11 @@ pub struct Inner {
 ///
 /// Note that you will probably want to await [`Pool::disconnect`] before dropping the runtime, as
 /// otherwise you may end up with a number of connections that are not cleanly terminated.
+#[derive(Debug)]
 pub struct Pool {
     opts: Opts,
     inner: Arc<Inner>,
     drop: mpsc::UnboundedSender<Option<Conn>>,
-}
-
-impl fmt::Debug for Pool {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Pool").field("opts", &self.opts).finish()
-    }
 }
 
 impl Pool {
@@ -142,6 +136,12 @@ impl Pool {
     /// Returns a future that resolves to [`Conn`].
     pub fn get_conn(&self) -> GetConn {
         GetConn::new(self)
+    }
+
+    /// Returns a future that starts a new transaction.
+    pub async fn start_transaction(&self, options: TxOpts) -> Result<Transaction<'static>> {
+        let conn = self.get_conn().await?;
+        Transaction::new(conn, options).await
     }
 
     /// Returns a future that disconnects this pool from the server and resolves to `()`.
@@ -291,8 +291,7 @@ mod test {
     use std::time::Duration;
 
     use crate::{
-        conn::pool::Pool, opts::PoolOpts, queryable::Queryable, test_misc::get_opts,
-        PoolConstraints, TxOpts,
+        conn::pool::Pool, opts::PoolOpts, prelude::*, test_misc::get_opts, PoolConstraints, TxOpts,
     };
 
     macro_rules! conn_ex_field {
@@ -423,18 +422,18 @@ mod test {
     async fn should_start_transaction() -> super::Result<()> {
         let constraints = PoolConstraints::new(1, 1).unwrap();
         let opts = get_opts().pool_opts(PoolOpts::default().with_constraints(constraints));
+
         let pool = Pool::new(opts);
-        pool.get_conn()
-            .await?
-            .query_drop("CREATE TABLE IF NOT EXISTS tmp(id int)")
+
+        "CREATE TABLE IF NOT EXISTS tmp(id int)"
+            .ignore(&pool)
             .await?;
-        let mut conn = pool.get_conn().await?;
-        let mut tx = conn.start_transaction(TxOpts::default()).await?;
+
+        let mut tx = pool.start_transaction(TxOpts::default()).await?;
         tx.exec_batch("INSERT INTO tmp (id) VALUES (?)", vec![(1_u8,), (2_u8,)])
             .await?;
         tx.exec_drop("SELECT * FROM tmp", ()).await?;
         drop(tx);
-        drop(conn);
         let row_opt = pool
             .get_conn()
             .await?
