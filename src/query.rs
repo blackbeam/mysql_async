@@ -108,6 +108,19 @@ pub trait TextQuery: Send + Sized {
             Ok(result)
         }))
     }
+
+    /// This method corresponds to [`Queryable::query_drop`].
+    fn ignore<'a, C>(self, conn: C) -> BoxFuture<'a, ()>
+    where
+        Self: 'a,
+        C: ToConnection<'a> + 'a,
+    {
+        BoxFuture(Box::pin(async move {
+            let result = self.run(conn).await?;
+            result.drop_result().await?;
+            Ok(())
+        }))
+    }
 }
 
 impl<Q: AsRef<str> + Send + Sync> TextQuery for Q {
@@ -245,6 +258,19 @@ pub trait BinQuery: Send + Sized {
             Ok(result)
         }))
     }
+
+    /// This method corresponds to [`Queryable::exec_drop`].
+    fn ignore<'a, C>(self, conn: C) -> BoxFuture<'a, ()>
+    where
+        Self: 'a,
+        C: ToConnection<'a> + 'a,
+    {
+        BoxFuture(Box::pin(async move {
+            let result = self.run(conn).await?;
+            result.drop_result().await?;
+            Ok(())
+        }))
+    }
 }
 
 impl<Q, P> BinQuery for QueryWithParams<&'_ Q, P>
@@ -335,5 +361,56 @@ where
 
             Ok(())
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{prelude::*, test_misc::get_opts, *};
+
+    #[tokio::test]
+    async fn should_run_text_query() -> Result<()> {
+        let query_static = "SELECT 1, 2 UNION ALL SELECT 3, 4; SELECT 5, 6;";
+        let query_string = String::from(query_static);
+
+        macro_rules! test {
+            ($query:expr, $conn:expr) => {{
+                let mut result = $query.run($conn).await?;
+                let result1: Vec<(u8, u8)> = result.collect().await?;
+                let result2: Vec<(u8, u8)> = result.collect().await?;
+                assert_eq!(result1, vec![(1, 2), (3, 4)]);
+                assert_eq!(result2, vec![(5, 6)]);
+
+                $query.ignore($conn).await?;
+
+                let result: Option<(u8, u8)> = $query.first($conn).await?;
+                assert_eq!(result, Some((1, 2)));
+
+                let result: Vec<(u8, u8)> = $query.fetch($conn).await?;
+                assert_eq!(result, vec![(1, 2), (3, 4)]);
+
+                let result = $query
+                    .map($conn, |row: (u8, u8)| format!("{:?}", row))
+                    .await?;
+                assert_eq!(result, vec![String::from("(1, 2)"), String::from("(3, 4)")]);
+
+                let result = $query
+                    .reduce($conn, 0_u8, |acc, row: (u8, u8)| acc + row.0 + row.1)
+                    .await?;
+                assert_eq!(result, 10);
+            }};
+        }
+
+        let mut conn = Conn::new(get_opts()).await?;
+        test!(query_static, &mut conn);
+        test!(query_string.as_str(), &mut conn);
+        conn.disconnect().await?;
+
+        let pool = Pool::new(get_opts());
+        test!(query_static, &pool);
+        test!(query_string.as_str(), &pool);
+        pool.disconnect().await?;
+
+        Ok(())
     }
 }
