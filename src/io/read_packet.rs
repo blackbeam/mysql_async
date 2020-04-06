@@ -23,15 +23,15 @@ use crate::{
 /// Reads a packet.
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct ReadPacket<'a>(Connection<'a>);
+pub struct ReadPacket<'a, 't>(Connection<'a, 't>);
 
-impl<'a> ReadPacket<'a> {
-    pub(crate) fn new<T: Into<Connection<'a>>>(conn: T) -> Self {
+impl<'a, 't> ReadPacket<'a, 't> {
+    pub(crate) fn new<T: Into<Connection<'a, 't>>>(conn: T) -> Self {
         Self(conn.into())
     }
 }
 
-impl<'a> Future for ReadPacket<'a> {
+impl Future for ReadPacket<'_, '_> {
     type Output = std::result::Result<Vec<u8>, IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

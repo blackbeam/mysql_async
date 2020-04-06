@@ -210,7 +210,7 @@ pub mod prelude {
     #[doc(inline)]
     pub use crate::local_infile_handler::LocalInfileHandler;
     #[doc(inline)]
-    pub use crate::query::{BatchQuery, BinQuery, TextQuery, WithParams};
+    pub use crate::query::{BatchQuery, Query, WithParams};
     #[doc(inline)]
     pub use crate::queryable::Queryable;
     #[doc(inline)]

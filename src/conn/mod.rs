@@ -721,13 +721,13 @@ impl Conn {
     pub(crate) async fn drop_result(&mut self) -> Result<()> {
         match self.inner.pending_result.as_ref() {
             Some(ResultSetMeta::Text(_)) => {
-                QueryResult::<'_, TextProtocol>::new(self)
+                QueryResult::<'_, '_, TextProtocol>::new(self)
                     .drop_result()
                     .await?;
                 Ok(())
             }
             Some(ResultSetMeta::Binary(_)) => {
-                QueryResult::<'_, BinaryProtocol>::new(self)
+                QueryResult::<'_, '_, BinaryProtocol>::new(self)
                     .drop_result()
                     .await?;
                 Ok(())

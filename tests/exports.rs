@@ -5,7 +5,7 @@ use mysql_async::{
     params,
     prelude::{
         BatchQuery, ConnectionLike, ConvIr, FromRow, FromValue, LocalInfileHandler, Protocol,
-        Queryable, StatementLike, TextQuery, ToValue,
+        Query, Queryable, StatementLike, ToValue,
     },
     time, uuid, BinaryProtocol, BoxFuture, Column, Conn, Deserialized, DriverError, Error,
     FromRowError, FromValueError, IoError, IsolationLevel, Opts, OptsBuilder, Params, ParseError,

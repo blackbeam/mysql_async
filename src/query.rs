@@ -17,7 +17,6 @@ use crate::{
 /// MySql text query.
 ///
 /// This trait covers the set of `query*` methods on the `Queryable` trait.
-/// Please see the corresponding section of the crate level docs for details.
 ///
 /// Example:
 ///
@@ -29,23 +28,34 @@ use crate::{
 /// use mysql_async::prelude::*;
 /// let pool = Pool::new(get_opts());
 ///
+/// // text protocol query
 /// let num: Option<u32> = "SELECT 42".first(&pool).await?;
+///
+/// // binary protocol query (prepared statement)
+/// // that will prepare `DO ?` and execute `DO 0`, `DO 1`, `DO 2` and so on.
+/// "DO ?"
+///     .with((0..10).map(|x| (x,)))
+///     .batch(&pool)
+///     .await?;
 ///
 /// assert_eq!(num, Some(42));
 /// # Ok(()) }
 /// ```
-pub trait TextQuery: Send + Sized {
+pub trait Query: Send + Sized {
+    /// Query protocol.
+    type Protocol: crate::prelude::Protocol;
+
     /// This methods corresponds to [`Queryable::query_iter`].
-    fn run<'a, C>(self, conn: C) -> BoxFuture<'a, QueryResult<'a, TextProtocol>>
+    fn run<'a, 't: 'a, C>(self, conn: C) -> BoxFuture<'a, QueryResult<'a, 't, Self::Protocol>>
     where
         Self: 'a,
-        C: ToConnection<'a> + 'a;
+        C: ToConnection<'a, 't> + 'a;
 
     /// This methods corresponds to [`Queryable::query_first`].
-    fn first<'a, T, C>(self, conn: C) -> BoxFuture<'a, Option<T>>
+    fn first<'a, 't: 'a, T, C>(self, conn: C) -> BoxFuture<'a, Option<T>>
     where
         Self: 'a,
-        C: ToConnection<'a> + 'a,
+        C: ToConnection<'a, 't> + 'a,
         T: FromRow + Send + 'static,
     {
         BoxFuture(Box::pin(async move {
@@ -61,73 +71,67 @@ pub trait TextQuery: Send + Sized {
     }
 
     /// This methods corresponds to [`Queryable::query`].
-    fn fetch<'a, T, C>(self, conn: C) -> BoxFuture<'a, Vec<T>>
+    fn fetch<'a, 't: 'a, T, C>(self, conn: C) -> BoxFuture<'a, Vec<T>>
     where
         Self: 'a,
-        C: ToConnection<'a> + 'a,
+        C: ToConnection<'a, 't> + 'a,
         T: FromRow + Send + 'static,
     {
         BoxFuture(Box::pin(async move {
-            let result = self.run(conn).await?;
-            result.collect_and_drop::<T>().await
+            self.run(conn).await?.collect_and_drop::<T>().await
         }))
     }
 
     /// This methods corresponds to [`Queryable::query_fold`].
-    fn reduce<'a, T, U, F, C>(self, conn: C, init: U, next: F) -> BoxFuture<'a, U>
+    fn reduce<'a, 't: 'a, T, U, F, C>(self, conn: C, init: U, next: F) -> BoxFuture<'a, U>
     where
         Self: 'a,
-        C: ToConnection<'a> + 'a,
+        C: ToConnection<'a, 't> + 'a,
         F: FnMut(U, T) -> U + Send + 'a,
         T: FromRow + Send + 'static,
         U: Send + 'a,
     {
         BoxFuture(Box::pin(async move {
-            let result = self.run(conn).await?;
-            let output = result.reduce_and_drop(init, next).await?;
-            Ok(output)
+            self.run(conn).await?.reduce_and_drop(init, next).await
         }))
     }
 
     /// This methods corresponds to [`Queryable::query_map`].
-    fn map<'a, T, U, F, C>(self, conn: C, mut map: F) -> BoxFuture<'a, Vec<U>>
+    fn map<'a, 't: 'a, T, U, F, C>(self, conn: C, mut map: F) -> BoxFuture<'a, Vec<U>>
     where
         Self: 'a,
-        C: ToConnection<'a> + 'a,
+        C: ToConnection<'a, 't> + 'a,
         F: FnMut(T) -> U + Send + 'a,
         T: FromRow + Send + 'static,
         U: Send + 'a,
     {
         BoxFuture(Box::pin(async move {
-            let result = self
-                .reduce(conn, Vec::new(), move |mut acc, row: T| {
-                    acc.push(map(row));
-                    acc
-                })
-                .await?;
-            Ok(result)
+            self.run(conn)
+                .await?
+                .map_and_drop(|row| map(from_row(row)))
+                .await
         }))
     }
 
     /// This method corresponds to [`Queryable::query_drop`].
-    fn ignore<'a, C>(self, conn: C) -> BoxFuture<'a, ()>
+    fn ignore<'a, 't: 'a, C>(self, conn: C) -> BoxFuture<'a, ()>
     where
         Self: 'a,
-        C: ToConnection<'a> + 'a,
+        C: ToConnection<'a, 't> + 'a,
     {
         BoxFuture(Box::pin(async move {
-            let result = self.run(conn).await?;
-            result.drop_result().await?;
-            Ok(())
+            self.run(conn).await?.drop_result().await
         }))
     }
 }
 
-impl<Q: AsRef<str> + Send + Sync> TextQuery for Q {
-    fn run<'a, C>(self, conn: C) -> BoxFuture<'a, QueryResult<'a, TextProtocol>>
+impl<Q: AsRef<str> + Send + Sync> Query for Q {
+    type Protocol = TextProtocol;
+
+    fn run<'a, 't: 'a, C>(self, conn: C) -> BoxFuture<'a, QueryResult<'a, 't, TextProtocol>>
     where
         Self: 'a,
-        C: ToConnection<'a> + 'a,
+        C: ToConnection<'a, 't> + 'a,
     {
         BoxFuture(Box::pin(async move {
             let mut conn = match conn.to_connection() {
@@ -163,139 +167,30 @@ impl<'a, T: StatementLike + ?Sized> WithParams for &'a T {
     }
 }
 
-/// MySql prepared statement query.
-///
-/// This trait covers the set of `exec*` methods on the [`Queryable`] trait.
-/// Please see the corresponding section of the crate level docs for details.
-///
-/// Example:
-///
-/// ```rust
-/// # use mysql_async::test_misc::get_opts;
-/// # #[tokio::main]
-/// # async fn main() -> mysql_async::Result<()> {
-/// use mysql_async::*;
-/// use mysql_async::prelude::*;
-///
-/// let pool = Pool::new(get_opts());
-///
-/// let row: Option<(u32, String)> = "SELECT ?, ?".with((42_u8, "foo")).first(&pool).await?;
-///
-/// assert_eq!(row, Some((42, "foo".into())));
-/// # Ok(()) }
-/// ```
-pub trait BinQuery: Send + Sized {
-    /// This methods corresponds to [`Queryable::exec_iter`].
-    fn run<'a, C>(self, conn: C) -> BoxFuture<'a, QueryResult<'a, BinaryProtocol>>
-    where
-        Self: 'a,
-        C: ToConnection<'a> + 'a;
-
-    /// This methods corresponds to [`Queryable::exec_first`].
-    fn first<'a, T, C>(self, conn: C) -> BoxFuture<'a, Option<T>>
-    where
-        Self: 'a,
-        C: ToConnection<'a> + 'a,
-        T: FromRow + Send + 'static,
-    {
-        BoxFuture(Box::pin(async move {
-            let mut result = self.run(conn).await?;
-            let output = if result.is_empty() {
-                None
-            } else {
-                result.get_row().await?.map(from_row)
-            };
-            result.drop_result().await?;
-            Ok(output)
-        }))
-    }
-
-    /// This methods corresponds to [`Queryable::exec`].
-    fn fetch<'a, T, C>(self, conn: C) -> BoxFuture<'a, Vec<T>>
-    where
-        Self: 'a,
-        C: ToConnection<'a> + 'a,
-        T: FromRow + Send + 'static,
-    {
-        BoxFuture(Box::pin(async move {
-            let result = self.run(conn).await?;
-            result.collect_and_drop::<T>().await
-        }))
-    }
-
-    /// This methods corresponds to [`Queryable::exec_fold`].
-    fn reduce<'a, T, U, F, C>(self, conn: C, init: U, next: F) -> BoxFuture<'a, U>
-    where
-        Self: 'a,
-        C: ToConnection<'a> + 'a,
-        F: FnMut(U, T) -> U + Send + 'a,
-        T: FromRow + Send + 'static,
-        U: Send + 'a,
-    {
-        BoxFuture(Box::pin(async move {
-            let result = self.run(conn).await?;
-            let output = result.reduce_and_drop(init, next).await?;
-            Ok(output)
-        }))
-    }
-
-    /// This methods corresponds to [`Queryable::exec_map`].
-    fn map<'a, T, U, F, C>(self, conn: C, mut map: F) -> BoxFuture<'a, Vec<U>>
-    where
-        Self: 'a,
-        C: ToConnection<'a> + 'a,
-        T: FromRow + Send + 'static,
-        F: FnMut(T) -> U + Send + 'a,
-        U: Send + 'a,
-    {
-        BoxFuture(Box::pin(async move {
-            let result = self
-                .reduce(conn, Vec::new(), move |mut acc, row: T| {
-                    acc.push(map(row));
-                    acc
-                })
-                .await?;
-            Ok(result)
-        }))
-    }
-
-    /// This method corresponds to [`Queryable::exec_drop`].
-    fn ignore<'a, C>(self, conn: C) -> BoxFuture<'a, ()>
-    where
-        Self: 'a,
-        C: ToConnection<'a> + 'a,
-    {
-        BoxFuture(Box::pin(async move {
-            let result = self.run(conn).await?;
-            result.drop_result().await?;
-            Ok(())
-        }))
-    }
-}
-
-impl<Q, P> BinQuery for QueryWithParams<&'_ Q, P>
+impl<Q, P> Query for QueryWithParams<&'_ Q, P>
 where
     Q: StatementLike + ?Sized,
     P: Into<Params> + Send,
 {
-    fn run<'a, C>(self, conn: C) -> BoxFuture<'a, QueryResult<'a, BinaryProtocol>>
+    type Protocol = BinaryProtocol;
+
+    fn run<'a, 't: 'a, C>(self, conn: C) -> BoxFuture<'a, QueryResult<'a, 't, BinaryProtocol>>
     where
         Self: 'a,
-        C: ToConnection<'a> + 'a,
+        C: ToConnection<'a, 't> + 'a,
     {
         BoxFuture(Box::pin(async move {
-            let query = self.query;
-            let params = self.params.into();
-
             let mut conn = match conn.to_connection() {
                 ToConnectionResult::Immediate(conn) => conn,
                 ToConnectionResult::Mediate(fut) => fut.await?,
             };
 
-            let statement = conn.conn_mut().get_statement(query).await?;
+            let statement = conn.conn_mut().get_statement(self.query).await?;
+
             conn.conn_mut()
-                .execute_statement(&statement, params)
+                .execute_statement(&statement, self.params.into())
                 .await?;
+
             Ok(QueryResult::new(conn))
         }))
     }
@@ -324,10 +219,10 @@ where
 /// # Ok(()) }
 /// ```
 pub trait BatchQuery {
-    fn batch<'a, C>(self, conn: C) -> BoxFuture<'a, ()>
+    fn batch<'a, 't: 'a, C>(self, conn: C) -> BoxFuture<'a, ()>
     where
         Self: 'a,
-        C: ToConnection<'a> + 'a;
+        C: ToConnection<'a, 't> + 'a;
 }
 
 impl<Q, I, P> BatchQuery for QueryWithParams<&'_ Q, I>
@@ -337,23 +232,20 @@ where
     I::IntoIter: Send,
     P: Into<Params> + Send,
 {
-    fn batch<'a, C>(self, conn: C) -> BoxFuture<'a, ()>
+    fn batch<'a, 't: 'a, C>(self, conn: C) -> BoxFuture<'a, ()>
     where
         Self: 'a,
-        C: ToConnection<'a> + 'a,
+        C: ToConnection<'a, 't> + 'a,
     {
         BoxFuture(Box::pin(async move {
-            let query = self.query;
-            let params = self.params;
-
             let mut conn = match conn.to_connection() {
                 ToConnectionResult::Immediate(conn) => conn,
                 ToConnectionResult::Mediate(fut) => fut.await?,
             };
 
-            let statement = conn.conn_mut().get_statement(query).await?;
+            let statement = conn.conn_mut().get_statement(self.query).await?;
 
-            for params in params {
+            for params in self.params {
                 conn.conn_mut()
                     .execute_statement(&statement, params)
                     .await?;
@@ -404,11 +296,93 @@ mod tests {
         let mut conn = Conn::new(get_opts()).await?;
         test!(query_static, &mut conn);
         test!(query_string.as_str(), &mut conn);
+
+        let mut tx = conn.start_transaction(Default::default()).await?;
+        test!(query_static, &mut tx);
+        test!(query_string.as_str(), &mut tx);
+        tx.rollback().await?;
+
         conn.disconnect().await?;
 
         let pool = Pool::new(get_opts());
         test!(query_static, &pool);
         test!(query_string.as_str(), &pool);
+
+        let mut tx = pool.start_transaction(Default::default()).await?;
+        test!(query_static, &mut tx);
+        test!(query_string.as_str(), &mut tx);
+        tx.rollback().await?;
+
+        pool.disconnect().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_run_bin_query() -> Result<()> {
+        let query_static = "SELECT ?, ? UNION ALL SELECT ?, ?";
+        let query_string = String::from(query_static);
+        let params_static = ("1", "2", "3", "4");
+        let params_string = (
+            "1".to_owned(),
+            "2".to_owned(),
+            "3".to_owned(),
+            "4".to_owned(),
+        );
+
+        macro_rules! test {
+            ($query:expr, $params:expr, $conn:expr) => {{
+                let mut result = $query.with($params).run($conn).await?;
+                let result1: Vec<(u8, u8)> = result.collect().await?;
+                assert_eq!(result1, vec![(1, 2), (3, 4)]);
+
+                $query.with($params).ignore($conn).await?;
+
+                let result: Option<(u8, u8)> = $query.with($params).first($conn).await?;
+                assert_eq!(result, Some((1, 2)));
+
+                let result: Vec<(u8, u8)> = $query.with($params).fetch($conn).await?;
+                assert_eq!(result, vec![(1, 2), (3, 4)]);
+
+                let result = $query
+                    .with($params)
+                    .map($conn, |row: (u8, u8)| format!("{:?}", row))
+                    .await?;
+                assert_eq!(result, vec![String::from("(1, 2)"), String::from("(3, 4)")]);
+
+                let result = $query
+                    .with($params)
+                    .reduce($conn, 0_u8, |acc, row: (u8, u8)| acc + row.0 + row.1)
+                    .await?;
+                assert_eq!(result, 10);
+
+                $query
+                    .with(vec![$params, $params, $params, $params])
+                    .batch($conn)
+                    .await?;
+            }};
+        }
+
+        let mut conn = Conn::new(get_opts()).await?;
+        test!(query_static, params_static, &mut conn);
+        test!(query_string.as_str(), params_string.clone(), &mut conn);
+
+        let mut tx = conn.start_transaction(Default::default()).await?;
+        test!(query_static, params_string.clone(), &mut tx);
+        test!(query_string.as_str(), params_static, &mut tx);
+        tx.rollback().await?;
+
+        conn.disconnect().await?;
+
+        let pool = Pool::new(get_opts());
+        test!(query_static, params_static, &pool);
+        test!(query_string.as_str(), params_string.clone(), &pool);
+
+        let mut tx = pool.start_transaction(Default::default()).await?;
+        test!(query_static, params_string.clone(), &mut tx);
+        test!(query_string.as_str(), params_static, &mut tx);
+        tx.rollback().await?;
+
         pool.disconnect().await?;
 
         Ok(())

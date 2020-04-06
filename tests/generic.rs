@@ -26,8 +26,8 @@ fn get_url() -> String {
     }
 }
 
-pub async fn get_all_results<'a, TupleType, P>(
-    mut result: QueryResult<'a, P>,
+pub async fn get_all_results<TupleType, P>(
+    mut result: QueryResult<'_, '_, P>,
 ) -> Result<Vec<TupleType>>
 where
     TupleType: FromRow + Send + 'static,
@@ -36,7 +36,7 @@ where
     Ok(result.collect().await?)
 }
 
-pub async fn get_single_result<'a, TupleType, P>(result: QueryResult<'a, P>) -> Result<TupleType>
+pub async fn get_single_result<TupleType, P>(result: QueryResult<'_, '_, P>) -> Result<TupleType>
 where
     TupleType: FromRow + Send + 'static,
     P: Protocol + Send + 'static,

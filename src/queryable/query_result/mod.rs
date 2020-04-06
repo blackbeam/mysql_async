@@ -38,16 +38,16 @@ impl ResultSetMeta {
 }
 
 /// Result of a query or statement execution.
-pub struct QueryResult<'a, P> {
-    conn: Connection<'a>,
+pub struct QueryResult<'a, 't: 'a, P> {
+    conn: Connection<'a, 't>,
     __phantom: PhantomData<P>,
 }
 
-impl<'a, P> QueryResult<'a, P>
+impl<'a, 't: 'a, P> QueryResult<'a, 't, P>
 where
     P: Protocol,
 {
-    pub(crate) fn new<T: Into<Connection<'a>>>(conn: T) -> QueryResult<'a, P> {
+    pub(crate) fn new<T: Into<Connection<'a, 't>>>(conn: T) -> Self {
         QueryResult {
             conn: conn.into(),
             __phantom: PhantomData,

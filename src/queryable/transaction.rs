@@ -129,10 +129,11 @@ impl fmt::Display for IsolationLevel {
 /// `Transaction` is just a sugar for `START TRANSACTION`, `ROLLBACK` and `COMMIT` queries, so one
 /// should note that it is easy to mess things up calling this queries manually. Also you will get
 /// `NestedTransaction` error if you call `transaction.start_transaction(_)`.
-pub struct Transaction<'a>(Connection<'a>);
+#[derive(Debug)]
+pub struct Transaction<'a>(Connection<'a, 'static>);
 
 impl<'a> Transaction<'a> {
-    pub(crate) async fn new<T: Into<Connection<'a>>>(
+    pub(crate) async fn new<T: Into<Connection<'a, 'static>>>(
         conn: T,
         options: TxOpts,
     ) -> Result<Transaction<'a>> {

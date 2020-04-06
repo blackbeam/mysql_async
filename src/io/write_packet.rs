@@ -20,13 +20,13 @@ use crate::{
     error::IoError,
 };
 
-pub struct WritePacket<'a> {
-    conn: Connection<'a>,
+pub struct WritePacket<'a, 't> {
+    conn: Connection<'a, 't>,
     data: Option<Vec<u8>>,
 }
 
-impl<'a> WritePacket<'a> {
-    pub(crate) fn new<T: Into<Connection<'a>>>(conn: T, data: Vec<u8>) -> WritePacket<'a> {
+impl<'a, 't> WritePacket<'a, 't> {
+    pub(crate) fn new<T: Into<Connection<'a, 't>>>(conn: T, data: Vec<u8>) -> Self {
         Self {
             conn: conn.into(),
             data: Some(data),
@@ -34,7 +34,7 @@ impl<'a> WritePacket<'a> {
     }
 }
 
-impl<'a> Future for WritePacket<'a> {
+impl Future for WritePacket<'_, '_> {
     type Output = std::result::Result<(), IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

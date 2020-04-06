@@ -111,7 +111,10 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     }
 
     /// Performs the given query.
-    fn query_iter<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, QueryResult<'a, TextProtocol>>
+    fn query_iter<'a, Q>(
+        &'a mut self,
+        query: Q,
+    ) -> BoxFuture<'a, QueryResult<'a, 'static, TextProtocol>>
     where
         Q: AsRef<str> + Send + Sync + 'a,
     {
@@ -140,11 +143,11 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     }
 
     /// Executes the given statement with the given params.
-    fn exec_iter<'a: 'b, 'b, Q, P>(
+    fn exec_iter<'a: 's, 's, Q, P>(
         &'a mut self,
-        stmt: &'b Q,
+        stmt: &'s Q,
         params: P,
-    ) -> BoxFuture<'b, QueryResult<'a, BinaryProtocol>>
+    ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
     where
         Q: StatementLike + ?Sized + 'a,
         P: Into<Params>,
