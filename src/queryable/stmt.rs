@@ -8,6 +8,7 @@
 
 use mysql_common::{
     constants::MAX_PAYLOAD_LEN,
+    named_params::parse_named_params,
     packets::{
         column_from_payload, parse_stmt_packet, ComStmtClose, ComStmtExecuteRequestBuilder,
         ComStmtSendLongData, StmtPacket,
@@ -17,34 +18,40 @@ use mysql_common::{
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
-    conn::named_params::parse_named_params,
-    connection_like::ConnectionLike,
     consts::{CapabilityFlags, Command},
     error::*,
-    queryable::{
-        query_result::{read_result_set, QueryResult},
-        BinaryProtocol,
-    },
+    queryable::BinaryProtocol,
     Column, Params, Value,
 };
 
+pub enum ToStatementResult<'a> {
+    Immediate(Statement),
+    Mediate(crate::BoxFuture<'a, Statement>),
+}
+
 pub trait StatementLike: Send + Sync {
-    /// Returns raw statement query coupled with its nemed parameters.
-    fn info(&self) -> Result<(Option<Vec<String>>, Cow<str>)>;
+    /// Returns statement.
+    fn to_statement<'a>(&'a self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>;
 }
 
 impl StatementLike for str {
-    fn info(&self) -> Result<(Option<Vec<String>>, Cow<str>)> {
-        parse_named_params(self).map_err(From::from)
+    /// Returns statement.
+    fn to_statement<'a>(&'a self, conn: &'a mut crate::Conn) -> ToStatementResult<'a> {
+        let fut = crate::BoxFuture(Box::pin(async move {
+            let (named_params, raw_query) = parse_named_params(self)?;
+            let inner_stmt = match conn.get_cached_stmt(&*raw_query) {
+                Some(inner_stmt) => inner_stmt,
+                None => conn.prepare_statement(raw_query).await?,
+            };
+            Ok(Statement::new(inner_stmt, named_params))
+        }));
+        ToStatementResult::Mediate(fut)
     }
 }
 
 impl StatementLike for Statement {
-    fn info(&self) -> Result<(Option<Vec<String>>, Cow<str>)> {
-        Ok((
-            self.named_params.clone(),
-            self.inner.raw_query.as_ref().into(),
-        ))
+    fn to_statement<'a>(&'a self, _conn: &'a mut crate::Conn) -> ToStatementResult<'static> {
+        ToStatementResult::Immediate(self.clone())
     }
 }
 
@@ -158,10 +165,10 @@ impl Statement {
 }
 
 impl crate::Conn {
-    /// Low-level helpers, that reads the given number of column packets from server.
+    /// Low-level helpers, that reads the given number of column packets terminated by EOF packet.
     ///
     /// Requires `num > 0`.
-    async fn read_column_defs<U>(&mut self, num: U) -> Result<Vec<Column>>
+    pub(crate) async fn read_column_defs<U>(&mut self, num: U) -> Result<Vec<Column>>
     where
         U: Into<usize>,
     {
@@ -175,7 +182,6 @@ impl crate::Conn {
             .map_err(Error::from)?;
 
         if !self
-            .conn_ref()
             .capabilities()
             .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
         {
@@ -190,13 +196,10 @@ impl crate::Conn {
     where
         U: StatementLike + ?Sized,
     {
-        let (named_params, raw_query) = stmt_like.info()?;
-        let stmt_inner = if let Some(stmt_inner) = self.get_cached_stmt(raw_query.as_ref()) {
-            stmt_inner
-        } else {
-            self.prepare_statement(raw_query).await?
-        };
-        Ok(Statement::new(stmt_inner, named_params))
+        match stmt_like.to_statement(self) {
+            ToStatementResult::Immediate(statement) => Ok(statement),
+            ToStatementResult::Mediate(statement) => statement.await,
+        }
     }
 
     /// Low-level helper, that prepares the given statement.
@@ -209,7 +212,7 @@ impl crate::Conn {
             .await?;
 
         let packet = self.read_packet().await?;
-        let mut inner_stmt = StmtInner::from_payload(&*packet, self.conn_ref().id(), raw_query)?;
+        let mut inner_stmt = StmtInner::from_payload(&*packet, self.id(), raw_query)?;
 
         if inner_stmt.num_params() > 0 {
             let params = self.read_column_defs(inner_stmt.num_params()).await?;
@@ -223,7 +226,7 @@ impl crate::Conn {
 
         let inner_stmt = Arc::new(inner_stmt);
 
-        if let Some(old_stmt) = self.conn_mut().cache_stmt(&inner_stmt) {
+        if let Some(old_stmt) = self.cache_stmt(&inner_stmt) {
             self.close_statement(old_stmt.id()).await?;
         }
 
@@ -235,7 +238,7 @@ impl crate::Conn {
         &mut self,
         statement: &Statement,
         params: P,
-    ) -> Result<QueryResult<'_, Self, BinaryProtocol>>
+    ) -> Result<()>
     where
         P: Into<Params>,
     {
@@ -260,7 +263,8 @@ impl crate::Conn {
                     }
 
                     self.write_command_raw(body).await?;
-                    break read_result_set(self).await;
+                    self.read_result_set::<BinaryProtocol>().await?;
+                    break;
                 }
                 Params::Named(_) => {
                     if statement.named_params.is_none() {
@@ -288,10 +292,12 @@ impl crate::Conn {
 
                     let (body, _) = ComStmtExecuteRequestBuilder::new(statement.id()).build(&[]);
                     self.write_command_raw(body).await?;
-                    break read_result_set(self).await;
+                    self.read_result_set::<BinaryProtocol>().await?;
+                    break;
                 }
             }
         }
+        Ok(())
     }
 
     /// Helper, that sends all `Value::Bytes` in the given list of paramenters as long data.
@@ -319,6 +325,7 @@ impl crate::Conn {
 
     /// Helper, that closes statement with the given id.
     pub(crate) async fn close_statement(&mut self, id: u32) -> Result<()> {
+        self.stmt_cache_mut().remove(id);
         self.write_command_raw(ComStmtClose::new(id).into()).await
     }
 }

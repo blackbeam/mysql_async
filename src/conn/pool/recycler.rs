@@ -18,7 +18,7 @@ use std::{
 };
 
 use super::{IdlingConn, Inner};
-use crate::{queryable::transaction::TxStatus, BoxFuture, Conn, PoolOptions};
+use crate::{queryable::transaction::TxStatus, BoxFuture, Conn, PoolOpts};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 #[derive(Debug)]
@@ -32,13 +32,13 @@ pub(crate) struct Recycler {
     // Option<Conn> so that we have a way to send a "I didn't make a Conn after all" signal
     dropped: mpsc::UnboundedReceiver<Option<Conn>>,
     /// Pool options.
-    pool_opts: PoolOptions,
+    pool_opts: PoolOpts,
     eof: bool,
 }
 
 impl Recycler {
     pub fn new(
-        pool_opts: PoolOptions,
+        pool_opts: PoolOpts,
         inner: Arc<Inner>,
         dropped: UnboundedReceiver<Option<Conn>>,
     ) -> Self {
@@ -68,7 +68,7 @@ impl Future for Recycler {
                         .discard
                         .push(BoxFuture(Box::pin(::futures_util::future::ok(()))));
                 } else if $conn.inner.tx_status != TxStatus::None
-                    || $conn.inner.has_result.is_some()
+                    || $conn.inner.pending_result.is_some()
                 {
                     $self.cleaning.push(BoxFuture(Box::pin($conn.cleanup())));
                 } else if $conn.expired() || close {

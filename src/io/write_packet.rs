@@ -15,62 +15,38 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{connection_like::ConnectionLike, error::IoError};
+use crate::{connection_like::Connection, error::IoError};
 
-pub struct WritePacket<'a, T: ?Sized> {
-    conn_like: &'a mut T,
+pub struct WritePacket<'a, 't> {
+    conn: Connection<'a, 't>,
     data: Option<Vec<u8>>,
 }
 
-impl<'a, T: ?Sized> WritePacket<'a, T> {
-    pub(crate) fn new(conn_like: &'a mut T, data: Vec<u8>) -> WritePacket<'a, T> {
+impl<'a, 't> WritePacket<'a, 't> {
+    pub(crate) fn new<T: Into<Connection<'a, 't>>>(conn: T, data: Vec<u8>) -> Self {
         Self {
-            conn_like,
+            conn: conn.into(),
             data: Some(data),
         }
     }
 }
 
-impl<'a, T> Future for WritePacket<'a, T>
-where
-    T: ConnectionLike,
-{
+impl Future for WritePacket<'_, '_> {
     type Output = std::result::Result<(), IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.data.is_some() {
-            let codec = Pin::new(
-                self.conn_like
-                    .conn_mut()
-                    .stream_mut()
-                    .codec
-                    .as_mut()
-                    .expect("must be here"),
-            );
+            let codec = Pin::new(self.conn.stream_mut().codec.as_mut().expect("must be here"));
             ready!(codec.poll_ready(cx))?;
         }
 
         if let Some(data) = self.data.take() {
-            let codec = Pin::new(
-                self.conn_like
-                    .conn_mut()
-                    .stream_mut()
-                    .codec
-                    .as_mut()
-                    .expect("must be here"),
-            );
+            let codec = Pin::new(self.conn.stream_mut().codec.as_mut().expect("must be here"));
             // to get here, stream must be ready
             codec.start_send(data)?;
         }
 
-        let codec = Pin::new(
-            self.conn_like
-                .conn_mut()
-                .stream_mut()
-                .codec
-                .as_mut()
-                .expect("must be here"),
-        );
+        let codec = Pin::new(self.conn.stream_mut().codec.as_mut().expect("must be here"));
 
         ready!(codec.poll_flush(cx))?;
 

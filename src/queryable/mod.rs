@@ -12,22 +12,19 @@ use mysql_common::{
     value::{read_bin_values, read_text_values, ServerSide},
 };
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use self::{
     query_result::QueryResult,
     stmt::Statement,
     transaction::{Transaction, TxStatus},
 };
+
 use crate::{
-    connection_like::ConnectionLike,
-    consts::Command,
+    consts::{CapabilityFlags, Command},
     error::*,
     prelude::FromRow,
-    queryable::{
-        query_result::{read_result_set, ResultSetMeta},
-        stmt::StatementLike,
-    },
+    queryable::{query_result::ResultSetMeta, stmt::StatementLike},
     BoxFuture, Column, Conn, Params, Row,
 };
 
@@ -35,27 +32,21 @@ pub mod query_result;
 pub mod stmt;
 pub mod transaction;
 
-pub trait Protocol: Send + 'static {
+pub trait Protocol: fmt::Debug + Send + Sync + 'static {
     /// Returns `ResultSetMeta`, that corresponds to the current protocol.
     fn result_set_meta(columns: Arc<Vec<Column>>) -> ResultSetMeta;
     fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row>;
-    fn is_last_result_set_packet<T>(conn_like: &T, packet: &[u8]) -> bool
-    where
-        T: ConnectionLike,
-    {
-        parse_ok_packet(
-            packet,
-            conn_like.conn_ref().capabilities(),
-            OkPacketKind::ResultSetTerminator,
-        )
-        .is_ok()
+    fn is_last_result_set_packet(capabilities: CapabilityFlags, packet: &[u8]) -> bool {
+        parse_ok_packet(packet, capabilities, OkPacketKind::ResultSetTerminator).is_ok()
     }
 }
 
 /// Phantom struct used to specify MySql text protocol.
+#[derive(Debug)]
 pub struct TextProtocol;
 
 /// Phantom struct used to specify MySql binary protocol.
+#[derive(Debug)]
 pub struct BinaryProtocol;
 
 impl Protocol for TextProtocol {
@@ -82,86 +73,219 @@ impl Protocol for BinaryProtocol {
     }
 }
 
-/// The only purpose of this function at the moment is to rollback a transaction in cases,
-/// where `Transaction` is dropped without an explicit call to `commit` or `rollback`.
-async fn cleanup<T: Queryable>(queryable: &mut T) -> Result<()> {
-    queryable.conn_mut().drop_result().await?;
-    if queryable.conn_ref().get_tx_status() == TxStatus::RequiresRollback {
-        queryable.conn_mut().set_tx_status(TxStatus::None);
-        queryable.exec_drop("ROLLBACK", ()).await?;
+impl Conn {
+    /// The purpose of this function is to rollback a transaction or to drop query result in cases,
+    /// where `Transaction` was dropped without an explicit call to `commit` or `rollback`,
+    /// or where `QueryResult` was dropped without being consumed.
+    ///
+    /// The only difference betwee this function and [`Conn::cleanup`] is that this function
+    /// won't rollback existing transaction.
+    pub(crate) async fn clean_dirty(&mut self) -> Result<()> {
+        self.drop_result().await?;
+        if self.get_tx_status() == TxStatus::RequiresRollback {
+            self.set_tx_status(TxStatus::None);
+            self.exec_drop("ROLLBACK", ()).await?;
+        }
+        Ok(())
     }
-    Ok(())
+
+    /// Low level function that performs a text query.
+    pub(crate) async fn raw_query<'a, Q>(&'a mut self, query: Q) -> Result<()>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+    {
+        self.write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
+            .await?;
+        self.read_result_set::<TextProtocol>().await?;
+        Ok(())
+    }
 }
 
-pub trait Queryable: crate::prelude::ConnectionLike {
+pub trait Queryable: Send {
     /// Executes `COM_PING`.
-    fn ping(&mut self) -> BoxFuture<'_, ()> {
-        BoxFuture(Box::pin(async move {
-            cleanup(self).await?;
-            self.conn_mut()
-                .write_command_raw(vec![Command::COM_PING as u8])
-                .await?;
-            self.conn_mut().read_packet().await?;
-            Ok(())
-        }))
-    }
+    fn ping(&mut self) -> BoxFuture<'_, ()>;
 
     /// Performs the given query.
     fn query_iter<'a, Q>(
         &'a mut self,
         query: Q,
-    ) -> BoxFuture<'a, QueryResult<'a, Self, TextProtocol>>
+    ) -> BoxFuture<'a, QueryResult<'a, 'static, TextProtocol>>
     where
-        Q: AsRef<str> + Send + Sync + 'a,
-    {
-        BoxFuture(Box::pin(async move {
-            cleanup(self).await?;
-            self.conn_mut()
-                .write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
-                .await?;
-            read_result_set(self).await
-        }))
-    }
+        Q: AsRef<str> + Send + Sync + 'a;
 
     /// Prepares the given statement.
     fn prep<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Statement>
     where
-        Q: AsRef<str> + Sync + Send + 'a,
-    {
-        BoxFuture(Box::pin(async move {
-            cleanup(self).await?;
-            self.conn_mut().get_statement(query.as_ref()).await
-        }))
-    }
+        Q: AsRef<str> + Sync + Send + 'a;
 
     /// Closes the given statement.
-    fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()> {
+    fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()>;
+
+    /// Executes the given statement with the given params.
+    fn exec_iter<'a: 's, 's, Q, P>(
+        &'a mut self,
+        stmt: &'s Q,
+        params: P,
+    ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
+    where
+        Q: StatementLike + ?Sized + 'a,
+        P: Into<Params>;
+
+    /// Performs the given query and collects the first result set.
+    fn query<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Vec<T>>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+        T: FromRow + Send + 'static;
+
+    /// Performs the given query and returns the firt row of the first result set.
+    fn query_first<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Option<T>>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+        T: FromRow + Send + 'static;
+
+    /// Performs the given query and returns the firt row of the first result set.
+    fn query_map<'a, T, F, Q, U>(&'a mut self, query: Q, f: F) -> BoxFuture<'a, Vec<U>>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+        T: FromRow + Send + 'static,
+        F: FnMut(T) -> U + Send + 'a,
+        U: Send;
+
+    /// Performs the given query and folds the first result set to a single value.
+    fn query_fold<'a, T, F, Q, U>(&'a mut self, query: Q, init: U, f: F) -> BoxFuture<'a, U>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+        T: FromRow + Send + 'static,
+        F: FnMut(U, T) -> U + Send + 'a,
+        U: Send + 'a;
+
+    /// Performs the given query and drops the query result.
+    fn query_drop<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, ()>
+    where
+        Q: AsRef<str> + Send + Sync + 'a;
+
+    /// Prepares the given statement, and exectues it with each item in the given params iterator.
+    fn exec_batch<'a: 'b, 'b, S, P, I>(
+        &'a mut self,
+        stmt: &'b S,
+        params_iter: I,
+    ) -> BoxFuture<'b, ()>
+    where
+        S: StatementLike + ?Sized + 'b,
+        I: IntoIterator<Item = P> + Send + 'b,
+        I::IntoIter: Send,
+        P: Into<Params> + Send;
+
+    /// Exectues the given statement and collects the first result set.
+    fn exec<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, Vec<T>>
+    where
+        S: StatementLike + ?Sized + 'b,
+        P: Into<Params> + Send + 'b,
+        T: FromRow + Send + 'static;
+
+    /// Exectues the given statement and returns the first row of the first result set.
+    fn exec_first<'a: 'b, 'b, T, S, P>(
+        &'a mut self,
+        stmt: &'b S,
+        params: P,
+    ) -> BoxFuture<'b, Option<T>>
+    where
+        S: StatementLike + ?Sized + 'b,
+        P: Into<Params> + Send + 'b,
+        T: FromRow + Send + 'static;
+
+    /// Exectues the given stmt and folds the first result set to a signel value.
+    fn exec_map<'a: 'b, 'b, T, S, P, U, F>(
+        &'a mut self,
+        stmt: &'b S,
+        params: P,
+        f: F,
+    ) -> BoxFuture<'b, Vec<U>>
+    where
+        S: StatementLike + ?Sized + 'b,
+        P: Into<Params> + Send + 'b,
+        T: FromRow + Send + 'static,
+        F: FnMut(T) -> U + Send + 'a,
+        U: Send + 'a;
+
+    /// Exectues the given stmt and folds the first result set to a signel value.
+    fn exec_fold<'a: 'b, 'b, T, S, P, U, F>(
+        &'a mut self,
+        stmt: &'b S,
+        params: P,
+        init: U,
+        f: F,
+    ) -> BoxFuture<'b, U>
+    where
+        S: StatementLike + ?Sized + 'b,
+        P: Into<Params> + Send + 'b,
+        T: FromRow + Send + 'static,
+        F: FnMut(U, T) -> U + Send + 'a,
+        U: Send + 'a;
+
+    /// Exectues the given statement and drops the result.
+    fn exec_drop<'a: 'b, 'b, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, ()>
+    where
+        S: StatementLike + ?Sized + 'b,
+        P: Into<Params> + Send + 'b;
+}
+
+impl Queryable for Conn {
+    fn ping(&mut self) -> BoxFuture<'_, ()> {
         BoxFuture(Box::pin(async move {
-            cleanup(self).await?;
-            self.conn_mut().stmt_cache_mut().remove(stmt.id());
-            self.conn_mut().close_statement(stmt.id()).await
+            self.write_command_raw(vec![Command::COM_PING as u8])
+                .await?;
+            self.read_packet().await?;
+            Ok(())
         }))
     }
 
-    /// Executes the given statement with the given params.
-    fn exec_iter<'a: 'b, 'b, Q, P>(
+    fn query_iter<'a, Q>(
         &'a mut self,
-        stmt: &'b Q,
+        query: Q,
+    ) -> BoxFuture<'a, QueryResult<'a, 'static, TextProtocol>>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+    {
+        BoxFuture(Box::pin(async move {
+            self.raw_query(query).await?;
+            Ok(QueryResult::new(self))
+        }))
+    }
+
+    fn prep<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Statement>
+    where
+        Q: AsRef<str> + Sync + Send + 'a,
+    {
+        BoxFuture(Box::pin(
+            async move { self.get_statement(query.as_ref()).await },
+        ))
+    }
+
+    fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()> {
+        BoxFuture(Box::pin(async move {
+            self.stmt_cache_mut().remove(stmt.id());
+            self.close_statement(stmt.id()).await
+        }))
+    }
+
+    fn exec_iter<'a: 's, 's, Q, P>(
+        &'a mut self,
+        stmt: &'s Q,
         params: P,
-    ) -> BoxFuture<'b, QueryResult<'a, crate::Conn, BinaryProtocol>>
+    ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
     where
         Q: StatementLike + ?Sized + 'a,
         P: Into<Params>,
     {
         let params = params.into();
         BoxFuture(Box::pin(async move {
-            cleanup(self).await?;
-            let statement = self.conn_mut().get_statement(stmt).await?;
-            self.conn_mut().execute_statement(&statement, params).await
+            let statement = self.get_statement(stmt).await?;
+            self.execute_statement(&statement, params).await?;
+            Ok(QueryResult::new(self))
         }))
     }
 
-    /// Performs the given query and collects the first result set.
     fn query<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Vec<T>>
     where
         Q: AsRef<str> + Send + Sync + 'a,
@@ -172,7 +296,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         }))
     }
 
-    /// Performs the given query and returns the firt row of the first result set.
     fn query_first<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Option<T>>
     where
         Q: AsRef<str> + Send + Sync + 'a,
@@ -183,14 +306,13 @@ pub trait Queryable: crate::prelude::ConnectionLike {
             let output = if result.is_empty() {
                 None
             } else {
-                result.get_row().await?.map(crate::from_row)
+                result.next().await?.map(crate::from_row)
             };
             result.drop_result().await?;
             Ok(output)
         }))
     }
 
-    /// Performs the given query and returns the firt row of the first result set.
     fn query_map<'a, T, F, Q, U>(&'a mut self, query: Q, mut f: F) -> BoxFuture<'a, Vec<U>>
     where
         Q: AsRef<str> + Send + Sync + 'a,
@@ -207,7 +329,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         }))
     }
 
-    /// Performs the given query and folds the first result set to a single value.
     fn query_fold<'a, T, F, Q, U>(&'a mut self, query: Q, init: U, mut f: F) -> BoxFuture<'a, U>
     where
         Q: AsRef<str> + Send + Sync + 'a,
@@ -223,7 +344,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         }))
     }
 
-    /// Performs the given query and drops the query result.
     fn query_drop<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, ()>
     where
         Q: AsRef<str> + Send + Sync + 'a,
@@ -233,7 +353,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         }))
     }
 
-    /// Prepares the given statement, and exectues it with each item in the given params iterator.
     fn exec_batch<'a: 'b, 'b, S, P, I>(
         &'a mut self,
         stmt: &'b S,
@@ -246,12 +365,10 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         P: Into<Params> + Send,
     {
         BoxFuture(Box::pin(async move {
-            cleanup(self).await?;
-            let statement = self.conn_mut().get_statement(stmt).await?;
+            let statement = self.get_statement(stmt).await?;
             for params in params_iter {
-                self.conn_mut()
-                    .execute_statement(&statement, params)
-                    .await?
+                self.execute_statement(&statement, params).await?;
+                QueryResult::<BinaryProtocol>::new(&mut *self)
                     .drop_result()
                     .await?;
             }
@@ -259,7 +376,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         }))
     }
 
-    /// Exectues the given statement and collects the first result set.
     fn exec<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, Vec<T>>
     where
         S: StatementLike + ?Sized + 'b,
@@ -274,7 +390,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         }))
     }
 
-    /// Exectues the given statement and returns the first row of the first result set.
     fn exec_first<'a: 'b, 'b, T, S, P>(
         &'a mut self,
         stmt: &'b S,
@@ -290,14 +405,13 @@ pub trait Queryable: crate::prelude::ConnectionLike {
             let row = if result.is_empty() {
                 None
             } else {
-                result.get_row().await?
+                result.next().await?
             };
             result.drop_result().await?;
             Ok(row.map(crate::from_row))
         }))
     }
 
-    /// Exectues the given stmt and folds the first result set to a signel value.
     fn exec_map<'a: 'b, 'b, T, S, P, U, F>(
         &'a mut self,
         stmt: &'b S,
@@ -320,7 +434,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         }))
     }
 
-    /// Exectues the given stmt and folds the first result set to a signel value.
     fn exec_fold<'a: 'b, 'b, T, S, P, U, F>(
         &'a mut self,
         stmt: &'b S,
@@ -343,7 +456,6 @@ pub trait Queryable: crate::prelude::ConnectionLike {
         }))
     }
 
-    /// Exectues the given statement and drops the result.
     fn exec_drop<'a: 'b, 'b, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, ()>
     where
         S: StatementLike + ?Sized + 'b,
@@ -355,8 +467,151 @@ pub trait Queryable: crate::prelude::ConnectionLike {
     }
 }
 
-impl Queryable for Conn {}
-impl<T: Queryable> Queryable for Transaction<'_, T> {}
+impl Queryable for Transaction<'_> {
+    fn ping(&mut self) -> BoxFuture<'_, ()> {
+        self.0.ping()
+    }
+
+    fn query_iter<'a, Q>(
+        &'a mut self,
+        query: Q,
+    ) -> BoxFuture<'a, QueryResult<'a, 'static, TextProtocol>>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+    {
+        self.0.query_iter(query)
+    }
+
+    fn prep<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Statement>
+    where
+        Q: AsRef<str> + Sync + Send + 'a,
+    {
+        self.0.prep(query)
+    }
+    fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()> {
+        self.0.close(stmt)
+    }
+    fn exec_iter<'a: 's, 's, Q, P>(
+        &'a mut self,
+        stmt: &'s Q,
+        params: P,
+    ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
+    where
+        Q: StatementLike + ?Sized + 'a,
+        P: Into<Params>,
+    {
+        self.0.exec_iter(stmt, params)
+    }
+    fn query<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Vec<T>>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+        T: FromRow + Send + 'static,
+    {
+        self.0.query(query)
+    }
+    fn query_first<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Option<T>>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+        T: FromRow + Send + 'static,
+    {
+        self.0.query_first(query)
+    }
+    fn query_map<'a, T, F, Q, U>(&'a mut self, query: Q, f: F) -> BoxFuture<'a, Vec<U>>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+        T: FromRow + Send + 'static,
+        F: FnMut(T) -> U + Send + 'a,
+        U: Send,
+    {
+        self.0.query_map(query, f)
+    }
+    fn query_fold<'a, T, F, Q, U>(&'a mut self, query: Q, init: U, f: F) -> BoxFuture<'a, U>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+        T: FromRow + Send + 'static,
+        F: FnMut(U, T) -> U + Send + 'a,
+        U: Send + 'a,
+    {
+        self.0.query_fold(query, init, f)
+    }
+    fn query_drop<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, ()>
+    where
+        Q: AsRef<str> + Send + Sync + 'a,
+    {
+        self.0.query_drop(query)
+    }
+    fn exec_batch<'a: 'b, 'b, S, P, I>(
+        &'a mut self,
+        stmt: &'b S,
+        params_iter: I,
+    ) -> BoxFuture<'b, ()>
+    where
+        S: StatementLike + ?Sized + 'b,
+        I: IntoIterator<Item = P> + Send + 'b,
+        I::IntoIter: Send,
+        P: Into<Params> + Send,
+    {
+        self.0.exec_batch(stmt, params_iter)
+    }
+    fn exec<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, Vec<T>>
+    where
+        S: StatementLike + ?Sized + 'b,
+        P: Into<Params> + Send + 'b,
+        T: FromRow + Send + 'static,
+    {
+        self.0.exec(stmt, params)
+    }
+    fn exec_first<'a: 'b, 'b, T, S, P>(
+        &'a mut self,
+        stmt: &'b S,
+        params: P,
+    ) -> BoxFuture<'b, Option<T>>
+    where
+        S: StatementLike + ?Sized + 'b,
+        P: Into<Params> + Send + 'b,
+        T: FromRow + Send + 'static,
+    {
+        self.0.exec_first(stmt, params)
+    }
+    fn exec_map<'a: 'b, 'b, T, S, P, U, F>(
+        &'a mut self,
+        stmt: &'b S,
+        params: P,
+        f: F,
+    ) -> BoxFuture<'b, Vec<U>>
+    where
+        S: StatementLike + ?Sized + 'b,
+        P: Into<Params> + Send + 'b,
+        T: FromRow + Send + 'static,
+        F: FnMut(T) -> U + Send + 'a,
+        U: Send + 'a,
+    {
+        self.0.exec_map(stmt, params, f)
+    }
+    fn exec_fold<'a: 'b, 'b, T, S, P, U, F>(
+        &'a mut self,
+        stmt: &'b S,
+        params: P,
+        init: U,
+        f: F,
+    ) -> BoxFuture<'b, U>
+    where
+        S: StatementLike + ?Sized + 'b,
+        P: Into<Params> + Send + 'b,
+        T: FromRow + Send + 'static,
+        F: FnMut(U, T) -> U + Send + 'a,
+        U: Send + 'a,
+    {
+        self.0.exec_fold(stmt, params, init, f)
+    }
+    fn exec_drop<'a: 'b, 'b, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, ()>
+    where
+        S: StatementLike + ?Sized + 'b,
+        P: Into<Params> + Send + 'b,
+    {
+        self.0.exec_drop(stmt, params)
+    }
+}
 
 #[cfg(test)]
 mod tests {

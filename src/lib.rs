@@ -20,7 +20,7 @@
 //! ### Example
 //!
 //! ```rust
-//! # use mysql_async::test_misc::get_opts;
+//! # use mysql_async::{Result, test_misc::get_opts};
 //! use mysql_async::prelude::*;
 //! # use std::env;
 //!
@@ -32,7 +32,7 @@
 //! }
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<(), mysql_async::error::Error> {
+//! async fn main() -> Result<()> {
 //!     let payments = vec![
 //!         Payment { customer_id: 1, amount: 2, account_name: None },
 //!         Payment { customer_id: 3, amount: 4, account_name: Some("foo".into()) },
@@ -108,17 +108,18 @@ mod macros;
 mod conn;
 mod connection_like;
 /// Errors used in this crate
-pub mod error;
+mod error;
 mod io;
 mod local_infile_handler;
 mod opts;
+mod query;
 mod queryable;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct BoxFuture<'a, T>(Pin<Box<dyn Future<Output = Result<T, error::Error>> + Send + 'a>>);
+pub struct BoxFuture<'a, T>(Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>);
 
 impl<T> Future for BoxFuture<'_, T> {
-    type Output = Result<T, error::Error>;
+    type Output = Result<T>;
 
     fn poll(
         mut self: Pin<&mut Self>,
@@ -146,12 +147,18 @@ pub use self::conn::Conn;
 pub use self::conn::pool::Pool;
 
 #[doc(inline)]
+pub use self::error::{DriverError, Error, IoError, ParseError, Result, ServerError, UrlError};
+
+#[doc(inline)]
+pub use self::query::QueryWithParams;
+
+#[doc(inline)]
 pub use self::queryable::transaction::IsolationLevel;
 
 #[doc(inline)]
 pub use self::opts::{
-    Opts, OptsBuilder, PoolConstraints, PoolOptions, SslOpts, DEFAULT_INACTIVE_CONNECTION_TTL,
-    DEFAULT_TTL_CHECK_INTERVAL,
+    Opts, OptsBuilder, PoolConstraints, PoolOpts, SslOpts, DEFAULT_INACTIVE_CONNECTION_TTL,
+    DEFAULT_POOL_CONSTRAINTS, DEFAULT_STMT_CACHE_SIZE, DEFAULT_TTL_CHECK_INTERVAL,
 };
 
 #[doc(inline)]
@@ -185,7 +192,7 @@ pub use mysql_common::value::json::{Deserialized, Serialized};
 pub use self::queryable::query_result::QueryResult;
 
 #[doc(inline)]
-pub use self::queryable::transaction::{Transaction, TransactionOptions};
+pub use self::queryable::transaction::{Transaction, TxOpts};
 
 #[doc(inline)]
 pub use self::queryable::{BinaryProtocol, TextProtocol};
@@ -203,7 +210,7 @@ pub mod prelude {
     #[doc(inline)]
     pub use crate::local_infile_handler::LocalInfileHandler;
     #[doc(inline)]
-    pub use crate::queryable::stmt::StatementLike;
+    pub use crate::query::{BatchQuery, Query, WithParams};
     #[doc(inline)]
     pub use crate::queryable::Queryable;
     #[doc(inline)]
@@ -211,9 +218,9 @@ pub mod prelude {
     #[doc(inline)]
     pub use mysql_common::value::convert::{ConvIr, FromValue, ToValue};
 
-    /// Everything that is connection.
-    pub trait ConnectionLike: crate::connection_like::ConnectionLike {}
-    impl<T: crate::connection_like::ConnectionLike> ConnectionLike for T {}
+    /// Everything that is statement.
+    pub trait StatementLike: crate::queryable::stmt::StatementLike {}
+    impl<T: crate::queryable::stmt::StatementLike> StatementLike for T {}
 
     /// Trait for protocol markers [`crate::TextProtocol`] and [`crate::BinaryProtocol`].
     pub trait Protocol: crate::queryable::Protocol {}
@@ -241,7 +248,7 @@ pub mod test_misc {
             if let Ok(url) = env::var("DATABASE_URL") {
                 let opts = Opts::from_url(&url).expect("DATABASE_URL invalid");
                 if opts
-                    .get_db_name()
+                    .db_name()
                     .expect("a database name is required")
                     .is_empty()
                 {
@@ -256,17 +263,14 @@ pub mod test_misc {
 
     pub fn get_opts() -> OptsBuilder {
         let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
-        // to suppress warning on unused mut
-        builder.stmt_cache_size(None);
         if test_ssl() {
-            builder.prefer_socket(false);
-            let mut ssl_opts = SslOpts::default();
-            ssl_opts.set_danger_skip_domain_validation(true);
-            ssl_opts.set_danger_accept_invalid_certs(true);
-            builder.ssl_opts(ssl_opts);
+            let ssl_opts = SslOpts::default()
+                .with_danger_skip_domain_validation(true)
+                .with_danger_accept_invalid_certs(true);
+            builder = builder.prefer_socket(false).ssl_opts(ssl_opts);
         }
         if test_compression() {
-            builder.compression(crate::Compression::default());
+            builder = builder.compression(crate::Compression::default());
         }
         builder
     }

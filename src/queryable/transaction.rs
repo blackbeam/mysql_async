@@ -8,7 +8,7 @@
 
 use std::fmt;
 
-use crate::{connection_like::ConnectionLike, error::*, queryable::Queryable, Conn};
+use crate::{connection_like::Connection, error::*, queryable::Queryable, Conn};
 
 /// Transaction status.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -24,36 +24,44 @@ pub enum TxStatus {
 
 impl Conn {
     /// Returns a future that starts a transaction.
-    pub async fn start_transaction(
-        &mut self,
-        options: TransactionOptions,
-    ) -> Result<Transaction<'_, Self>> {
+    pub async fn start_transaction(&mut self, options: TxOpts) -> Result<Transaction<'_>> {
         Transaction::new(self, options).await
     }
 }
 
 /// Transaction options.
+///
+/// Example:
+///
+/// ```
+/// # use mysql_async::*;
+/// # fn main() -> Result<()> {
+/// let tx_opts = TxOpts::default()
+///     .with_consistent_snapshot(true)
+///     .with_isolation_level(IsolationLevel::RepeatableRead);
+/// # Ok(()) }
+/// ```
 #[derive(Eq, PartialEq, Debug, Hash, Clone, Default)]
-pub struct TransactionOptions {
+pub struct TxOpts {
     consistent_snapshot: bool,
     isolation_level: Option<IsolationLevel>,
     readonly: Option<bool>,
 }
 
-impl TransactionOptions {
+impl TxOpts {
     /// Creates a default instance.
-    pub fn new() -> TransactionOptions {
-        TransactionOptions::default()
+    pub fn new() -> TxOpts {
+        TxOpts::default()
     }
 
-    /// See [`TransactionOptions::consistent_snapshot`].
-    pub fn set_consistent_snapshot(&mut self, value: bool) -> &mut Self {
+    /// See [`TxOpts::consistent_snapshot`].
+    pub fn with_consistent_snapshot(&mut self, value: bool) -> &mut Self {
         self.consistent_snapshot = value;
         self
     }
 
-    /// See [`TransactionOptions::isolation_level`].
-    pub fn set_isolation_level<T>(&mut self, value: T) -> &mut Self
+    /// See [`TxOpts::isolation_level`].
+    pub fn with_isolation_level<T>(&mut self, value: T) -> &mut Self
     where
         T: Into<Option<IsolationLevel>>,
     {
@@ -61,8 +69,8 @@ impl TransactionOptions {
         self
     }
 
-    /// See [`TransactionOptions::readonly`].
-    pub fn set_readonly<T>(&mut self, value: T) -> &mut Self
+    /// See [`TxOpts::readonly`].
+    pub fn with_readonly<T>(&mut self, value: T) -> &mut Self
     where
         T: Into<Option<bool>>,
     {
@@ -116,57 +124,59 @@ impl fmt::Display for IsolationLevel {
 /// `Transaction` is just a sugar for `START TRANSACTION`, `ROLLBACK` and `COMMIT` queries, so one
 /// should note that it is easy to mess things up calling this queries manually. Also you will get
 /// `NestedTransaction` error if you call `transaction.start_transaction(_)`.
-pub struct Transaction<'a, T: ConnectionLike>(&'a mut T);
+#[derive(Debug)]
+pub struct Transaction<'a>(pub(crate) Connection<'a, 'static>);
 
-impl<'a, T: Queryable> Transaction<'a, T> {
-    pub(crate) async fn new(
-        conn_like: &'a mut T,
-        options: TransactionOptions,
-    ) -> Result<Transaction<'a, T>> {
-        let TransactionOptions {
+impl<'a> Transaction<'a> {
+    pub(crate) async fn new<T: Into<Connection<'a, 'static>>>(
+        conn: T,
+        options: TxOpts,
+    ) -> Result<Transaction<'a>> {
+        let TxOpts {
             consistent_snapshot,
             isolation_level,
             readonly,
         } = options;
 
-        if conn_like.conn_ref().get_tx_status() != TxStatus::None {
+        let mut conn = conn.into();
+
+        if conn.get_tx_status() != TxStatus::None {
             return Err(DriverError::NestedTransaction.into());
         }
 
-        if readonly.is_some() && conn_like.conn_ref().server_version() < (5, 6, 5) {
+        if readonly.is_some() && conn.server_version() < (5, 6, 5) {
             return Err(DriverError::ReadOnlyTransNotSupported.into());
         }
 
         if let Some(isolation_level) = isolation_level {
             let query = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation_level);
-            conn_like.query_drop(query).await?;
+            conn.query_drop(query).await?;
         }
 
         if let Some(readonly) = readonly {
             if readonly {
-                conn_like.query_drop("SET TRANSACTION READ ONLY").await?;
+                conn.query_drop("SET TRANSACTION READ ONLY").await?;
             } else {
-                conn_like.query_drop("SET TRANSACTION READ WRITE").await?;
+                conn.query_drop("SET TRANSACTION READ WRITE").await?;
             }
         }
 
         if consistent_snapshot {
-            conn_like
-                .query_drop("START TRANSACTION WITH CONSISTENT SNAPSHOT")
+            conn.query_drop("START TRANSACTION WITH CONSISTENT SNAPSHOT")
                 .await?
         } else {
-            conn_like.query_drop("START TRANSACTION").await?
+            conn.query_drop("START TRANSACTION").await?
         };
 
-        conn_like.conn_mut().set_tx_status(TxStatus::InTransaction);
-        Ok(Transaction(conn_like))
+        conn.set_tx_status(TxStatus::InTransaction);
+        Ok(Transaction(conn))
     }
 
     /// Performs `COMMIT` query.
     pub async fn commit(mut self) -> Result<()> {
         let result = self.0.query_iter("COMMIT").await?;
         result.drop_result().await?;
-        self.conn_mut().set_tx_status(TxStatus::None);
+        self.0.set_tx_status(TxStatus::None);
         Ok(())
     }
 
@@ -174,26 +184,15 @@ impl<'a, T: Queryable> Transaction<'a, T> {
     pub async fn rollback(mut self) -> Result<()> {
         let result = self.0.query_iter("ROLLBACK").await?;
         result.drop_result().await?;
-        self.conn_mut().set_tx_status(TxStatus::None);
+        self.0.set_tx_status(TxStatus::None);
         Ok(())
     }
 }
 
-impl<T: ConnectionLike> Drop for Transaction<'_, T> {
+impl Drop for Transaction<'_> {
     fn drop(&mut self) {
-        let conn = self.conn_mut();
-        if conn.get_tx_status() == TxStatus::InTransaction {
-            conn.set_tx_status(TxStatus::RequiresRollback);
+        if self.0.get_tx_status() == TxStatus::InTransaction {
+            self.0.set_tx_status(TxStatus::RequiresRollback);
         }
-    }
-}
-
-impl<'a, T: ConnectionLike> ConnectionLike for Transaction<'a, T> {
-    fn conn_ref(&self) -> &crate::Conn {
-        self.0.conn_ref()
-    }
-
-    fn conn_mut(&mut self) -> &mut crate::Conn {
-        self.0.conn_mut()
     }
 }

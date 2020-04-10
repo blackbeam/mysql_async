@@ -30,7 +30,6 @@ use std::{
 
 use crate::{
     conn::{pool::Pool, stmt_cache::StmtCache},
-    connection_like::ConnectionLike,
     consts::{CapabilityFlags, Command, StatusFlags},
     error::*,
     io::Stream,
@@ -82,7 +81,7 @@ struct ConnInner {
     last_ok_packet: Option<OkPacket<'static>>,
     last_err_packet: Option<ErrPacket<'static>>,
     pool: Option<Pool>,
-    has_result: Option<ResultSetMeta>,
+    pending_result: Option<ResultSetMeta>,
     tx_status: TxStatus,
     opts: Opts,
     last_io: Instant,
@@ -101,7 +100,7 @@ impl fmt::Debug for ConnInner {
             .field("connection id", &self.id)
             .field("server version", &self.version)
             .field("pool", &self.pool)
-            .field("has result", &self.has_result.is_some())
+            .field("pending_result", &self.pending_result)
             .field("tx_status", &self.tx_status)
             .field("stream", &self.stream)
             .field("options", &self.opts)
@@ -120,13 +119,13 @@ impl ConnInner {
             stream: None,
             version: (0, 0, 0),
             id: 0,
-            has_result: None,
+            pending_result: None,
             pool: None,
             tx_status: TxStatus::None,
             last_io: Instant::now(),
             wait_timeout: Duration::from_secs(0),
-            stmt_cache: StmtCache::new(opts.get_stmt_cache_size()),
-            socket: opts.get_socket().map(Into::into),
+            stmt_cache: StmtCache::new(opts.stmt_cache_size()),
+            socket: opts.socket().map(Into::into),
             opts,
             nonce: Vec::default(),
             auth_plugin: AuthPlugin::MysqlNativePassword,
@@ -251,12 +250,12 @@ impl Conn {
     ///
     /// If `Some(_)`, then result is not yet consumed.
     pub(crate) fn get_pending_result(&self) -> Option<&ResultSetMeta> {
-        self.inner.has_result.as_ref()
+        self.inner.pending_result.as_ref()
     }
 
     /// Sets the given pening result metadata for this connection.
     pub(crate) fn set_pending_result(&mut self, meta: Option<ResultSetMeta>) {
-        self.inner.has_result = meta;
+        self.inner.pending_result = meta;
     }
 
     /// Returns current status flags.
@@ -317,8 +316,8 @@ impl Conn {
     fn setup_stream(&mut self) -> Result<()> {
         debug_assert!(self.inner.stream.is_some());
         if let Some(stream) = self.inner.stream.as_mut() {
-            stream.set_keepalive_ms(self.inner.opts.get_tcp_keepalive())?;
-            stream.set_tcp_nodelay(self.inner.opts.get_tcp_nodelay())?;
+            stream.set_keepalive_ms(self.inner.opts.tcp_keepalive())?;
+            stream.set_tcp_nodelay(self.inner.opts.tcp_nodelay())?;
         }
         Ok(())
     }
@@ -358,8 +357,8 @@ impl Conn {
             let ssl_request = SslRequest::new(self.inner.capabilities);
             self.write_packet(ssl_request.as_ref()).await?;
             let conn = self;
-            let ssl_opts = conn.opts().get_ssl_opts().cloned().expect("unreachable");
-            let domain = conn.opts().get_ip_or_hostname().into();
+            let ssl_opts = conn.opts().ssl_opts().cloned().expect("unreachable");
+            let domain = conn.opts().ip_or_hostname().into();
             conn.stream_mut().make_secure(domain, ssl_opts).await?;
             Ok(())
         } else {
@@ -371,13 +370,13 @@ impl Conn {
         let auth_data = self
             .inner
             .auth_plugin
-            .gen_data(self.inner.opts.get_pass(), &*self.inner.nonce);
+            .gen_data(self.inner.opts.pass(), &*self.inner.nonce);
 
         let handshake_response = HandshakeResponse::new(
             &auth_data,
             self.inner.version,
-            self.inner.opts.get_user(),
-            self.inner.opts.get_db_name(),
+            self.inner.opts.user(),
+            self.inner.opts.db_name(),
             &self.inner.auth_plugin,
             self.capabilities(),
             &Default::default(), // TODO: Add support
@@ -398,7 +397,7 @@ impl Conn {
             let plugin_data = self
                 .inner
                 .auth_plugin
-                .gen_data(self.inner.opts.get_pass(), &*self.inner.nonce)
+                .gen_data(self.inner.opts.pass(), &*self.inner.nonce)
                 .unwrap_or_else(Vec::new);
             self.write_packet(plugin_data).await?;
             self.continue_auth().await?;
@@ -433,7 +432,7 @@ impl Conn {
             .capabilities()
             .contains(CapabilityFlags::CLIENT_COMPRESS)
         {
-            if let Some(compression) = self.inner.opts.get_compression() {
+            if let Some(compression) = self.inner.opts.compression() {
                 if let Some(stream) = self.inner.stream.as_mut() {
                     stream.compress(compression);
                 }
@@ -455,12 +454,7 @@ impl Conn {
                     self.drop_packet().await
                 }
                 Some(0x04) => {
-                    let mut pass = self
-                        .inner
-                        .opts
-                        .get_pass()
-                        .map(Vec::from)
-                        .unwrap_or_default();
+                    let mut pass = self.inner.opts.pass().map(Vec::from).unwrap_or_default();
                     pass.push(0);
 
                     if self.is_secure() {
@@ -526,11 +520,13 @@ impl Conn {
     }
 
     pub(crate) async fn read_packet(&mut self) -> Result<Vec<u8>> {
-        let packet = crate::io::ReadPacket::new(self).await.map_err(|io_err| {
-            self.inner.stream.take();
-            self.inner.disconnected = true;
-            Error::from(io_err)
-        })?;
+        let packet = crate::io::ReadPacket::new(&mut *self)
+            .await
+            .map_err(|io_err| {
+                self.inner.stream.take();
+                self.inner.disconnected = true;
+                Error::from(io_err)
+            })?;
         self.handle_packet(&*packet)?;
         Ok(packet)
     }
@@ -548,7 +544,7 @@ impl Conn {
     where
         T: Into<Vec<u8>>,
     {
-        crate::io::WritePacket::new(self, data.into())
+        crate::io::WritePacket::new(&mut *self, data.into())
             .await
             .map_err(|io_err| {
                 self.inner.stream.take();
@@ -560,7 +556,8 @@ impl Conn {
     /// Returns future that sends full command body to a server.
     pub(crate) async fn write_command_raw(&mut self, body: Vec<u8>) -> Result<()> {
         debug_assert!(body.len() > 0);
-        self.conn_mut().reset_seq_id();
+        self.clean_dirty().await?;
+        self.reset_seq_id();
         self.write_packet(body).await
     }
 
@@ -582,7 +579,7 @@ impl Conn {
     }
 
     async fn run_init_commands(&mut self) -> Result<()> {
-        let mut init: Vec<_> = self.inner.opts.get_init().iter().cloned().collect();
+        let mut init: Vec<_> = self.inner.opts.init().iter().cloned().collect();
 
         while let Some(query) = init.pop() {
             self.query_drop(query).await?;
@@ -597,10 +594,10 @@ impl Conn {
         let fut = Box::pin(async move {
             let mut conn = Conn::empty(opts.clone());
 
-            let stream = if let Some(path) = opts.get_socket() {
+            let stream = if let Some(path) = opts.socket() {
                 Stream::connect_socket(path.to_owned()).await?
             } else {
-                Stream::connect_tcp(opts.get_hostport_or_url()).await?
+                Stream::connect_tcp(opts.hostport_or_url()).await?
             };
 
             conn.inner.stream = Some(stream);
@@ -632,10 +629,9 @@ impl Conn {
     async fn reconnect_via_socket_if_needed(&mut self) -> Result<()> {
         if let Some(socket) = self.inner.socket.as_ref() {
             let opts = self.inner.opts.clone();
-            if opts.get_socket().is_none() {
-                let mut builder = OptsBuilder::from_opts(opts);
-                builder.socket(Some(&**socket));
-                match Conn::new(builder).await {
+            if opts.socket().is_none() {
+                let opts = OptsBuilder::from_opts(opts).socket(Some(&**socket));
+                match Conn::new(opts).await {
                     Ok(conn) => {
                         let old_conn = std::mem::replace(self, conn);
                         // tidy up the old connection
@@ -652,7 +648,7 @@ impl Conn {
     ///
     /// Do nothing if socket address is already in [`Opts`] or if `prefer_socket` is `false`.
     async fn read_socket(&mut self) -> Result<()> {
-        if self.inner.opts.get_prefer_socket() && self.inner.socket.is_none() {
+        if self.inner.opts.prefer_socket() && self.inner.socket.is_none() {
             let row_opt = self.query_first("SELECT @@socket").await?;
             self.inner.socket = row_opt.unwrap_or((None,)).0;
         }
@@ -682,7 +678,7 @@ impl Conn {
         let ttl = self
             .inner
             .opts
-            .get_conn_ttl()
+            .conn_ttl()
             .unwrap_or(self.inner.wait_timeout);
         self.idling() > ttl
     }
@@ -721,33 +717,37 @@ impl Conn {
         self.query_drop("ROLLBACK").await
     }
 
-    pub(crate) async fn drop_result(&mut self) -> Result<()> {
-        match self.inner.has_result.take() {
-            Some(meta @ ResultSetMeta::Text(_)) => {
-                QueryResult::<'_, _, TextProtocol>::new(self, meta)
-                    .drop_result()
-                    .await?;
-                Ok(())
-            }
-            Some(meta @ ResultSetMeta::Binary(_)) => {
-                QueryResult::<'_, _, BinaryProtocol>::new(self, meta)
-                    .drop_result()
-                    .await?;
-                Ok(())
-            }
-            Some(meta @ ResultSetMeta::Empty) => {
-                QueryResult::<'_, _, TextProtocol>::new(self, meta)
-                    .drop_result()
-                    .await?;
-                Ok(())
-            }
-            None => Ok(()),
-        }
+    /// Returns `true` if `SERVER_MORE_RESULTS_EXISTS` flag is contained
+    /// in status flags of the connection.
+    pub(crate) fn more_results_exists(&self) -> bool {
+        self.status()
+            .contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS)
     }
 
+    pub(crate) async fn drop_result(&mut self) -> Result<()> {
+        match self.inner.pending_result.as_ref() {
+            Some(ResultSetMeta::Text(_)) => {
+                QueryResult::<'_, '_, TextProtocol>::new(self)
+                    .drop_result()
+                    .await?;
+            }
+            Some(ResultSetMeta::Binary(_)) => {
+                QueryResult::<'_, '_, BinaryProtocol>::new(self)
+                    .drop_result()
+                    .await?;
+            }
+            Some(ResultSetMeta::Error(_)) | None => (),
+        }
+
+        Ok(())
+    }
+
+    /// This function will drop pending result and rollback a transaction, if needed.
+    ///
+    /// The purpose of this function, is to cleanup the connection while returning it to a [`Pool`].
     async fn cleanup(mut self) -> Result<Self> {
         loop {
-            if self.inner.has_result.is_some() {
+            if self.inner.pending_result.is_some() {
                 self.drop_result().await?;
             } else if self.inner.tx_status != TxStatus::None {
                 self.rollback_transaction().await?;
@@ -759,20 +759,10 @@ impl Conn {
     }
 }
 
-impl ConnectionLike for Conn {
-    fn conn_ref(&self) -> &crate::Conn {
-        self
-    }
-
-    fn conn_mut(&mut self) -> &mut crate::Conn {
-        self
-    }
-}
-
 #[cfg(test)]
 mod test {
     use crate::{
-        from_row, params, prelude::*, test_misc::get_opts, Conn, OptsBuilder, TransactionOptions,
+        from_row, params, prelude::*, test_misc::get_opts, Conn, Error, OptsBuilder, TxOpts,
         WhiteListFsLocalInfileHandler,
     };
 
@@ -784,17 +774,13 @@ mod test {
 
     #[tokio::test]
     async fn should_connect_without_database() -> super::Result<()> {
-        let mut opts = get_opts();
-
         // no database name
-        opts.db_name(None::<String>);
-        let mut conn: Conn = Conn::new(opts.clone()).await?;
+        let mut conn: Conn = Conn::new(get_opts().db_name(None::<String>)).await?;
         conn.ping().await?;
         conn.disconnect().await?;
 
         // empty database name
-        opts.db_name(Some(""));
-        let mut conn: Conn = Conn::new(opts).await?;
+        let mut conn: Conn = Conn::new(get_opts().db_name(Some(""))).await?;
         conn.ping().await?;
         conn.disconnect().await?;
 
@@ -851,6 +837,8 @@ mod test {
         .filter(|variant| plugins.iter().any(|p| p == variant.0));
 
         for (plug, val, pass) in variants {
+            let _ = conn.query_drop("DROP USER 'test_user'@'%'").await;
+
             let query = format!("CREATE USER 'test_user'@'%' IDENTIFIED WITH {}", plug);
             conn.query_drop(query).await.unwrap();
 
@@ -870,8 +858,8 @@ mod test {
                 .unwrap();
             };
 
-            let mut opts = get_opts();
-            opts.user(Some("test_user"))
+            let opts = get_opts()
+                .user(Some("test_user"))
                 .pass(Some(pass))
                 .db_name(None::<String>);
             let result = Conn::new(opts).await;
@@ -905,9 +893,8 @@ mod test {
 
     #[tokio::test]
     async fn should_execute_init_queries_on_new_connection() -> super::Result<()> {
-        let mut opts_builder = OptsBuilder::from_opts(get_opts());
-        opts_builder.init(vec!["SET @a = 42", "SET @b = 'foo'"]);
-        let mut conn = Conn::new(opts_builder).await?;
+        let opts = OptsBuilder::from_opts(get_opts()).init(vec!["SET @a = 42", "SET @b = 'foo'"]);
+        let mut conn = Conn::new(opts).await?;
         let result: Vec<(u8, String)> = conn.query("SELECT @a, @b").await?;
         conn.disconnect().await?;
         assert_eq!(result, vec![(42, "foo".into())]);
@@ -926,8 +913,7 @@ mod test {
 
     #[tokio::test]
     async fn should_not_cache_statements_if_stmt_cache_size_is_zero() -> super::Result<()> {
-        let mut opts = OptsBuilder::from_opts(get_opts());
-        opts.stmt_cache_size(0);
+        let opts = OptsBuilder::from_opts(get_opts()).stmt_cache_size(0);
 
         let mut conn = Conn::new(opts).await?;
         conn.exec_drop("DO ?", (1_u8,)).await?;
@@ -954,8 +940,7 @@ mod test {
 
     #[tokio::test]
     async fn should_hold_stmt_cache_size_bound() -> super::Result<()> {
-        let mut opts = OptsBuilder::from_opts(get_opts());
-        opts.stmt_cache_size(3);
+        let opts = OptsBuilder::from_opts(get_opts()).stmt_cache_size(3);
         let mut conn = Conn::new(opts).await?;
         conn.exec_drop("DO 1", ()).await?;
         conn.exec_drop("DO 2", ()).await?;
@@ -1136,7 +1121,7 @@ mod test {
         c.query_drop("CREATE TEMPORARY TABLE time_zone (Time_zone_id INT)")
             .await
             .unwrap();
-        let mut t = c.start_transaction(TransactionOptions::new()).await?;
+        let mut t = c.start_transaction(TxOpts::new()).await?;
         t.query_drop(QUERY).await?;
         let r = t.query_iter(QUERY).await?;
         let out = r.collect_and_drop::<u8>().await?;
@@ -1208,8 +1193,22 @@ mod test {
 
         let mut conn = Conn::new(get_opts()).await?;
         let stmt = conn.prep(r"SELECT :foo").await?;
+
+        {
+            let query = String::from("SELECT ?, ?");
+            let stmt = conn.prep(&*query).await?;
+            conn.close(stmt).await?;
+            {
+                let mut conn = Conn::new(get_opts()).await?;
+                let stmt = conn.prep(&*query).await?;
+                conn.close(stmt).await?;
+                conn.disconnect().await?;
+            }
+        }
+
         conn.close(stmt).await?;
         conn.disconnect().await?;
+
         Ok(())
     }
 
@@ -1385,29 +1384,170 @@ mod test {
     }
 
     #[tokio::test]
-    async fn should_handle_local_infile() -> super::Result<()> {
-        use std::{io::Write, path::Path};
+    async fn should_handle_multiresult_set_with_error() -> super::Result<()> {
+        const QUERY_FIRST: &str = "SELECT * FROM tmp; SELECT 1; SELECT 2;";
+        const QUERY_MIDDLE: &str = "SELECT 1; SELECT * FROM tmp; SELECT 2";
+        let mut conn = Conn::new(get_opts()).await.unwrap();
+
+        // if error is in the first result set, then query should return it immediately.
+        let result = QUERY_FIRST.run(&mut conn).await;
+        assert!(matches!(result, Err(Error::Server(_))));
+
+        let mut result = QUERY_MIDDLE.run(&mut conn).await.unwrap();
+
+        // first result set will contain one row
+        let result_set: Vec<u8> = result.collect().await.unwrap();
+        assert_eq!(result_set, vec![1]);
+
+        // second result set will contain an error.
+        let result_set: super::Result<Vec<u8>> = result.collect().await;
+        assert!(matches!(result_set, Err(Error::Server(_))));
+
+        // there will be no third result set
+        assert!(result.is_empty());
+
+        conn.ping().await?;
+        conn.disconnect().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_handle_binary_multiresult_set_with_error() -> super::Result<()> {
+        const PROC_DEF_FIRST: &str =
+            r#"CREATE PROCEDURE err_first() BEGIN SELECT * FROM tmp; SELECT 1; END"#;
+        const PROC_DEF_MIDDLE: &str =
+            r#"CREATE PROCEDURE err_middle() BEGIN SELECT 1; SELECT * FROM tmp; SELECT 2; END"#;
+
+        let mut conn = Conn::new(get_opts()).await.unwrap();
+
+        conn.query_drop("DROP PROCEDURE IF EXISTS err_first")
+            .await?;
+        conn.query_iter(PROC_DEF_FIRST).await?;
+
+        conn.query_drop("DROP PROCEDURE IF EXISTS err_middle")
+            .await?;
+        conn.query_iter(PROC_DEF_MIDDLE).await?;
+
+        // if error is in the first result set, then query should return it immediately.
+        let result = conn.query_iter("CALL err_first()").await;
+        assert!(matches!(result, Err(Error::Server(_))));
+
+        let mut result = conn.query_iter("CALL err_middle()").await?;
+
+        // first result set will contain one row
+        let result_set: Vec<u8> = result.collect().await.unwrap();
+        assert_eq!(result_set, vec![1]);
+
+        // second result set will contain an error.
+        let result_set: super::Result<Vec<u8>> = result.collect().await;
+        assert!(matches!(result_set, Err(Error::Server(_))));
+
+        // there will be no third result set
+        assert!(result.is_empty());
+
+        conn.ping().await?;
+        conn.disconnect().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_handle_multiresult_set_with_local_infile() -> super::Result<()> {
+        use std::fs::write;
 
         let file_path = tempfile::Builder::new().tempfile_in("").unwrap();
         let file_path = file_path.path();
-        let file_name = Path::new(file_path.file_name().unwrap());
+        let file_name = file_path.file_name().unwrap();
 
-        let mut opts = OptsBuilder::from_opts(get_opts());
-        opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[file_name][..])));
+        write(file_name, b"AAAAAA\nBBBBBB\nCCCCCC\n")?;
+
+        let opts = get_opts()
+            .local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[file_name][..])));
+
+        // LOCAL INFILE in the middle of a multi-result set should not break anything.
+        let mut conn = Conn::new(opts).await.unwrap();
+        "CREATE TEMPORARY TABLE tmp (a TEXT)".run(&mut conn).await?;
+
+        let query = format!(
+            r#"SELECT * FROM tmp;
+            LOAD DATA LOCAL INFILE "{}" INTO TABLE tmp;
+            LOAD DATA LOCAL INFILE "{}" INTO TABLE tmp;
+            SELECT * FROM tmp"#,
+            file_name.to_str().unwrap(),
+            file_name.to_str().unwrap(),
+        );
+
+        let mut result = query.run(&mut conn).await?;
+
+        let result_set = result.collect::<String>().await?;
+        assert_eq!(result_set.len(), 0);
+
+        let mut no_local_infile = false;
+
+        for _ in 0..2 {
+            match result.collect::<String>().await {
+                Ok(result_set) => {
+                    assert_eq!(result.affected_rows(), 3);
+                    assert!(result_set.is_empty())
+                }
+                Err(Error::Server(ref err)) if err.code == 1148 => {
+                    // The used command is not allowed with this MySQL version
+                    no_local_infile = true;
+                    break;
+                }
+                Err(Error::Server(ref err)) if err.code == 3948 => {
+                    // Loading local data is disabled;
+                    // this must be enabled on both the client and server sides
+                    no_local_infile = true;
+                    break;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        if no_local_infile {
+            assert!(result.is_empty());
+            assert_eq!(result_set.len(), 0);
+        } else {
+            let result_set = result.collect::<String>().await?;
+            assert_eq!(result_set.len(), 6);
+            assert_eq!(result_set[0], "AAAAAA");
+            assert_eq!(result_set[1], "BBBBBB");
+            assert_eq!(result_set[2], "CCCCCC");
+            assert_eq!(result_set[3], "AAAAAA");
+            assert_eq!(result_set[4], "BBBBBB");
+            assert_eq!(result_set[5], "CCCCCC");
+        }
+
+        conn.ping().await?;
+        conn.disconnect().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_handle_local_infile() -> super::Result<()> {
+        use std::fs::write;
+
+        let file_path = tempfile::Builder::new().tempfile_in("").unwrap();
+        let file_path = file_path.path();
+        let file_name = file_path.file_name().unwrap();
+
+        write(file_name, b"AAAAAA\nBBBBBB\nCCCCCC\n")?;
+
+        let opts = get_opts()
+            .local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[file_name][..])));
 
         let mut conn = Conn::new(opts).await.unwrap();
         conn.query_drop("CREATE TEMPORARY TABLE tmp (a TEXT);")
             .await
             .unwrap();
 
-        let mut file = ::std::fs::File::create(file_name).unwrap();
-        let _ = file.write(b"AAAAAA\n");
-        let _ = file.write(b"BBBBBB\n");
-        let _ = file.write(b"CCCCCC\n");
         match conn
             .query_drop(format!(
                 r#"LOAD DATA LOCAL INFILE "{}" INTO TABLE tmp;"#,
-                file_name.display()
+                file_name.to_str().unwrap(),
             ))
             .await
         {
@@ -1423,26 +1563,13 @@ mod test {
             }
             e @ Err(_) => e.unwrap(),
         };
-        let result = conn
-            .exec_iter("SELECT * FROM tmp;", ())
-            .await
-            .unwrap()
-            .map_and_drop(|row| from_row::<(String,)>(row).0)
-            .await
-            .unwrap();
+
+        let result: Vec<String> = conn.query("SELECT * FROM tmp").await?;
         assert_eq!(result.len(), 3);
         assert_eq!(result[0], "AAAAAA");
         assert_eq!(result[1], "BBBBBB");
         assert_eq!(result[2], "CCCCCC");
-        let result = conn.disconnect().await;
 
-        if let Err(crate::error::Error::Server(ref err)) = result {
-            if err.code == 1148 {
-                // The used command is not allowed with this MySQL version
-                return Ok(());
-            }
-        }
-        result.unwrap();
         Ok(())
     }
 

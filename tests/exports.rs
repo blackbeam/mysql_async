@@ -1,15 +1,15 @@
 #[allow(unused_imports)]
 use mysql_async::{
-    chrono, consts, error, from_row, from_row_opt, from_value, from_value_opt,
+    chrono, consts, from_row, from_row_opt, from_value, from_value_opt,
     futures::{DisconnectPool, GetConn},
     params,
     prelude::{
-        ConnectionLike, ConvIr, FromRow, FromValue, LocalInfileHandler, Protocol, Queryable,
+        BatchQuery, ConvIr, FromRow, FromValue, LocalInfileHandler, Protocol, Query, Queryable,
         StatementLike, ToValue,
     },
-    time, uuid, BinaryProtocol, BoxFuture, Column, Conn, Deserialized, FromRowError,
-    FromValueError, IsolationLevel, Opts, OptsBuilder, Params, Pool, PoolConstraints, PoolOptions,
-    QueryResult, Row, Serialized, SslOpts, Statement, TextProtocol, Transaction,
-    TransactionOptions, Value, WhiteListFsLocalInfileHandler, DEFAULT_INACTIVE_CONNECTION_TTL,
-    DEFAULT_TTL_CHECK_INTERVAL,
+    time, uuid, BinaryProtocol, BoxFuture, Column, Conn, Deserialized, DriverError, Error,
+    FromRowError, FromValueError, IoError, IsolationLevel, Opts, OptsBuilder, Params, ParseError,
+    Pool, PoolConstraints, PoolOpts, QueryResult, Result, Row, Serialized, ServerError, SslOpts,
+    Statement, TextProtocol, Transaction, TxOpts, UrlError, Value, WhiteListFsLocalInfileHandler,
+    DEFAULT_INACTIVE_CONNECTION_TTL, DEFAULT_TTL_CHECK_INTERVAL,
 };
