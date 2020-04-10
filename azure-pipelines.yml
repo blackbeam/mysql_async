@@ -173,6 +173,9 @@ jobs:
         docker --version
       displayName: Install docker
     - bash: |
+        git clone https://github.com/blackbeam/rust-mysql-simple.git
+      displayName: Clone rust-mysql-simple (for ssl certs)
+    - bash: |
         docker run --rm -d \
             --name container \
             -v `pwd`:/root \
@@ -183,9 +186,9 @@ jobs:
                 --local-infile \
                 --performance-schema=on \
                 --ssl \
-                --ssl-ca=/root/tests/ca-cert.pem \
-                --ssl-cert=/root/tests/server-cert.pem \
-                --ssl-key=/root/tests/server-key.pem
+                --ssl-ca=/root/rust-mysql-simple/tests/ca-cert.pem \
+                --ssl-cert=/root/rust-mysql-simple/tests/server-cert.pem \
+                --ssl-key=/root/rust-mysql-simple/tests/server-key.pem
         while ! nc -W 1 localhost 3307 | grep -q -P '.+'; do sleep 1; done
       displayName: Run MariaDb in Docker
     - bash: |
