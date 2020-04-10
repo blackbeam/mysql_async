@@ -18,7 +18,6 @@ use mysql_common::{
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
-    connection_like::ConnectionLike,
     consts::{CapabilityFlags, Command},
     error::*,
     queryable::BinaryProtocol,
@@ -183,7 +182,6 @@ impl crate::Conn {
             .map_err(Error::from)?;
 
         if !self
-            .conn_ref()
             .capabilities()
             .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
         {
@@ -214,7 +212,7 @@ impl crate::Conn {
             .await?;
 
         let packet = self.read_packet().await?;
-        let mut inner_stmt = StmtInner::from_payload(&*packet, self.conn_ref().id(), raw_query)?;
+        let mut inner_stmt = StmtInner::from_payload(&*packet, self.id(), raw_query)?;
 
         if inner_stmt.num_params() > 0 {
             let params = self.read_column_defs(inner_stmt.num_params()).await?;
@@ -228,7 +226,7 @@ impl crate::Conn {
 
         let inner_stmt = Arc::new(inner_stmt);
 
-        if let Some(old_stmt) = self.conn_mut().cache_stmt(&inner_stmt) {
+        if let Some(old_stmt) = self.cache_stmt(&inner_stmt) {
             self.close_statement(old_stmt.id()).await?;
         }
 

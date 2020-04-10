@@ -15,10 +15,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{
-    connection_like::{Connection, ConnectionLike},
-    error::IoError,
-};
+use crate::{connection_like::Connection, error::IoError};
 
 /// Reads a packet.
 #[derive(Debug)]
@@ -35,12 +32,11 @@ impl Future for ReadPacket<'_, '_> {
     type Output = std::result::Result<Vec<u8>, IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let packet_opt =
-            ready!(Pin::new(self.0.conn_mut().stream_mut()).poll_next(cx)).transpose()?;
+        let packet_opt = ready!(Pin::new(self.0.stream_mut()).poll_next(cx)).transpose()?;
 
         match packet_opt {
             Some(packet) => {
-                self.0.conn_mut().touch();
+                self.0.touch();
                 return Poll::Ready(Ok(packet));
             }
             None => {

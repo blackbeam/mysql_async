@@ -8,11 +8,6 @@
 
 use crate::{BoxFuture, Pool};
 
-pub trait ConnectionLike: Send + Sized {
-    fn conn_ref(&self) -> &crate::Conn;
-    fn conn_mut(&mut self) -> &mut crate::Conn;
-}
-
 /// Connection.
 #[derive(Debug)]
 pub enum Connection<'a, 't: 'a> {
@@ -39,19 +34,24 @@ impl<'a, 't> From<&'a mut crate::Transaction<'t>> for Connection<'a, 't> {
     }
 }
 
-impl ConnectionLike for Connection<'_, '_> {
-    fn conn_ref(&self) -> &crate::Conn {
+impl std::ops::Deref for Connection<'_, '_> {
+    type Target = crate::Conn;
+
+    fn deref(&self) -> &Self::Target {
         match self {
             Connection::Conn(ref conn) => conn,
             Connection::ConnMut(conn) => conn,
-            Connection::Tx(tx) => tx.conn_ref(),
+            Connection::Tx(tx) => tx.0.deref(),
         }
     }
-    fn conn_mut(&mut self) -> &mut crate::Conn {
+}
+
+impl std::ops::DerefMut for Connection<'_, '_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
             Connection::Conn(conn) => conn,
             Connection::ConnMut(conn) => conn,
-            Connection::Tx(tx) => tx.conn_mut(),
+            Connection::Tx(tx) => tx.0.deref_mut(),
         }
     }
 }

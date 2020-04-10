@@ -222,10 +222,6 @@ pub mod prelude {
     pub trait StatementLike: crate::queryable::stmt::StatementLike {}
     impl<T: crate::queryable::stmt::StatementLike> StatementLike for T {}
 
-    /// Everything that is connection.
-    pub trait ConnectionLike: crate::connection_like::ConnectionLike {}
-    impl<T: crate::connection_like::ConnectionLike> ConnectionLike for T {}
-
     /// Trait for protocol markers [`crate::TextProtocol`] and [`crate::BinaryProtocol`].
     pub trait Protocol: crate::queryable::Protocol {}
     impl<T: crate::queryable::Protocol> Protocol for T {}

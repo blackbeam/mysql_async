@@ -8,12 +8,7 @@
 
 use std::fmt;
 
-use crate::{
-    connection_like::{Connection, ConnectionLike},
-    error::*,
-    queryable::Queryable,
-    Conn,
-};
+use crate::{connection_like::Connection, error::*, queryable::Queryable, Conn};
 
 /// Transaction status.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -130,7 +125,7 @@ impl fmt::Display for IsolationLevel {
 /// should note that it is easy to mess things up calling this queries manually. Also you will get
 /// `NestedTransaction` error if you call `transaction.start_transaction(_)`.
 #[derive(Debug)]
-pub struct Transaction<'a>(Connection<'a, 'static>);
+pub struct Transaction<'a>(pub(crate) Connection<'a, 'static>);
 
 impl<'a> Transaction<'a> {
     pub(crate) async fn new<T: Into<Connection<'a, 'static>>>(
@@ -145,75 +140,59 @@ impl<'a> Transaction<'a> {
 
         let mut conn = conn.into();
 
-        if conn.conn_ref().get_tx_status() != TxStatus::None {
+        if conn.get_tx_status() != TxStatus::None {
             return Err(DriverError::NestedTransaction.into());
         }
 
-        if readonly.is_some() && conn.conn_ref().server_version() < (5, 6, 5) {
+        if readonly.is_some() && conn.server_version() < (5, 6, 5) {
             return Err(DriverError::ReadOnlyTransNotSupported.into());
         }
 
         if let Some(isolation_level) = isolation_level {
             let query = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation_level);
-            conn.conn_mut().query_drop(query).await?;
+            conn.query_drop(query).await?;
         }
 
         if let Some(readonly) = readonly {
             if readonly {
-                conn.conn_mut()
-                    .query_drop("SET TRANSACTION READ ONLY")
-                    .await?;
+                conn.query_drop("SET TRANSACTION READ ONLY").await?;
             } else {
-                conn.conn_mut()
-                    .query_drop("SET TRANSACTION READ WRITE")
-                    .await?;
+                conn.query_drop("SET TRANSACTION READ WRITE").await?;
             }
         }
 
         if consistent_snapshot {
-            conn.conn_mut()
-                .query_drop("START TRANSACTION WITH CONSISTENT SNAPSHOT")
+            conn.query_drop("START TRANSACTION WITH CONSISTENT SNAPSHOT")
                 .await?
         } else {
-            conn.conn_mut().query_drop("START TRANSACTION").await?
+            conn.query_drop("START TRANSACTION").await?
         };
 
-        conn.conn_mut().set_tx_status(TxStatus::InTransaction);
+        conn.set_tx_status(TxStatus::InTransaction);
         Ok(Transaction(conn))
     }
 
     /// Performs `COMMIT` query.
     pub async fn commit(mut self) -> Result<()> {
-        let result = self.0.conn_mut().query_iter("COMMIT").await?;
+        let result = self.0.query_iter("COMMIT").await?;
         result.drop_result().await?;
-        self.0.conn_mut().set_tx_status(TxStatus::None);
+        self.0.set_tx_status(TxStatus::None);
         Ok(())
     }
 
     /// Performs `ROLLBACK` query.
     pub async fn rollback(mut self) -> Result<()> {
-        let result = self.0.conn_mut().query_iter("ROLLBACK").await?;
+        let result = self.0.query_iter("ROLLBACK").await?;
         result.drop_result().await?;
-        self.0.conn_mut().set_tx_status(TxStatus::None);
+        self.0.set_tx_status(TxStatus::None);
         Ok(())
     }
 }
 
 impl Drop for Transaction<'_> {
     fn drop(&mut self) {
-        let conn = self.0.conn_mut();
-        if conn.get_tx_status() == TxStatus::InTransaction {
-            conn.set_tx_status(TxStatus::RequiresRollback);
+        if self.0.get_tx_status() == TxStatus::InTransaction {
+            self.0.set_tx_status(TxStatus::RequiresRollback);
         }
-    }
-}
-
-impl ConnectionLike for Transaction<'_> {
-    fn conn_ref(&self) -> &crate::Conn {
-        self.0.conn_ref()
-    }
-
-    fn conn_mut(&mut self) -> &mut crate::Conn {
-        self.0.conn_mut()
     }
 }

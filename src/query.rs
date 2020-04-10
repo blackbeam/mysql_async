@@ -7,7 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use crate::{
-    connection_like::{ConnectionLike, ToConnection, ToConnectionResult},
+    connection_like::{ToConnection, ToConnectionResult},
     from_row,
     prelude::FromRow,
     queryable::stmt::StatementLike,
@@ -30,15 +30,12 @@ use crate::{
 ///
 /// // text protocol query
 /// let num: Option<u32> = "SELECT 42".first(&pool).await?;
+/// assert_eq!(num, Some(42));
 ///
 /// // binary protocol query (prepared statement)
-/// // that will prepare `DO ?` and execute `DO 0`, `DO 1`, `DO 2` and so on.
-/// "DO ?"
-///     .with((0..10).map(|x| (x,)))
-///     .batch(&pool)
-///     .await?;
+/// let row: Option<(u32, String)> = "SELECT ?, ?".with((42, "foo")).first(&pool).await?;
+/// assert_eq!(row.unwrap(), (42, "foo".into()));
 ///
-/// assert_eq!(num, Some(42));
 /// # Ok(()) }
 /// ```
 pub trait Query: Send + Sized {
@@ -63,7 +60,7 @@ pub trait Query: Send + Sized {
             let output = if result.is_empty() {
                 None
             } else {
-                result.get_row().await?.map(from_row)
+                result.next().await?.map(from_row)
             };
             result.drop_result().await?;
             Ok(output)
@@ -138,7 +135,7 @@ impl<Q: AsRef<str> + Send + Sync> Query for Q {
                 ToConnectionResult::Immediate(conn) => conn,
                 ToConnectionResult::Mediate(fut) => fut.await?,
             };
-            conn.conn_mut().raw_query(self).await?;
+            conn.raw_query(self).await?;
             Ok(QueryResult::new(conn))
         }))
     }
@@ -185,10 +182,9 @@ where
                 ToConnectionResult::Mediate(fut) => fut.await?,
             };
 
-            let statement = conn.conn_mut().get_statement(self.query).await?;
+            let statement = conn.get_statement(self.query).await?;
 
-            conn.conn_mut()
-                .execute_statement(&statement, self.params.into())
+            conn.execute_statement(&statement, self.params.into())
                 .await?;
 
             Ok(QueryResult::new(conn))
@@ -243,12 +239,10 @@ where
                 ToConnectionResult::Mediate(fut) => fut.await?,
             };
 
-            let statement = conn.conn_mut().get_statement(self.query).await?;
+            let statement = conn.get_statement(self.query).await?;
 
             for params in self.params {
-                conn.conn_mut()
-                    .execute_statement(&statement, params)
-                    .await?;
+                conn.execute_statement(&statement, params).await?;
             }
 
             Ok(())

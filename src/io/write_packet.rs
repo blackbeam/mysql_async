@@ -15,10 +15,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{
-    connection_like::{Connection, ConnectionLike},
-    error::IoError,
-};
+use crate::{connection_like::Connection, error::IoError};
 
 pub struct WritePacket<'a, 't> {
     conn: Connection<'a, 't>,
@@ -39,38 +36,17 @@ impl Future for WritePacket<'_, '_> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.data.is_some() {
-            let codec = Pin::new(
-                self.conn
-                    .conn_mut()
-                    .stream_mut()
-                    .codec
-                    .as_mut()
-                    .expect("must be here"),
-            );
+            let codec = Pin::new(self.conn.stream_mut().codec.as_mut().expect("must be here"));
             ready!(codec.poll_ready(cx))?;
         }
 
         if let Some(data) = self.data.take() {
-            let codec = Pin::new(
-                self.conn
-                    .conn_mut()
-                    .stream_mut()
-                    .codec
-                    .as_mut()
-                    .expect("must be here"),
-            );
+            let codec = Pin::new(self.conn.stream_mut().codec.as_mut().expect("must be here"));
             // to get here, stream must be ready
             codec.start_send(data)?;
         }
 
-        let codec = Pin::new(
-            self.conn
-                .conn_mut()
-                .stream_mut()
-                .codec
-                .as_mut()
-                .expect("must be here"),
-        );
+        let codec = Pin::new(self.conn.stream_mut().codec.as_mut().expect("must be here"));
 
         ready!(codec.poll_flush(cx))?;
 

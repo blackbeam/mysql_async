@@ -30,7 +30,6 @@ use std::{
 
 use crate::{
     conn::{pool::Pool, stmt_cache::StmtCache},
-    connection_like::ConnectionLike,
     consts::{CapabilityFlags, Command, StatusFlags},
     error::*,
     io::Stream,
@@ -718,22 +717,29 @@ impl Conn {
         self.query_drop("ROLLBACK").await
     }
 
+    /// Returns `true` if `SERVER_MORE_RESULTS_EXISTS` flag is contained
+    /// in status flags of the connection.
+    pub(crate) fn more_results_exists(&self) -> bool {
+        self.status()
+            .contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS)
+    }
+
     pub(crate) async fn drop_result(&mut self) -> Result<()> {
         match self.inner.pending_result.as_ref() {
             Some(ResultSetMeta::Text(_)) => {
                 QueryResult::<'_, '_, TextProtocol>::new(self)
                     .drop_result()
                     .await?;
-                Ok(())
             }
             Some(ResultSetMeta::Binary(_)) => {
                 QueryResult::<'_, '_, BinaryProtocol>::new(self)
                     .drop_result()
                     .await?;
-                Ok(())
             }
-            None => Ok(()),
+            Some(ResultSetMeta::Error(_)) | None => (),
         }
+
+        Ok(())
     }
 
     /// This function will drop pending result and rollback a transaction, if needed.
@@ -753,20 +759,10 @@ impl Conn {
     }
 }
 
-impl ConnectionLike for Conn {
-    fn conn_ref(&self) -> &crate::Conn {
-        self
-    }
-
-    fn conn_mut(&mut self) -> &mut crate::Conn {
-        self
-    }
-}
-
 #[cfg(test)]
 mod test {
     use crate::{
-        from_row, params, prelude::*, test_misc::get_opts, Conn, OptsBuilder, TxOpts,
+        from_row, params, prelude::*, test_misc::get_opts, Conn, Error, OptsBuilder, TxOpts,
         WhiteListFsLocalInfileHandler,
     };
 
@@ -841,6 +837,8 @@ mod test {
         .filter(|variant| plugins.iter().any(|p| p == variant.0));
 
         for (plug, val, pass) in variants {
+            let _ = conn.query_drop("DROP USER 'test_user'@'%'").await;
+
             let query = format!("CREATE USER 'test_user'@'%' IDENTIFIED WITH {}", plug);
             conn.query_drop(query).await.unwrap();
 
@@ -1386,14 +1384,159 @@ mod test {
     }
 
     #[tokio::test]
-    async fn should_handle_local_infile() -> super::Result<()> {
-        use std::{io::Write, path::Path};
+    async fn should_handle_multiresult_set_with_error() -> super::Result<()> {
+        const QUERY_FIRST: &str = "SELECT * FROM tmp; SELECT 1; SELECT 2;";
+        const QUERY_MIDDLE: &str = "SELECT 1; SELECT * FROM tmp; SELECT 2";
+        let mut conn = Conn::new(get_opts()).await.unwrap();
+
+        // if error is in the first result set, then query should return it immediately.
+        let result = QUERY_FIRST.run(&mut conn).await;
+        assert!(matches!(result, Err(Error::Server(_))));
+
+        let mut result = QUERY_MIDDLE.run(&mut conn).await.unwrap();
+
+        // first result set will contain one row
+        let result_set: Vec<u8> = result.collect().await.unwrap();
+        assert_eq!(result_set, vec![1]);
+
+        // second result set will contain an error.
+        let result_set: super::Result<Vec<u8>> = result.collect().await;
+        assert!(matches!(result_set, Err(Error::Server(_))));
+
+        // there will be no third result set
+        assert!(result.is_empty());
+
+        conn.ping().await?;
+        conn.disconnect().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_handle_binary_multiresult_set_with_error() -> super::Result<()> {
+        const PROC_DEF_FIRST: &str =
+            r#"CREATE PROCEDURE err_first() BEGIN SELECT * FROM tmp; SELECT 1; END"#;
+        const PROC_DEF_MIDDLE: &str =
+            r#"CREATE PROCEDURE err_middle() BEGIN SELECT 1; SELECT * FROM tmp; SELECT 2; END"#;
+
+        let mut conn = Conn::new(get_opts()).await.unwrap();
+
+        conn.query_drop("DROP PROCEDURE IF EXISTS err_first")
+            .await?;
+        conn.query_iter(PROC_DEF_FIRST).await?;
+
+        conn.query_drop("DROP PROCEDURE IF EXISTS err_middle")
+            .await?;
+        conn.query_iter(PROC_DEF_MIDDLE).await?;
+
+        // if error is in the first result set, then query should return it immediately.
+        let result = conn.query_iter("CALL err_first()").await;
+        assert!(matches!(result, Err(Error::Server(_))));
+
+        let mut result = conn.query_iter("CALL err_middle()").await?;
+
+        // first result set will contain one row
+        let result_set: Vec<u8> = result.collect().await.unwrap();
+        assert_eq!(result_set, vec![1]);
+
+        // second result set will contain an error.
+        let result_set: super::Result<Vec<u8>> = result.collect().await;
+        assert!(matches!(result_set, Err(Error::Server(_))));
+
+        // there will be no third result set
+        assert!(result.is_empty());
+
+        conn.ping().await?;
+        conn.disconnect().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_handle_multiresult_set_with_local_infile() -> super::Result<()> {
+        use std::fs::write;
 
         let file_path = tempfile::Builder::new().tempfile_in("").unwrap();
         let file_path = file_path.path();
-        let file_name = Path::new(file_path.file_name().unwrap());
+        let file_name = file_path.file_name().unwrap();
 
-        let opts = OptsBuilder::from_opts(get_opts())
+        write(file_name, b"AAAAAA\nBBBBBB\nCCCCCC\n")?;
+
+        let opts = get_opts()
+            .local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[file_name][..])));
+
+        // LOCAL INFILE in the middle of a multi-result set should not break anything.
+        let mut conn = Conn::new(opts).await.unwrap();
+        "CREATE TEMPORARY TABLE tmp (a TEXT)".run(&mut conn).await?;
+
+        let query = format!(
+            r#"SELECT * FROM tmp;
+            LOAD DATA LOCAL INFILE "{}" INTO TABLE tmp;
+            LOAD DATA LOCAL INFILE "{}" INTO TABLE tmp;
+            SELECT * FROM tmp"#,
+            file_name.to_str().unwrap(),
+            file_name.to_str().unwrap(),
+        );
+
+        let mut result = query.run(&mut conn).await?;
+
+        let result_set = result.collect::<String>().await?;
+        assert_eq!(result_set.len(), 0);
+
+        let mut no_local_infile = false;
+
+        for _ in 0..2 {
+            match result.collect::<String>().await {
+                Ok(result_set) => {
+                    assert_eq!(result.affected_rows(), 3);
+                    assert!(result_set.is_empty())
+                }
+                Err(Error::Server(ref err)) if err.code == 1148 => {
+                    // The used command is not allowed with this MySQL version
+                    no_local_infile = true;
+                    break;
+                }
+                Err(Error::Server(ref err)) if err.code == 3948 => {
+                    // Loading local data is disabled;
+                    // this must be enabled on both the client and server sides
+                    no_local_infile = true;
+                    break;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        if no_local_infile {
+            assert!(result.is_empty());
+            assert_eq!(result_set.len(), 0);
+        } else {
+            let result_set = result.collect::<String>().await?;
+            assert_eq!(result_set.len(), 6);
+            assert_eq!(result_set[0], "AAAAAA");
+            assert_eq!(result_set[1], "BBBBBB");
+            assert_eq!(result_set[2], "CCCCCC");
+            assert_eq!(result_set[3], "AAAAAA");
+            assert_eq!(result_set[4], "BBBBBB");
+            assert_eq!(result_set[5], "CCCCCC");
+        }
+
+        conn.ping().await?;
+        conn.disconnect().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_handle_local_infile() -> super::Result<()> {
+        use std::fs::write;
+
+        let file_path = tempfile::Builder::new().tempfile_in("").unwrap();
+        let file_path = file_path.path();
+        let file_name = file_path.file_name().unwrap();
+
+        write(file_name, b"AAAAAA\nBBBBBB\nCCCCCC\n")?;
+
+        let opts = get_opts()
             .local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[file_name][..])));
 
         let mut conn = Conn::new(opts).await.unwrap();
@@ -1401,14 +1544,10 @@ mod test {
             .await
             .unwrap();
 
-        let mut file = ::std::fs::File::create(file_name).unwrap();
-        let _ = file.write(b"AAAAAA\n");
-        let _ = file.write(b"BBBBBB\n");
-        let _ = file.write(b"CCCCCC\n");
         match conn
             .query_drop(format!(
                 r#"LOAD DATA LOCAL INFILE "{}" INTO TABLE tmp;"#,
-                file_name.display()
+                file_name.to_str().unwrap(),
             ))
             .await
         {
@@ -1424,26 +1563,13 @@ mod test {
             }
             e @ Err(_) => e.unwrap(),
         };
-        let result = conn
-            .exec_iter("SELECT * FROM tmp;", ())
-            .await
-            .unwrap()
-            .map_and_drop(|row| from_row::<(String,)>(row).0)
-            .await
-            .unwrap();
+
+        let result: Vec<String> = conn.query("SELECT * FROM tmp").await?;
         assert_eq!(result.len(), 3);
         assert_eq!(result[0], "AAAAAA");
         assert_eq!(result[1], "BBBBBB");
         assert_eq!(result[2], "CCCCCC");
-        let result = conn.disconnect().await;
 
-        if let Err(crate::error::Error::Server(ref err)) = result {
-            if err.code == 1148 {
-                // The used command is not allowed with this MySQL version
-                return Ok(());
-            }
-        }
-        result.unwrap();
         Ok(())
     }
 
