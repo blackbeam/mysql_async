@@ -425,9 +425,7 @@ mod test {
 
         let pool = Pool::new(opts);
 
-        "CREATE TABLE IF NOT EXISTS tmp(id int)"
-            .ignore(&pool)
-            .await?;
+        "CREATE TEMPORARY TABLE tmp(id int)".ignore(&pool).await?;
 
         let mut tx = pool.start_transaction(TxOpts::default()).await?;
         tx.exec_batch("INSERT INTO tmp (id) VALUES (?)", vec![(1_u8,), (2_u8,)])
