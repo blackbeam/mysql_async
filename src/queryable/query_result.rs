@@ -23,15 +23,15 @@ use crate::{
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ResultSetMeta {
     /// Text result set, that may contain rows.
-    Text(Arc<Vec<Column>>),
+    Text(Arc<[Column]>),
     /// Binary result set, that may contain rows.
-    Binary(Arc<Vec<Column>>),
+    Binary(Arc<[Column]>),
     /// Error result set.
     Error(ServerError),
 }
 
 impl ResultSetMeta {
-    fn columns(&self) -> StdResult<&Arc<Vec<Column>>, &ServerError> {
+    fn columns(&self) -> StdResult<&Arc<[Column]>, &ServerError> {
         match self {
             ResultSetMeta::Text(cols) | ResultSetMeta::Binary(cols) => Ok(cols),
             ResultSetMeta::Error(err) => Err(err),
@@ -323,7 +323,7 @@ where
     }
 
     /// Returns a copy of a columns list of this query result.
-    pub fn columns(&self) -> Option<Arc<Vec<Column>>> {
+    pub fn columns(&self) -> Option<Arc<[Column]>> {
         self.conn
             .get_pending_result()
             .and_then(|meta| meta.columns().map(|columns| columns.clone()).ok())
@@ -339,7 +339,9 @@ impl crate::Conn {
         let packet = self.read_packet().await?;
 
         match packet.get(0) {
-            Some(0x00) => self.set_pending_result(Some(P::result_set_meta(Default::default()))),
+            Some(0x00) => self.set_pending_result(Some(P::result_set_meta(Arc::from(
+                Vec::new().into_boxed_slice(),
+            )))),
             Some(0xFB) => self.handle_local_infile::<P>(&*packet).await?,
             _ => self.handle_result_set::<P>(&*packet).await?,
         }
@@ -370,7 +372,9 @@ impl crate::Conn {
         }
 
         self.read_packet().await?;
-        self.set_pending_result(Some(P::result_set_meta(Default::default())));
+        self.set_pending_result(Some(P::result_set_meta(Arc::from(
+            Vec::new().into_boxed_slice(),
+        ))));
         Ok(())
     }
 
@@ -383,7 +387,7 @@ impl crate::Conn {
     {
         let column_count = packet.read_lenenc_int()?;
         let columns = self.read_column_defs(column_count as usize).await?;
-        let meta = P::result_set_meta(Arc::new(columns));
+        let meta = P::result_set_meta(Arc::from(columns.into_boxed_slice()));
         self.set_pending_result(Some(meta));
         Ok(())
     }

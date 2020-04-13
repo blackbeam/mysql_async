@@ -34,8 +34,8 @@ pub mod transaction;
 
 pub trait Protocol: fmt::Debug + Send + Sync + 'static {
     /// Returns `ResultSetMeta`, that corresponds to the current protocol.
-    fn result_set_meta(columns: Arc<Vec<Column>>) -> ResultSetMeta;
-    fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row>;
+    fn result_set_meta(columns: Arc<[Column]>) -> ResultSetMeta;
+    fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row>;
     fn is_last_result_set_packet(capabilities: CapabilityFlags, packet: &[u8]) -> bool {
         parse_ok_packet(packet, capabilities, OkPacketKind::ResultSetTerminator).is_ok()
     }
@@ -50,11 +50,11 @@ pub struct TextProtocol;
 pub struct BinaryProtocol;
 
 impl Protocol for TextProtocol {
-    fn result_set_meta(columns: Arc<Vec<Column>>) -> ResultSetMeta {
+    fn result_set_meta(columns: Arc<[Column]>) -> ResultSetMeta {
         ResultSetMeta::Text(columns)
     }
 
-    fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row> {
+    fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row> {
         read_text_values(packet, columns.len())
             .map(|values| new_row(values, columns))
             .map_err(Into::into)
@@ -62,11 +62,11 @@ impl Protocol for TextProtocol {
 }
 
 impl Protocol for BinaryProtocol {
-    fn result_set_meta(columns: Arc<Vec<Column>>) -> ResultSetMeta {
+    fn result_set_meta(columns: Arc<[Column]>) -> ResultSetMeta {
         ResultSetMeta::Binary(columns)
     }
 
-    fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row> {
+    fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row> {
         read_bin_values::<ServerSide>(packet, &*columns)
             .map(|values| new_row(values, columns))
             .map_err(Into::into)
