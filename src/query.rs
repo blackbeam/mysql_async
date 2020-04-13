@@ -7,10 +7,9 @@
 // modified, or distributed except according to those terms.
 
 use crate::{
-    connection_like::{ToConnection, ToConnectionResult},
+    connection_like::ToConnectionResult,
     from_row,
-    prelude::FromRow,
-    queryable::stmt::StatementLike,
+    prelude::{FromRow, StatementLike, ToConnection},
     BinaryProtocol, BoxFuture, Params, QueryResult, TextProtocol,
 };
 

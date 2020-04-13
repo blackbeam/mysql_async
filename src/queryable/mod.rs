@@ -23,8 +23,8 @@ use self::{
 use crate::{
     consts::{CapabilityFlags, Command},
     error::*,
-    prelude::FromRow,
-    queryable::{query_result::ResultSetMeta, stmt::StatementLike},
+    prelude::{FromRow, StatementLike},
+    queryable::query_result::ResultSetMeta,
     BoxFuture, Column, Conn, Params, Row,
 };
 

@@ -218,13 +218,22 @@ pub mod prelude {
     #[doc(inline)]
     pub use mysql_common::value::convert::{ConvIr, FromValue, ToValue};
 
-    /// Everything that is statement.
+    /// Everything that is a statement.
     pub trait StatementLike: crate::queryable::stmt::StatementLike {}
-    impl<T: crate::queryable::stmt::StatementLike> StatementLike for T {}
+    impl StatementLike for str {}
+    impl StatementLike for crate::Statement {}
+
+    /// Everything that is a connection.
+    pub trait ToConnection<'a, 't: 'a>: crate::connection_like::ToConnection<'a, 't> {}
+    impl<'a> ToConnection<'a, 'static> for &'a crate::Pool {}
+    impl ToConnection<'static, 'static> for crate::Conn {}
+    impl<'a> ToConnection<'a, 'static> for &'a mut crate::Conn {}
+    impl<'a, 't> ToConnection<'a, 't> for &'a mut crate::Transaction<'t> {}
 
     /// Trait for protocol markers [`crate::TextProtocol`] and [`crate::BinaryProtocol`].
     pub trait Protocol: crate::queryable::Protocol {}
-    impl<T: crate::queryable::Protocol> Protocol for T {}
+    impl Protocol for crate::BinaryProtocol {}
+    impl Protocol for crate::TextProtocol {}
 
     pub use mysql_common::params;
 }
