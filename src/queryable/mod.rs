@@ -30,7 +30,7 @@ pub mod stmt;
 pub mod transaction;
 
 pub trait Protocol: Send + 'static {
-    fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row>;
+    fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row>;
     fn is_last_result_set_packet<T>(conn_like: &T, packet: &[u8]) -> bool
     where
         T: ConnectionLike,
@@ -51,7 +51,7 @@ pub struct TextProtocol;
 pub struct BinaryProtocol;
 
 impl Protocol for TextProtocol {
-    fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row> {
+    fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row> {
         read_text_values(packet, columns.len())
             .map(|values| new_row(values, columns))
             .map_err(Into::into)
@@ -59,7 +59,7 @@ impl Protocol for TextProtocol {
 }
 
 impl Protocol for BinaryProtocol {
-    fn read_result_set_row(packet: &[u8], columns: Arc<Vec<Column>>) -> Result<Row> {
+    fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row> {
         read_bin_values::<ServerSide>(packet, &*columns)
             .map(|values| new_row(values, columns))
             .map_err(Into::into)

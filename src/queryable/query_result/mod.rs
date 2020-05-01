@@ -26,7 +26,7 @@ use crate::{
 
 pub fn new<T, P>(
     conn_like: T,
-    columns: Option<Arc<Vec<Column>>>,
+    columns: Option<Arc<[Column]>>,
     cached: Option<StmtCacheResult>,
 ) -> QueryResult<T, P>
 where
@@ -39,7 +39,7 @@ where
 
 pub fn disassemble<T, P>(
     query_result: QueryResult<T, P>,
-) -> (T, Option<Arc<Vec<Column>>>, Option<StmtCacheResult>) {
+) -> (T, Option<Arc<[Column]>>, Option<StmtCacheResult>) {
     match query_result {
         QueryResult(Empty(Some(Either::Left(conn_like)), cached, _)) => (conn_like, None, cached),
         QueryResult(WithRows(Some(Either::Left(conn_like)), columns, cached, _)) => {
@@ -51,7 +51,7 @@ pub fn disassemble<T, P>(
 
 pub fn assemble<T, P>(
     conn_like: T,
-    columns: Option<Arc<Vec<Column>>>,
+    columns: Option<Arc<[Column]>>,
     cached: Option<StmtCacheResult>,
 ) -> QueryResult<T, P>
 where
@@ -77,7 +77,7 @@ enum QueryResultInner<T, P> {
     ),
     WithRows(
         Option<Either<T, Streamless<T>>>,
-        Arc<Vec<Column>>,
+        Arc<[Column]>,
         Option<StmtCacheResult>,
         PhantomData<P>,
     ),
@@ -149,7 +149,7 @@ where
 
     fn new(
         conn_like: T,
-        columns: Option<Arc<Vec<Column>>>,
+        columns: Option<Arc<[Column]>>,
         cached: Option<StmtCacheResult>,
     ) -> QueryResult<T, P> {
         match columns {
@@ -423,7 +423,7 @@ where
     }
 
     /// Returns copy of columns of this query result.
-    pub fn columns(&self) -> Option<Arc<Vec<Column>>> {
+    pub fn columns(&self) -> Option<Arc<[Column]>> {
         match self.0 {
             QueryResultInner::Empty(..) => None,
             QueryResultInner::WithRows(_, ref columns, ..) => Some(columns.clone()),

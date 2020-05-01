@@ -437,7 +437,7 @@ where
     }
 
     if column_count > 0 {
-        let columns = Arc::new(columns);
+        let columns: Arc<[Column]> = Arc::from(columns.into_boxed_slice());
         match cached {
             Some(cached) => {
                 this.set_pending_result(Some(PendingResult::Binary(columns.clone(), cached)))

@@ -70,8 +70,8 @@ fn disconnect(mut conn: Conn) {
 
 #[derive(Debug)]
 pub enum PendingResult {
-    Text(Arc<Vec<Column>>),
-    Binary(Arc<Vec<Column>>, StmtCacheResult),
+    Text(Arc<[Column]>),
+    Binary(Arc<[Column]>, StmtCacheResult),
     Empty,
 }
 
