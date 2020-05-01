@@ -17,7 +17,7 @@ use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 use std::{
     fmt,
     fs::File,
-    io::Read,
+    io::{ErrorKind::NotConnected, Read},
     mem::MaybeUninit,
     net::ToSocketAddrs,
     ops::{Deref, DerefMut},
@@ -334,7 +334,13 @@ impl Stream {
         self.closed = true;
         if let Some(mut codec) = self.codec {
             use futures_sink::Sink;
-            futures_util::future::poll_fn(|cx| Pin::new(&mut *codec).poll_close(cx)).await?;
+            futures_util::future::poll_fn(|cx| match Pin::new(&mut *codec).poll_close(cx) {
+                Poll::Ready(Err(Error::Io(err))) if err.kind() == NotConnected => {
+                    Poll::Ready(Ok(()))
+                }
+                x => x,
+            })
+            .await?;
         }
         Ok(())
     }
