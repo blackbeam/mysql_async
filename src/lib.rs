@@ -122,7 +122,10 @@ static BUFFER_POOL: once_cell::sync::Lazy<Arc<crate::buffer_pool::BufferPool>> =
     once_cell::sync::Lazy::new(|| Default::default());
 
 #[doc(inline)]
-pub use self::conn::{BinlogRequest, Conn};
+pub use self::conn::{
+    binlog_stream::{BinlogRequest, BinlogStream},
+    Conn,
+};
 
 #[doc(inline)]
 pub use self::conn::pool::Pool;
