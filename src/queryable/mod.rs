@@ -38,8 +38,8 @@ pub mod transaction;
 
 pub trait Protocol: fmt::Debug + Send + Sync + 'static {
     /// Returns `ResultSetMeta`, that corresponds to the current protocol.
-    fn result_set_meta(columns: Arc<[Column]>) -> ResultSetMeta;
-    fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row>;
+    fn result_set_meta(columns: Arc<[Column<'static>]>) -> ResultSetMeta;
+    fn read_result_set_row(packet: &[u8], columns: Arc<[Column<'static>]>) -> Result<Row>;
     fn is_last_result_set_packet(capabilities: CapabilityFlags, packet: &[u8]) -> bool {
         packet.len() < 8
             && ParseBuf(packet)
@@ -57,11 +57,11 @@ pub struct TextProtocol;
 pub struct BinaryProtocol;
 
 impl Protocol for TextProtocol {
-    fn result_set_meta(columns: Arc<[Column]>) -> ResultSetMeta {
+    fn result_set_meta(columns: Arc<[Column<'static>]>) -> ResultSetMeta {
         ResultSetMeta::Text(columns)
     }
 
-    fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row> {
+    fn read_result_set_row(packet: &[u8], columns: Arc<[Column<'static>]>) -> Result<Row> {
         ParseBuf(packet)
             .parse::<RowDeserializer<ServerSide, Text>>(columns)
             .map(Into::into)
@@ -70,11 +70,11 @@ impl Protocol for TextProtocol {
 }
 
 impl Protocol for BinaryProtocol {
-    fn result_set_meta(columns: Arc<[Column]>) -> ResultSetMeta {
+    fn result_set_meta(columns: Arc<[Column<'static>]>) -> ResultSetMeta {
         ResultSetMeta::Binary(columns)
     }
 
-    fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row> {
+    fn read_result_set_row(packet: &[u8], columns: Arc<[Column<'static>]>) -> Result<Row> {
         ParseBuf(packet)
             .parse::<RowDeserializer<ServerSide, Binary>>(columns)
             .map(Into::into)

@@ -906,9 +906,10 @@ impl Conn {
 #[cfg(test)]
 mod test {
     use futures_util::stream::StreamExt;
+    use mysql_common::binlog::*;
     use tokio::time::timeout;
 
-    use std::time::Duration;
+    use std::{collections::HashMap, time::Duration};
 
     use crate::{
         from_row, params, prelude::*, test_misc::get_opts, BinlogDumpFlags, BinlogRequest, Conn,
@@ -954,10 +955,26 @@ mod test {
         while let Ok(Some(event)) = timeout(Duration::from_secs(1), binlog_stream.next()).await {
             let event = event?;
             event.header.event_type.get().unwrap();
-            event.read_data()?;
+
+            // iterate over rows of an event
+            match event.read_data()?.unwrap() {
+                EventData::WriteRowsEvent(WriteRowsEvent(re))
+                | EventData::UpdateRowsEvent(UpdateRowsEvent(re))
+                | EventData::DeleteRowsEvent(DeleteRowsEvent(re))
+                | EventData::WriteRowsEventV1(WriteRowsEventV1(re))
+                | EventData::UpdateRowsEventV1(UpdateRowsEventV1(re))
+                | EventData::DeleteRowsEventV1(DeleteRowsEventV1(re)) => {
+                    let tme = binlog_stream.get_tme(&re.table_id());
+                    for row in re.rows(tme.unwrap()) {
+                        row.unwrap();
+                    }
+                }
+                _ => (),
+            }
         }
 
         // iterate using COM_BINLOG_DUMP_GTID
+        let mut table_map = HashMap::new();
         let (conn, filename, pos) = get_conn().await?;
 
         let mut binlog_stream = conn
@@ -972,7 +989,24 @@ mod test {
         while let Ok(Some(event)) = timeout(Duration::from_secs(1), binlog_stream.next()).await {
             let event = event?;
             event.header.event_type.get().unwrap();
-            event.read_data()?;
+
+            // iterate over rows of an event
+            match event.read_data()?.unwrap() {
+                EventData::WriteRowsEvent(WriteRowsEvent(re))
+                | EventData::UpdateRowsEvent(UpdateRowsEvent(re))
+                | EventData::DeleteRowsEvent(DeleteRowsEvent(re))
+                | EventData::WriteRowsEventV1(WriteRowsEventV1(re))
+                | EventData::UpdateRowsEventV1(UpdateRowsEventV1(re))
+                | EventData::DeleteRowsEventV1(DeleteRowsEventV1(re)) => {
+                    for row in re.rows(table_map.get(&re.table_id).unwrap()) {
+                        dbg!(row.unwrap());
+                    }
+                }
+                EventData::TableMapEvent(tme) => {
+                    table_map.insert(tme.table_id, tme);
+                }
+                _ => (),
+            }
         }
 
         // iterate using COM_BINLOG_DUMP with BINLOG_DUMP_NON_BLOCK flag
