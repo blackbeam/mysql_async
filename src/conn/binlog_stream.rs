@@ -8,7 +8,7 @@
 
 use futures_core::ready;
 use mysql_common::{
-    binlog::{BinlogVersion::Version4, Event, EventStreamReader},
+    binlog::{events::TableMapEvent, BinlogVersion::Version4, Event, EventStreamReader},
     packets::{ComBinlogDump, ComBinlogDumpGtid, OkPacketKind, SidBlock},
 };
 
@@ -35,6 +35,11 @@ impl BinlogStream {
             read_packet: ReadPacket::new(conn),
             esr: EventStreamReader::new(Version4),
         }
+    }
+
+    /// Returns a table map event for the given table id.
+    pub fn get_tme(table_id: u64) -> Option<&TableMapEvent<'static>> {
+        self.esr.get_tme(table_id)
     }
 }
 
