@@ -38,6 +38,7 @@ tempfile = "3.1.0"
 
 [features]
 nightly = []
+native-tls-vendored = ["native-tls/vendored"]
 
 [lib]
 name = "mysql_async"
