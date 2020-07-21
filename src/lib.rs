@@ -40,7 +40,6 @@
 //!         Payment { customer_id: 7, amount: 8, account_name: None },
 //!         Payment { customer_id: 9, amount: 10, account_name: Some("bar".into()) },
 //!     ];
-//!     let payments_clone = payments.clone();
 //!
 //!     let database_url = /* ... */
 //!     # get_opts();
@@ -58,17 +57,17 @@
 //!     ).await?;
 //!
 //!     // Save payments
-//!     let params = payments_clone.into_iter().map(|payment| {
+//!     let params = payments.clone().into_iter().map(|payment| {
 //!         params! {
 //!             "customer_id" => payment.customer_id,
 //!             "amount" => payment.amount,
-//!             "account_name" => payment.account_name.clone(),
+//!             "account_name" => payment.account_name,
 //!         }
 //!     });
 //!
 //!     conn.exec_batch(
 //!         r"INSERT INTO payment (customer_id, amount, account_name)
-//!             VALUES (:customer_id, :amount, :account_name)",
+//!           VALUES (:customer_id, :amount, :account_name)",
 //!         params,
 //!     ).await?;
 //!

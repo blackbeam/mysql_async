@@ -40,6 +40,10 @@ impl ResultSetMeta {
 }
 
 /// Result of a query or statement execution.
+///
+/// Represents an asyncronous query result, that may not be fully consumed. Note,
+/// that unconsumed query results are dropped implicitly when corresponding connection
+/// is dropped or queried.
 #[derive(Debug)]
 pub struct QueryResult<'a, 't: 'a, P> {
     conn: Connection<'a, 't>,
@@ -59,7 +63,7 @@ where
 
     /// Returns `true` if this query result may contain rows.
     ///
-    /// If `false` then there is no rows possible (e.g. result of an UPDATE query).
+    /// If `false` then no rows possible for this query tesult (e.g. result of an UPDATE query).
     fn has_rows(&self) -> bool {
         self.conn
             .get_pending_result()
@@ -67,9 +71,7 @@ where
             .unwrap_or(false)
     }
 
-    /// `true` if there is no more rows nor result sets in this query.
-    ///
-    /// One could use it to check if there is more than one result set in this query result.
+    /// `true` if there are no more rows nor result sets in this query.
     pub fn is_empty(&self) -> bool {
         !self.has_rows() && !self.conn.more_results_exists()
     }
@@ -137,22 +139,22 @@ where
         self.conn.last_insert_id()
     }
 
-    /// Number of affected rows, as reported by the server, or `0`.
+    /// Number of affected rows as reported by the server, or `0`.
     pub fn affected_rows(&self) -> u64 {
         self.conn.affected_rows()
     }
 
-    /// Text information, as reported by the server, or an empty string.
+    /// Text information as reported by the server, or an empty string.
     pub fn info(&self) -> Cow<'_, str> {
         self.conn.info()
     }
 
-    /// Number of warnings, as reported by the server, or `0`.
+    /// Number of warnings as reported by the server, or `0`.
     pub fn warnings(&self) -> u16 {
         self.conn.get_warnings()
     }
 
-    /// Returns a future that collects result set of this query result.
+    /// Collects the current result set of this query result.
     ///
     /// It is parametrized by `R` and internally calls `R::from_row(Row)` on each row.
     ///
@@ -177,7 +179,7 @@ where
         .await
     }
 
-    /// Returns a future that collects result set of this query result.
+    /// Collects the current result set of this query result.
     ///
     /// It works the same way as [`QueryResult::collect`] but won't panic if row isn't convertible
     /// to `R`.
@@ -192,8 +194,7 @@ where
         .await
     }
 
-    /// Returns a future that collects the current result set of this query result and drops
-    /// everything else.
+    /// Collects the current result set of this query result and drops everything else.
     ///
     /// # Panic
     ///
@@ -209,8 +210,7 @@ where
         Ok(output)
     }
 
-    /// Returns a future that collects the current result set of this query result and drops
-    /// everything else.
+    /// Collects the current result set of this query result and drops everything else.
     ///
     /// It works the same way as [`QueryResult::collect_and_drop`] but won't panic if row isn't
     /// convertible to `R`.
@@ -223,7 +223,7 @@ where
         Ok(output)
     }
 
-    /// Returns a future that will execute `fun` on every row of the current result set.
+    /// Executes `fun` on every row of the current result set.
     ///
     /// It will stop on the nearest result set boundary (see `QueryResult::collect` docs).
     pub async fn for_each<F>(&mut self, mut fun: F) -> Result<()>
@@ -240,8 +240,7 @@ where
         }
     }
 
-    /// Returns a future that will execute `fun` on every row of the current result set and drop
-    /// everything else.
+    /// Executes `fun` on every row of the current result set and drops everything else.
     pub async fn for_each_and_drop<F>(mut self, fun: F) -> Result<()>
     where
         F: FnMut(Row),
@@ -251,7 +250,7 @@ where
         Ok(())
     }
 
-    /// Returns a future that will map every row of the current result set to `U` using `fun`.
+    /// Maps every row of the current result set to `U` using `fun`.
     ///
     /// It will stop on the nearest result set boundary (see `QueryResult::collect` docs).
     pub async fn map<F, U>(&mut self, mut fun: F) -> Result<Vec<U>>
@@ -265,8 +264,7 @@ where
         Ok(acc)
     }
 
-    /// Returns a future that will map every row of the current result set to `U` using `fun`
-    /// and drop everything else.
+    /// Map every row of the current result set to `U` using `fun` and drops everything else.
     pub async fn map_and_drop<F, U>(mut self, fun: F) -> Result<Vec<U>>
     where
         F: FnMut(Row) -> U,
@@ -276,7 +274,7 @@ where
         Ok(rows)
     }
 
-    /// Returns a future that will reduce rows of the current result set to `U` using `fun`.
+    /// Reduces rows of the current result set to `U` using `fun`.
     ///
     /// It will stop on the nearest result set boundary (see `QueryResult::collect` docs).
     pub async fn reduce<T, F, U>(&mut self, mut init: U, mut fun: F) -> Result<U>
@@ -290,8 +288,7 @@ where
         Ok(init)
     }
 
-    /// Returns a future that will reduce rows of the current result set to `U` using `fun` and drop
-    /// everything else.
+    /// Reduces rows of the current result set to `U` using `fun` and drops everything else.
     pub async fn reduce_and_drop<T, F, U>(mut self, init: U, fun: F) -> Result<U>
     where
         F: FnMut(U, T) -> U,
@@ -302,7 +299,7 @@ where
         Ok(acc)
     }
 
-    /// Returns a future that will drop this query result.
+    /// Drops this query result.
     pub async fn drop_result(mut self) -> Result<()> {
         loop {
             while let Some(_) = self.next().await? {}
@@ -314,7 +311,7 @@ where
 
     /// Returns a reference to a columns list of this query result.
     ///
-    /// Empty list means, that this result set was never meant to contain rows.
+    /// Empty list means that this result set was never meant to contain rows.
     pub fn columns_ref(&self) -> &[Column] {
         self.conn
             .get_pending_result()

@@ -101,6 +101,7 @@ impl Conn {
     }
 }
 
+/// Methods of this trait used to execute database queries.
 pub trait Queryable: Send {
     /// Executes `COM_PING`.
     fn ping(&mut self) -> BoxFuture<'_, ()>;
@@ -114,14 +115,23 @@ pub trait Queryable: Send {
         Q: AsRef<str> + Send + Sync + 'a;
 
     /// Prepares the given statement.
+    ///
+    /// Note, that `Statement` will exist only in the context of this queryable.
+    ///
+    /// Also note, that this call may close the least recently used statement
+    /// if statement cache is at its capacity (see. [`stmt_cache_size`]).
     fn prep<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Statement>
     where
         Q: AsRef<str> + Sync + Send + 'a;
 
     /// Closes the given statement.
+    ///
+    /// Usually there is no need to explicitly close statements (see. [`stmt_cache_size`]).
     fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()>;
 
     /// Executes the given statement with the given params.
+    ///
+    /// It'll prepare `stmt`, if necessary.
     fn exec_iter<'a: 's, 's, Q, P>(
         &'a mut self,
         stmt: &'s Q,
@@ -137,13 +147,13 @@ pub trait Queryable: Send {
         Q: AsRef<str> + Send + Sync + 'a,
         T: FromRow + Send + 'static;
 
-    /// Performs the given query and returns the firt row of the first result set.
+    /// Performs the given query and returns the first row of the first result set.
     fn query_first<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Option<T>>
     where
         Q: AsRef<str> + Send + Sync + 'a,
         T: FromRow + Send + 'static;
 
-    /// Performs the given query and returns the firt row of the first result set.
+    /// Performs the given query and returns the first row of the first result set.
     fn query_map<'a, T, F, Q, U>(&'a mut self, query: Q, f: F) -> BoxFuture<'a, Vec<U>>
     where
         Q: AsRef<str> + Send + Sync + 'a,
@@ -164,7 +174,9 @@ pub trait Queryable: Send {
     where
         Q: AsRef<str> + Send + Sync + 'a;
 
-    /// Prepares the given statement, and exectues it with each item in the given params iterator.
+    /// Exectues the given statement with each item in the given params iterator.
+    ///
+    /// It'll prepare `stmt`, if necessary.
     fn exec_batch<'a: 'b, 'b, S, P, I>(
         &'a mut self,
         stmt: &'b S,
@@ -177,6 +189,8 @@ pub trait Queryable: Send {
         P: Into<Params> + Send;
 
     /// Exectues the given statement and collects the first result set.
+    ///
+    /// It'll prepare `stmt`, if necessary.
     fn exec<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, Vec<T>>
     where
         S: StatementLike + ?Sized + 'b,
@@ -184,6 +198,8 @@ pub trait Queryable: Send {
         T: FromRow + Send + 'static;
 
     /// Exectues the given statement and returns the first row of the first result set.
+    ///
+    /// It'll prepare `stmt`, if necessary.
     fn exec_first<'a: 'b, 'b, T, S, P>(
         &'a mut self,
         stmt: &'b S,
@@ -195,6 +211,8 @@ pub trait Queryable: Send {
         T: FromRow + Send + 'static;
 
     /// Exectues the given stmt and folds the first result set to a signel value.
+    ///
+    /// It'll prepare `stmt`, if necessary.
     fn exec_map<'a: 'b, 'b, T, S, P, U, F>(
         &'a mut self,
         stmt: &'b S,
@@ -209,6 +227,8 @@ pub trait Queryable: Send {
         U: Send + 'a;
 
     /// Exectues the given stmt and folds the first result set to a signel value.
+    ///
+    /// It'll prepare `stmt`, if necessary.
     fn exec_fold<'a: 'b, 'b, T, S, P, U, F>(
         &'a mut self,
         stmt: &'b S,

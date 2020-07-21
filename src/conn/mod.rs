@@ -146,6 +146,7 @@ impl ConnInner {
     }
 }
 
+/// MySql server connection.
 #[derive(Debug)]
 pub struct Conn {
     inner: Box<ConnInner>,

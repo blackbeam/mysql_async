@@ -125,6 +125,8 @@ impl StmtInner {
 }
 
 /// Prepared statement.
+///
+/// Statement is only valid for connection with id `Statement::connection_id()`.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Statement {
     pub(crate) inner: Arc<StmtInner>,
@@ -139,26 +141,32 @@ impl Statement {
         }
     }
 
+    /// Returned columns.
     pub fn columns(&self) -> &[Column] {
         self.inner.columns()
     }
 
+    /// Requred parameters.
     pub fn params(&self) -> &[Column] {
         self.inner.params()
     }
 
+    /// MySql statement identifier.
     pub fn id(&self) -> u32 {
         self.inner.id()
     }
 
+    /// MySql connection identifier.
     pub fn connection_id(&self) -> u32 {
         self.inner.connection_id()
     }
 
+    /// Number of parameters.
     pub fn num_params(&self) -> u16 {
         self.inner.num_params()
     }
 
+    /// Number of columns.
     pub fn num_columns(&self) -> u16 {
         self.inner.num_columns()
     }
