@@ -121,9 +121,11 @@ impl fmt::Display for IsolationLevel {
 
 /// This struct represents MySql transaction.
 ///
-/// `Transaction` is just a sugar for `START TRANSACTION`, `ROLLBACK` and `COMMIT` queries, so one
-/// should note that it is easy to mess things up calling this queries manually. Also you will get
-/// `NestedTransaction` error if you call `transaction.start_transaction(_)`.
+/// `Transaction` is just a sugar for `START TRANSACTION`, `ROLLBACK` and `COMMIT` queries,
+/// so please note, that it is easy to mess things up calling this queries manually.
+///
+/// You should alwasy call either `commit` or `rollback`, otherwise transaction will be rolled
+/// back implicitly when corresponding connection is dropped or queried.
 #[derive(Debug)]
 pub struct Transaction<'a>(pub(crate) Connection<'a, 'static>);
 

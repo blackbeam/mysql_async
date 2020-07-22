@@ -101,7 +101,7 @@ impl Conn {
     }
 }
 
-/// Methods of this trait used to execute database queries.
+/// Methods of this trait are used to execute database queries.
 pub trait Queryable: Send {
     /// Executes `COM_PING`.
     fn ping(&mut self) -> BoxFuture<'_, ()>;
