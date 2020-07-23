@@ -11,8 +11,11 @@ use crate::{BoxFuture, Pool};
 /// Connection.
 #[derive(Debug)]
 pub enum Connection<'a, 't: 'a> {
+    /// Just a connection.
     Conn(crate::Conn),
+    /// Mutable reference to a connection.
     ConnMut(&'a mut crate::Conn),
+    /// Connection wrapped in a transaction.
     Tx(&'a mut crate::Transaction<'t>),
 }
 
@@ -56,8 +59,11 @@ impl std::ops::DerefMut for Connection<'_, '_> {
     }
 }
 
+/// Result of `ToConnection::to_connection` call.
 pub enum ToConnectionResult<'a, 't: 'a> {
+    /// Connection is immediately available.
     Immediate(Connection<'a, 't>),
+    /// We need some time to get a connection and the operation itself may fail.
     Mediate(BoxFuture<'a, Connection<'a, 't>>),
 }
 

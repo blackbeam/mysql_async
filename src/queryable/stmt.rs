@@ -24,18 +24,20 @@ use crate::{
     Column, Params, Value,
 };
 
+/// Result of a `StatementLike::to_statement` call.
 pub enum ToStatementResult<'a> {
+    /// Statement is immediately available.
     Immediate(Statement),
+    /// We need some time to get a statement and the operation itself may fail.
     Mediate(crate::BoxFuture<'a, Statement>),
 }
 
 pub trait StatementLike: Send + Sync {
-    /// Returns statement.
+    /// Returns a statement.
     fn to_statement<'a>(&'a self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>;
 }
 
 impl StatementLike for str {
-    /// Returns statement.
     fn to_statement<'a>(&'a self, conn: &'a mut crate::Conn) -> ToStatementResult<'a> {
         let fut = crate::BoxFuture(Box::pin(async move {
             let (named_params, raw_query) = parse_named_params(self)?;
@@ -55,6 +57,7 @@ impl StatementLike for Statement {
     }
 }
 
+/// Statement data.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct StmtInner {
     pub(crate) raw_query: Arc<str>,

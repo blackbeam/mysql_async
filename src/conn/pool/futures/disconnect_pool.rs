@@ -21,7 +21,6 @@ use std::sync::{atomic, Arc};
 
 /// Future that disconnects this pool from a server and resolves to `()`.
 ///
-///
 /// **Note:** This Future won't resolve until all active connections, taken from it,
 /// are dropped or disonnected. Also all pending and new `GetConn`'s will resolve to error.
 #[derive(Debug)]

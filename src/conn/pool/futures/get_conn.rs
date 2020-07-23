@@ -19,6 +19,7 @@ use crate::{
     BoxFuture,
 };
 
+/// States of the GetConn future.
 #[derive(Debug)]
 pub(crate) enum GetConnInner {
     New,

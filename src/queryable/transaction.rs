@@ -23,7 +23,7 @@ pub enum TxStatus {
 }
 
 impl Conn {
-    /// Returns a future that starts a transaction.
+    /// Starts a transaction.
     pub async fn start_transaction(&mut self, options: TxOpts) -> Result<Transaction<'_>> {
         Transaction::new(self, options).await
     }

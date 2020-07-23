@@ -86,6 +86,7 @@ impl Exchange {
     }
 }
 
+/// Connection pool data.
 #[derive(Debug)]
 pub struct Inner {
     close: atomic::AtomicBool,
@@ -133,18 +134,18 @@ impl Pool {
         Ok(Pool::new(opts))
     }
 
-    /// Returns a future that resolves to [`Conn`].
+    /// Async function that resolves to `Conn`.
     pub fn get_conn(&self) -> GetConn {
         GetConn::new(self)
     }
 
-    /// Returns a future that starts a new transaction.
+    /// Starts a new transaction.
     pub async fn start_transaction(&self, options: TxOpts) -> Result<Transaction<'static>> {
         let conn = self.get_conn().await?;
         Transaction::new(conn, options).await
     }
 
-    /// Returns a future that disconnects this pool from the server and resolves to `()`.
+    /// Async function that disconnects this pool from the server and resolves to `()`.
     ///
     /// **Note:** This Future won't resolve until all active connections, taken from it,
     /// are dropped or disonnected. Also all pending and new `GetConn`'s will resolve to error.

@@ -41,7 +41,7 @@ impl ResultSetMeta {
 
 /// Result of a query or statement execution.
 ///
-/// Represents an asyncronous query result, that may not be fully consumed. Note,
+/// Represents an asynchronous query result, that may not be fully consumed. Note,
 /// that unconsumed query results are dropped implicitly when corresponding connection
 /// is dropped or queried.
 #[derive(Debug)]

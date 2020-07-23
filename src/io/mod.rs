@@ -67,11 +67,10 @@ impl Decoder for PacketCodec {
     }
 }
 
-impl Encoder for PacketCodec {
-    type Item = Vec<u8>;
+impl Encoder<Vec<u8>> for PacketCodec {
     type Error = IoError;
 
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> std::result::Result<(), IoError> {
+    fn encode(&mut self, item: Vec<u8>, dst: &mut BytesMut) -> std::result::Result<(), IoError> {
         Ok(self.0.encode(item, dst)?)
     }
 }

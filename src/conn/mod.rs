@@ -287,11 +287,13 @@ impl Conn {
         Ok(())
     }
 
+    /// Closes the connection.
     async fn close_conn(mut self) -> Result<()> {
         self = self.cleanup().await?;
         self.disconnect().await
     }
 
+    /// Returns true if io stream is encrypted.
     fn is_secure(&self) -> bool {
         if let Some(ref stream) = self.inner.stream {
             stream.is_secure()

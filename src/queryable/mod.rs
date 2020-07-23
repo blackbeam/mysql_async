@@ -102,11 +102,13 @@ impl Conn {
 }
 
 /// Methods of this trait are used to execute database queries.
+///
+/// `Conn` is a `Queryable` as well as `Transaction`.
 pub trait Queryable: Send {
     /// Executes `COM_PING`.
     fn ping(&mut self) -> BoxFuture<'_, ()>;
 
-    /// Performs the given query.
+    /// Performs the given query and returns the result.
     fn query_iter<'a, Q>(
         &'a mut self,
         query: Q,
@@ -129,7 +131,7 @@ pub trait Queryable: Send {
     /// Usually there is no need to explicitly close statements (see. [`stmt_cache_size`]).
     fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()>;
 
-    /// Executes the given statement with the given params.
+    /// Executes the given statement with given params.
     ///
     /// It'll prepare `stmt`, if necessary.
     fn exec_iter<'a: 's, 's, Q, P>(
@@ -174,9 +176,9 @@ pub trait Queryable: Send {
     where
         Q: AsRef<str> + Send + Sync + 'a;
 
-    /// Exectues the given statement with each item in the given params iterator.
+    /// Exectues the given statement for each item in the given params iterator.
     ///
-    /// It'll prepare `stmt`, if necessary.
+    /// It'll prepare `stmt` (once), if necessary.
     fn exec_batch<'a: 'b, 'b, S, P, I>(
         &'a mut self,
         stmt: &'b S,

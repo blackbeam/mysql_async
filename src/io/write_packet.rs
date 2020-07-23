@@ -17,6 +17,9 @@ use std::{
 
 use crate::{connection_like::Connection, error::IoError};
 
+/// Writes a packet.
+#[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct WritePacket<'a, 't> {
     conn: Connection<'a, 't>,
     data: Option<Vec<u8>>,
