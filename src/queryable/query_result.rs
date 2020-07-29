@@ -54,7 +54,7 @@ impl<'a, 't: 'a, P> QueryResult<'a, 't, P>
 where
     P: Protocol,
 {
-    pub(crate) fn new<T: Into<Connection<'a, 't>>>(conn: T) -> Self {
+    pub fn new<T: Into<Connection<'a, 't>>>(conn: T) -> Self {
         QueryResult {
             conn: conn.into(),
             __phantom: PhantomData,
