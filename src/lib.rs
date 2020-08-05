@@ -188,7 +188,7 @@ pub use mysql_common::value::convert::{from_value, from_value_opt, FromValueErro
 pub use mysql_common::value::json::{Deserialized, Serialized};
 
 #[doc(inline)]
-pub use self::queryable::query_result::QueryResult;
+pub use self::queryable::query_result::{NextItem, QueryResult};
 
 #[doc(inline)]
 pub use self::queryable::transaction::{Transaction, TxOpts};

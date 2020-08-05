@@ -39,6 +39,49 @@ impl ResultSetMeta {
     }
 }
 
+// State to indicate current progression of result set processing
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum ResultSetMetaState {
+    None,
+    NotFetched(ResultSetMeta),
+    Fetched(ResultSetMeta),
+}
+
+impl ResultSetMetaState {
+    // Marks result set as fetched
+    pub(crate) fn mark_as_fetched(&mut self) {
+        let meta = match &self {
+            Self::None | Self::Fetched(_) => return,
+            Self::NotFetched(meta) => meta.clone(),
+        };
+
+        *self = Self::Fetched(meta)
+    }
+
+    // Checks if result set was ever fetched
+    pub(crate) fn is_fetched(&self) -> bool {
+        match self {
+            ResultSetMetaState::Fetched(_) => true,
+            _ => false,
+        }
+    }
+
+    // Returns any contained result set meta if any
+    pub(crate) fn meta(&self) -> Option<&ResultSetMeta> {
+        match self {
+            ResultSetMetaState::Fetched(meta) | ResultSetMetaState::NotFetched(meta) => Some(meta),
+            ResultSetMetaState::None => None,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub enum NextItem {
+    None,
+    Row(Row),
+    EmptyResult(Arc<[Column]>),
+}
+
 /// Result of a query or statement execution.
 ///
 /// Represents an asynchronous query result, that may not be fully consumed. Note,
@@ -77,6 +120,16 @@ where
     }
 
     pub async fn next(&mut self) -> Result<Option<Row>> {
+        let row = match self.next_item().await? {
+            NextItem::None => None,
+            NextItem::Row(row) => Some(row),
+            NextItem::EmptyResult(_) => None,
+        };
+
+        Ok(row)
+    }
+
+    pub async fn next_item(&mut self) -> Result<NextItem> {
         loop {
             let columns = match self.conn.get_pending_result() {
                 Some(ResultSetMeta::Text(cols)) | Some(ResultSetMeta::Binary(cols)) => {
@@ -90,26 +143,34 @@ where
                 Ok(Some(columns)) => {
                     if columns.is_empty() {
                         // Empty, but not yet consumed result set.
-                        self.conn.set_pending_result(None);
-                        return Ok(None);
+                        self.conn.drop_pending_result();
+                        return Ok(NextItem::None);
                     } else {
                         // Not yet consumed non-empty result set.
                         let packet = match self.conn.read_packet().await {
                             Ok(packet) => packet,
                             Err(err) => {
                                 // Next row contained an error. No more data will follow.
-                                self.conn.set_pending_result(None);
+                                self.conn.drop_pending_result();
                                 return Err(err);
                             }
                         };
 
                         if P::is_last_result_set_packet(self.conn.capabilities(), &packet) {
                             // `packet` is a result set terminator.
-                            self.conn.set_pending_result(None);
-                            return Ok(None);
+                            let item = if self.conn.is_pending_result_fetched() {
+                                NextItem::None
+                            } else {
+                                NextItem::EmptyResult(columns)
+                            };
+
+                            self.conn.drop_pending_result();
+                            return Ok(item);
                         } else {
                             // `packet` is a result set row.
-                            return Ok(Some(P::read_result_set_row(&packet, columns)?));
+                            let row = P::read_result_set_row(&packet, columns)?;
+                            self.conn.mark_pending_result_as_fetched();
+                            return Ok(NextItem::Row(row));
                         }
                     }
                 }
@@ -122,12 +183,12 @@ where
                         continue;
                     } else {
                         // The end of a query result.
-                        return Ok(None);
+                        return Ok(NextItem::None);
                     }
                 }
                 Err(err) => {
                     // Error result set. No more data will follow.
-                    self.conn.set_pending_result(None);
+                    self.conn.drop_pending_result();
                     return Err(err);
                 }
             }
@@ -336,9 +397,9 @@ impl crate::Conn {
         let packet = self.read_packet().await?;
 
         match packet.get(0) {
-            Some(0x00) => self.set_pending_result(Some(P::result_set_meta(Arc::from(
+            Some(0x00) => self.initialize_pending_result(P::result_set_meta(Arc::from(
                 Vec::new().into_boxed_slice(),
-            )))),
+            ))),
             Some(0xFB) => self.handle_local_infile::<P>(&*packet).await?,
             _ => self.handle_result_set::<P>(&*packet).await?,
         }
@@ -369,9 +430,9 @@ impl crate::Conn {
         }
 
         self.read_packet().await?;
-        self.set_pending_result(Some(P::result_set_meta(Arc::from(
+        self.initialize_pending_result(P::result_set_meta(Arc::from(
             Vec::new().into_boxed_slice(),
-        ))));
+        )));
         Ok(())
     }
 
@@ -385,7 +446,7 @@ impl crate::Conn {
         let column_count = packet.read_lenenc_int()?;
         let columns = self.read_column_defs(column_count as usize).await?;
         let meta = P::result_set_meta(Arc::from(columns.into_boxed_slice()));
-        self.set_pending_result(Some(meta));
+        self.initialize_pending_result(meta);
         Ok(())
     }
 }

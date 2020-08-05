@@ -172,7 +172,7 @@ impl Pool {
             && !conn.inner.disconnected
             && !conn.expired()
             && conn.inner.tx_status == TxStatus::None
-            && conn.inner.pending_result.is_none()
+            && conn.get_pending_result().is_none()
             && !self.inner.close.load(atomic::Ordering::Acquire)
         {
             let mut exchange = self.inner.exchange.lock().unwrap();

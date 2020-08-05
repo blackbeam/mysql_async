@@ -28,6 +28,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::queryable::query_result::ResultSetMetaState;
 use crate::{
     conn::{pool::Pool, stmt_cache::StmtCache},
     consts::{CapabilityFlags, Command, StatusFlags},
@@ -81,7 +82,7 @@ struct ConnInner {
     last_ok_packet: Option<OkPacket<'static>>,
     last_err_packet: Option<ErrPacket<'static>>,
     pool: Option<Pool>,
-    pending_result: Option<ResultSetMeta>,
+    pending_result: ResultSetMetaState,
     tx_status: TxStatus,
     opts: Opts,
     last_io: Instant,
@@ -119,7 +120,7 @@ impl ConnInner {
             stream: None,
             version: (0, 0, 0),
             id: 0,
-            pending_result: None,
+            pending_result: ResultSetMetaState::None,
             pool: None,
             tx_status: TxStatus::None,
             last_io: Instant::now(),
@@ -251,12 +252,26 @@ impl Conn {
     ///
     /// If `Some(_)`, then result is not yet consumed.
     pub(crate) fn get_pending_result(&self) -> Option<&ResultSetMeta> {
-        self.inner.pending_result.as_ref()
+        self.inner.pending_result.meta()
     }
 
-    /// Sets the given pening result metadata for this connection.
-    pub(crate) fn set_pending_result(&mut self, meta: Option<ResultSetMeta>) {
-        self.inner.pending_result = meta;
+    /// Marks pending result as fetched to indicate that result set is not empty
+    pub(crate) fn mark_pending_result_as_fetched(&mut self) {
+        self.inner.pending_result.mark_as_fetched();
+    }
+
+    pub(crate) fn is_pending_result_fetched(&self) -> bool {
+        self.inner.pending_result.is_fetched()
+    }
+
+    // Initializes not yet fetched pending result
+    pub(crate) fn initialize_pending_result(&mut self, meta: ResultSetMeta) {
+        self.inner.pending_result = ResultSetMetaState::NotFetched(meta);
+    }
+
+    // Marks pending result as consumed
+    pub(crate) fn drop_pending_result(&mut self) {
+        self.inner.pending_result = ResultSetMetaState::None;
     }
 
     /// Returns current status flags.
@@ -728,7 +743,7 @@ impl Conn {
     }
 
     pub(crate) async fn drop_result(&mut self) -> Result<()> {
-        match self.inner.pending_result.as_ref() {
+        match self.get_pending_result() {
             Some(ResultSetMeta::Text(_)) => {
                 QueryResult::<'_, '_, TextProtocol>::new(self)
                     .drop_result()
@@ -750,7 +765,7 @@ impl Conn {
     /// The purpose of this function, is to cleanup the connection while returning it to a [`Pool`].
     async fn cleanup(mut self) -> Result<Self> {
         loop {
-            if self.inner.pending_result.is_some() {
+            if self.get_pending_result().is_some() {
                 self.drop_result().await?;
             } else if self.inner.tx_status != TxStatus::None {
                 self.rollback_transaction().await?;
@@ -764,6 +779,7 @@ impl Conn {
 
 #[cfg(test)]
 mod test {
+    use crate::queryable::query_result::NextItem;
     use crate::{
         from_row, params, prelude::*, test_misc::get_opts, Conn, Error, OptsBuilder, TxOpts,
         WhiteListFsLocalInfileHandler,
@@ -1058,6 +1074,82 @@ mod test {
         assert_eq!((String::from("hello"), 123), rows_1[0]);
         assert_eq!((String::from("world"), 231), rows_1[1]);
         assert_eq!((String::from("foo"), 255), rows_2[0]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_report_empty_result_sets_with_extended_next() -> super::Result<()> {
+        let mut conn = Conn::new(get_opts()).await?;
+        conn.query_drop(
+            r"
+            CREATE TEMPORARY TABLE empty_result_sets_with_extended_next_1 (
+                id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                column_value INT UNSIGNED NOT NULL,
+                PRIMARY KEY(id)
+            );
+
+            CREATE TEMPORARY TABLE empty_result_sets_with_extended_next_2 (
+                id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                column_value INT UNSIGNED NOT NULL,
+                PRIMARY KEY(id)
+            );
+
+            CREATE TEMPORARY TABLE empty_result_sets_with_extended_next_3 (
+                id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                column_value INT UNSIGNED NOT NULL,
+                PRIMARY KEY(id)
+            );
+
+            INSERT INTO empty_result_sets_with_extended_next_3 (column_value) VALUES (1), (2);
+        ",
+        )
+        .await?;
+        let mut result = conn
+            .query_iter(
+                r"
+                SELECT * FROM empty_result_sets_with_extended_next_1;
+                SELECT * FROM empty_result_sets_with_extended_next_2;
+                SELECT * FROM empty_result_sets_with_extended_next_3;
+            ",
+            )
+            .await?;
+
+        let item_into_string = |value| match value {
+            NextItem::None => "None".into(),
+            NextItem::EmptyResult(columns) => format!(
+                "EmptyResult({},{})",
+                columns.get(0).unwrap().name_str(),
+                columns.get(1).unwrap().name_str(),
+            ),
+            NextItem::Row(row) => {
+                let row = from_row::<(String, String)>(row);
+                format!("Row({},{})", row.0, row.1)
+            }
+        };
+
+        let rows: Vec<NextItem> = vec![
+            result.next_item().await?,
+            result.next_item().await?,
+            result.next_item().await?,
+            result.next_item().await?,
+            result.next_item().await?,
+        ];
+
+        conn.disconnect().await?;
+
+        assert_eq!(
+            rows.into_iter()
+                .map(item_into_string)
+                .collect::<Vec<String>>(),
+            vec![
+                String::from("EmptyResult(id,column_value)"),
+                String::from("EmptyResult(id,column_value)"),
+                String::from("Row(1,1)"),
+                String::from("Row(2,2)"),
+                String::from("None")
+            ]
+        );
+
         Ok(())
     }
 
