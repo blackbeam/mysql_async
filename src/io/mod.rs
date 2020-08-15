@@ -14,7 +14,7 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::pin_project;
-use tokio::{net::TcpStream, prelude::*};
+use tokio::{io::ErrorKind::Interrupted, net::TcpStream, prelude::*};
 use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 
 use std::{
@@ -36,6 +36,17 @@ use std::{
 };
 
 use crate::{error::IoError, io::socket::Socket, opts::SslOpts};
+
+macro_rules! with_interrupted {
+    ($e:expr) => {
+        loop {
+            match $e {
+                Poll::Ready(Err(err)) if err.kind() == Interrupted => continue,
+                x => break x,
+            }
+        }
+    };
+}
 
 mod read_packet;
 mod socket;
@@ -218,13 +229,14 @@ impl AsyncRead for Endpoint {
         cx: &mut Context,
         buf: &mut [u8],
     ) -> Poll<std::result::Result<usize, tokio::io::Error>> {
-        match self.project() {
+        let mut this = self.project();
+        with_interrupted!(match this {
             EndpointProj::Plain(ref mut stream) => {
                 Pin::new(stream.as_mut().unwrap()).poll_read(cx, buf)
             }
-            EndpointProj::Secure(stream) => stream.poll_read(cx, buf),
-            EndpointProj::Socket(stream) => stream.poll_read(cx, buf),
-        }
+            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_read(cx, buf),
+            EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_read(cx, buf),
+        })
     }
 
     unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
@@ -244,13 +256,14 @@ impl AsyncRead for Endpoint {
     where
         B: BufMut,
     {
-        match self.project() {
+        let mut this = self.project();
+        with_interrupted!(match this {
             EndpointProj::Plain(ref mut stream) => {
                 Pin::new(stream.as_mut().unwrap()).poll_read_buf(cx, buf)
             }
-            EndpointProj::Secure(stream) => stream.poll_read_buf(cx, buf),
-            EndpointProj::Socket(stream) => stream.poll_read_buf(cx, buf),
-        }
+            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_read_buf(cx, buf),
+            EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_read_buf(cx, buf),
+        })
     }
 }
 
@@ -260,39 +273,42 @@ impl AsyncWrite for Endpoint {
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<std::result::Result<usize, tokio::io::Error>> {
-        match self.project() {
+        let mut this = self.project();
+        with_interrupted!(match this {
             EndpointProj::Plain(ref mut stream) => {
                 Pin::new(stream.as_mut().unwrap()).poll_write(cx, buf)
             }
-            EndpointProj::Secure(stream) => stream.poll_write(cx, buf),
-            EndpointProj::Socket(stream) => stream.poll_write(cx, buf),
-        }
+            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_write(cx, buf),
+            EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_write(cx, buf),
+        })
     }
 
     fn poll_flush(
         self: Pin<&mut Self>,
         cx: &mut Context,
     ) -> Poll<std::result::Result<(), tokio::io::Error>> {
-        match self.project() {
+        let mut this = self.project();
+        with_interrupted!(match this {
             EndpointProj::Plain(ref mut stream) => {
                 Pin::new(stream.as_mut().unwrap()).poll_flush(cx)
             }
-            EndpointProj::Secure(stream) => stream.poll_flush(cx),
-            EndpointProj::Socket(stream) => stream.poll_flush(cx),
-        }
+            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_flush(cx),
+            EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_flush(cx),
+        })
     }
 
     fn poll_shutdown(
         self: Pin<&mut Self>,
         cx: &mut Context,
     ) -> Poll<std::result::Result<(), tokio::io::Error>> {
-        match self.project() {
+        let mut this = self.project();
+        with_interrupted!(match this {
             EndpointProj::Plain(ref mut stream) => {
                 Pin::new(stream.as_mut().unwrap()).poll_shutdown(cx)
             }
-            EndpointProj::Secure(stream) => stream.poll_shutdown(cx),
-            EndpointProj::Socket(stream) => stream.poll_shutdown(cx),
-        }
+            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_shutdown(cx),
+            EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_shutdown(cx),
+        })
     }
 }
 

@@ -8,7 +8,10 @@
 
 use bytes::BufMut;
 use pin_project::pin_project;
-use tokio::{io::Error, prelude::*};
+use tokio::{
+    io::{Error, ErrorKind::Interrupted},
+    prelude::*,
+};
 
 use std::{
     io,
@@ -56,7 +59,8 @@ impl AsyncRead for Socket {
         cx: &mut Context,
         buf: &mut [u8],
     ) -> Poll<Result<usize, Error>> {
-        self.project().inner.poll_read(cx, buf)
+        let mut this = self.project();
+        with_interrupted!(this.inner.as_mut().poll_read(cx, buf))
     }
 
     unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
@@ -71,7 +75,8 @@ impl AsyncRead for Socket {
     where
         B: BufMut,
     {
-        self.project().inner.poll_read_buf(cx, buf)
+        let mut this = self.project();
+        with_interrupted!(this.inner.as_mut().poll_read_buf(cx, buf))
     }
 }
 
@@ -81,12 +86,17 @@ impl AsyncWrite for Socket {
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<Result<usize, Error>> {
-        self.project().inner.poll_write(cx, buf)
+        let mut this = self.project();
+        with_interrupted!(this.inner.as_mut().poll_write(cx, buf))
     }
+
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
-        self.project().inner.poll_flush(cx)
+        let mut this = self.project();
+        with_interrupted!(this.inner.as_mut().poll_flush(cx))
     }
+
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
-        self.project().inner.poll_shutdown(cx)
+        let mut this = self.project();
+        with_interrupted!(this.inner.as_mut().poll_shutdown(cx))
     }
 }
