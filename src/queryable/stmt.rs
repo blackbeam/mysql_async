@@ -274,7 +274,7 @@ impl crate::Conn {
                     }
 
                     self.write_command_raw(body).await?;
-                    self.read_result_set::<BinaryProtocol>().await?;
+                    self.read_result_set::<BinaryProtocol>(true).await?;
                     break;
                 }
                 Params::Named(_) => {
@@ -303,7 +303,7 @@ impl crate::Conn {
 
                     let (body, _) = ComStmtExecuteRequestBuilder::new(statement.id()).build(&[]);
                     self.write_command_raw(body).await?;
-                    self.read_result_set::<BinaryProtocol>().await?;
+                    self.read_result_set::<BinaryProtocol>(true).await?;
                     break;
                 }
             }

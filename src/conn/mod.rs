@@ -1530,6 +1530,30 @@ mod test {
     }
 
     #[tokio::test]
+    async fn should_provide_multiresult_set_metadata() -> super::Result<()> {
+        let mut c = Conn::new(get_opts()).await?;
+        c.query_drop("CREATE TEMPORARY TABLE tmp (id INT, foo TEXT)")
+            .await?;
+
+        let mut result = c
+            .query_iter("SELECT 1; SELECT id, foo FROM tmp WHERE 1 = 2; DO 42; SELECT 2;")
+            .await?;
+        assert_eq!(result.columns().map(|x| x.len()).unwrap_or_default(), 1);
+
+        result.for_each(drop).await?;
+        assert_eq!(result.columns().map(|x| x.len()).unwrap_or_default(), 2);
+
+        result.for_each(drop).await?;
+        assert_eq!(result.columns().map(|x| x.len()).unwrap_or_default(), 0);
+
+        result.for_each(drop).await?;
+        assert_eq!(result.columns().map(|x| x.len()).unwrap_or_default(), 1);
+
+        c.disconnect().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn should_handle_local_infile() -> super::Result<()> {
         use std::fs::write;
 
