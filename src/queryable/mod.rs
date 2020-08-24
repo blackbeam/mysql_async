@@ -96,7 +96,7 @@ impl Conn {
     {
         self.write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
             .await?;
-        self.read_result_set::<TextProtocol>().await?;
+        self.read_result_set::<TextProtocol>(true).await?;
         Ok(())
     }
 }

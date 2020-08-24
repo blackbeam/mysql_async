@@ -91,7 +91,6 @@ where
                     if columns.is_empty() {
                         // Empty, but not yet consumed result set.
                         self.conn.set_pending_result(None);
-                        return Ok(None);
                     } else {
                         // Not yet consumed non-empty result set.
                         let packet = match self.conn.read_packet().await {
@@ -106,7 +105,6 @@ where
                         if P::is_last_result_set_packet(self.conn.capabilities(), &packet) {
                             // `packet` is a result set terminator.
                             self.conn.set_pending_result(None);
-                            return Ok(None);
                         } else {
                             // `packet` is a result set row.
                             return Ok(Some(P::read_result_set_row(&packet, columns)?));
@@ -118,8 +116,8 @@ where
                     if self.conn.more_results_exists() {
                         // More data will follow.
                         self.conn.sync_seq_id();
-                        self.conn.read_result_set::<P>().await?;
-                        continue;
+                        self.conn.read_result_set::<P>(false).await?;
+                        return Ok(None);
                     } else {
                         // The end of a query result.
                         return Ok(None);
@@ -329,11 +327,26 @@ where
 
 impl crate::Conn {
     /// Will read result set and write pending result into `self` (if any).
-    pub(crate) async fn read_result_set<P>(&mut self) -> Result<()>
+    pub(crate) async fn read_result_set<P>(&mut self, is_first_result_set: bool) -> Result<()>
     where
         P: Protocol,
     {
-        let packet = self.read_packet().await?;
+        let packet = match self.read_packet().await {
+            Ok(packet) => packet,
+            Err(err @ Error::Server(_)) if is_first_result_set => {
+                // shortcut to emit an error right to the caller of a query/execute
+                return Err(err);
+            }
+            Err(Error::Server(error)) => {
+                // error will be consumed as a part of a multi-result set
+                self.set_pending_result(Some(ResultSetMeta::Error(error)));
+                return Ok(());
+            }
+            Err(err) => {
+                // non-server errors are fatal
+                return Err(err);
+            }
+        };
 
         match packet.get(0) {
             Some(0x00) => self.set_pending_result(Some(P::result_set_meta(Arc::from(
