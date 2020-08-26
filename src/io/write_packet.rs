@@ -11,6 +11,7 @@ use futures_sink::Sink;
 
 use std::{
     future::Future,
+    io::{Error, ErrorKind::UnexpectedEof},
     pin::Pin,
     task::{Context, Poll},
 };
@@ -38,21 +39,31 @@ impl Future for WritePacket<'_, '_> {
     type Output = std::result::Result<(), IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.data.is_some() {
-            let codec = Pin::new(self.conn.stream_mut().codec.as_mut().expect("must be here"));
-            ready!(codec.poll_ready(cx))?;
+        let Self {
+            ref mut conn,
+            ref mut data,
+        } = *self;
+
+        match conn.stream_mut() {
+            Ok(stream) => {
+                if data.is_some() {
+                    let codec = Pin::new(stream.codec.as_mut().expect("must be here"));
+                    ready!(codec.poll_ready(cx))?;
+                }
+
+                if let Some(data) = data.take() {
+                    let codec = Pin::new(stream.codec.as_mut().expect("must be here"));
+                    // to get here, stream must be ready
+                    codec.start_send(data)?;
+                }
+
+                let codec = Pin::new(stream.codec.as_mut().expect("must be here"));
+
+                ready!(codec.poll_flush(cx))?;
+
+                Poll::Ready(Ok(()))
+            }
+            Err(err) => Poll::Ready(Err(Error::new(UnexpectedEof, err).into())),
         }
-
-        if let Some(data) = self.data.take() {
-            let codec = Pin::new(self.conn.stream_mut().codec.as_mut().expect("must be here"));
-            // to get here, stream must be ready
-            codec.start_send(data)?;
-        }
-
-        let codec = Pin::new(self.conn.stream_mut().codec.as_mut().expect("must be here"));
-
-        ready!(codec.poll_flush(cx))?;
-
-        Poll::Ready(Ok(()))
     }
 }

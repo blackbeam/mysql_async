@@ -241,7 +241,7 @@ impl Pool {
                     return Poll::Ready(Ok(GetConn {
                         pool: Some(self.clone()),
                         inner: GetConnInner::Checking(BoxFuture(Box::pin(async move {
-                            conn.stream_mut().check().await?;
+                            conn.stream_mut()?.check().await?;
                             Ok(conn)
                         }))),
                     }));
