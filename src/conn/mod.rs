@@ -136,13 +136,11 @@ impl ConnInner {
 
     /// Returns mutable reference to a connection stream.
     ///
-    /// # Panic
-    ///
-    /// Will panic if stream is already taken.
-    fn stream_mut(&mut self) -> &mut Stream {
+    /// Returns `DriverError::ConnectionClosed` if there is no stream.
+    fn stream_mut(&mut self) -> Result<&mut Stream> {
         self.stream
             .as_mut()
-            .expect("call to stream_mut on invalid connection")
+            .ok_or(DriverError::ConnectionClosed.into())
     }
 }
 
@@ -196,7 +194,7 @@ impl Conn {
             .unwrap_or_default()
     }
 
-    pub(crate) fn stream_mut(&mut self) -> &mut Stream {
+    pub(crate) fn stream_mut(&mut self) -> Result<&mut Stream> {
         self.inner.stream_mut()
     }
 
@@ -280,10 +278,12 @@ impl Conn {
 
     /// Disconnects this connection from server.
     pub async fn disconnect(mut self) -> Result<()> {
-        self.inner.disconnected = true;
-        self.write_command_data(Command::COM_QUIT, &[]).await?;
-        let stream = self.take_stream();
-        stream.close().await?;
+        if !self.inner.disconnected {
+            self.inner.disconnected = true;
+            self.write_command_data(Command::COM_QUIT, &[]).await?;
+            let stream = self.take_stream();
+            stream.close().await?;
+        }
         Ok(())
     }
 
@@ -362,7 +362,7 @@ impl Conn {
             let conn = self;
             let ssl_opts = conn.opts().ssl_opts().cloned().expect("unreachable");
             let domain = conn.opts().ip_or_hostname().into();
-            conn.stream_mut().make_secure(domain, ssl_opts).await?;
+            conn.stream_mut()?.make_secure(domain, ssl_opts).await?;
             Ok(())
         } else {
             Ok(())

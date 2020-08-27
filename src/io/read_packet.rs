@@ -32,7 +32,11 @@ impl Future for ReadPacket<'_, '_> {
     type Output = std::result::Result<Vec<u8>, IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let packet_opt = ready!(Pin::new(self.0.stream_mut()).poll_next(cx)).transpose()?;
+        let packet_opt = match self.0.stream_mut() {
+            Ok(stream) => ready!(Pin::new(stream).poll_next(cx)).transpose()?,
+            // `ClosedConnection` error.
+            Err(_) => None,
+        };
 
         match packet_opt {
             Some(packet) => {
