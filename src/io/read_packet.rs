@@ -34,7 +34,7 @@ impl Future for ReadPacket<'_, '_> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let packet_opt = match self.0.stream_mut() {
             Ok(stream) => ready!(Pin::new(stream).poll_next(cx)).transpose()?,
-            // `ClosedConnection` error.
+            // `ConnectionClosed` error.
             Err(_) => None,
         };
 

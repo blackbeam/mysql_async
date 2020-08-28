@@ -149,9 +149,6 @@ pub enum DriverError {
 
     #[error("Bad compressed packet header.")]
     BadCompressedPacketHeader,
-
-    #[error("Connection is closed.")]
-    ClosedConnection,
 }
 
 impl From<DriverError> for Error {
