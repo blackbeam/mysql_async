@@ -70,7 +70,9 @@ impl Future for Recycler {
                 } else if $conn.inner.tx_status != TxStatus::None
                     || $conn.inner.pending_result.is_some()
                 {
-                    $self.cleaning.push(BoxFuture(Box::pin($conn.cleanup())));
+                    $self
+                        .cleaning
+                        .push(BoxFuture(Box::pin($conn.cleanup_for_pool())));
                 } else if $conn.expired() || close {
                     $self.discard.push(BoxFuture(Box::pin($conn.close_conn())));
                 } else {

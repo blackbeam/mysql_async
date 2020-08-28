@@ -687,6 +687,41 @@ mod test {
         }
     }
 
+    #[tokio::test]
+    async fn issue_126_should_cleanup_errors_in_multiresult_sets() -> super::Result<()> {
+        let pool_constraints = PoolConstraints::new(0, 1).unwrap();
+        let pool_opts = PoolOpts::default().with_constraints(pool_constraints);
+
+        let pool = Pool::new(get_opts().pool_opts(pool_opts));
+
+        for _ in 0u8..100 {
+            pool.get_conn()
+                .await?
+                .query_iter("DO '42'; BLABLA;")
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_ignore_non_fatal_errors_while_returning_to_a_pool() -> super::Result<()> {
+        let pool_constraints = PoolConstraints::new(1, 1).unwrap();
+        let pool_opts = PoolOpts::default().with_constraints(pool_constraints);
+
+        let pool = Pool::new(get_opts().pool_opts(pool_opts));
+        let id = pool.get_conn().await?.id();
+
+        // non-fatal errors are ignored
+        for _ in 0u8..10 {
+            let mut conn = pool.get_conn().await?;
+            conn.query_iter("DO '42'; BLABLA;").await?;
+            assert_eq!(id, conn.id());
+        }
+
+        Ok(())
+    }
+
     #[cfg(feature = "nightly")]
     mod bench {
         use futures_util::future::{FutureExt, TryFutureExt};

@@ -78,8 +78,9 @@ impl Conn {
     /// where `Transaction` was dropped without an explicit call to `commit` or `rollback`,
     /// or where `QueryResult` was dropped without being consumed.
     ///
-    /// The only difference betwee this function and [`Conn::cleanup`] is that this function
-    /// won't rollback existing transaction.
+    /// The difference betwee this function and [`Conn::cleanup`] is that this function
+    /// won't rollback existing transaction. Another difference, is that this function
+    /// won't ignore non-fatal errors.
     pub(crate) async fn clean_dirty(&mut self) -> Result<()> {
         self.drop_result().await?;
         if self.get_tx_status() == TxStatus::RequiresRollback {

@@ -62,7 +62,7 @@ fn disconnect(mut conn: Conn) {
         // this might fail if, say, the runtime is shutting down, but we've done what we could
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                if let Ok(conn) = conn.cleanup().await {
+                if let Ok(conn) = conn.cleanup_for_pool().await {
                     let _ = conn.disconnect().await;
                 }
             });
@@ -252,9 +252,12 @@ impl Conn {
         self.inner.pending_result.as_ref()
     }
 
-    /// Sets the given pening result metadata for this connection.
-    pub(crate) fn set_pending_result(&mut self, meta: Option<ResultSetMeta>) {
-        self.inner.pending_result = meta;
+    /// Sets the given pening result metadata for this connection. Returns the previous value.
+    pub(crate) fn set_pending_result(
+        &mut self,
+        meta: Option<ResultSetMeta>,
+    ) -> Option<ResultSetMeta> {
+        std::mem::replace(&mut self.inner.pending_result, meta)
     }
 
     /// Returns current status flags.
@@ -289,7 +292,7 @@ impl Conn {
 
     /// Closes the connection.
     async fn close_conn(mut self) -> Result<()> {
-        self = self.cleanup().await?;
+        self = self.cleanup_for_pool().await?;
         self.disconnect().await
     }
 
@@ -727,35 +730,50 @@ impl Conn {
             .contains(StatusFlags::SERVER_MORE_RESULTS_EXISTS)
     }
 
+    /// The purpose of this function is to cleanup a pending result set
+    /// for prematurely dropeed connection or query result.
     pub(crate) async fn drop_result(&mut self) -> Result<()> {
-        match self.inner.pending_result.as_ref() {
+        match self.inner.pending_result {
             Some(ResultSetMeta::Text(_)) => {
                 QueryResult::<'_, '_, TextProtocol>::new(self)
                     .drop_result()
-                    .await?;
+                    .await
             }
             Some(ResultSetMeta::Binary(_)) => {
                 QueryResult::<'_, '_, BinaryProtocol>::new(self)
                     .drop_result()
-                    .await?;
+                    .await
             }
-            Some(ResultSetMeta::Error(_)) | None => (),
+            Some(ResultSetMeta::Error(_)) => match self.set_pending_result(None) {
+                Some(ResultSetMeta::Error(err)) => Err(err.into()),
+                _ => unreachable!(),
+            },
+            None => Ok(()),
         }
-
-        Ok(())
     }
 
     /// This function will drop pending result and rollback a transaction, if needed.
     ///
     /// The purpose of this function, is to cleanup the connection while returning it to a [`Pool`].
-    async fn cleanup(mut self) -> Result<Self> {
+    async fn cleanup_for_pool(mut self) -> Result<Self> {
         loop {
-            if self.inner.pending_result.is_some() {
-                self.drop_result().await?;
+            let result = if self.inner.pending_result.is_some() {
+                self.drop_result().await
             } else if self.inner.tx_status != TxStatus::None {
-                self.rollback_transaction().await?;
+                self.rollback_transaction().await
             } else {
                 break;
+            };
+
+            // The connection was dropped and we assume that it was dropped intentionally,
+            // so we'll ignore non-fatal errors during cleanup (also there is no direct caller
+            // to return this error to).
+            if let Err(err) = result {
+                if err.is_fatal() {
+                    // This means that connection is completely broken
+                    // and shouldn't return to a pool.
+                    return Err(err);
+                }
             }
         }
         Ok(self)
@@ -991,6 +1009,19 @@ mod test {
         let result: Option<u8> = conn.query_first("SELECT COUNT(*) FROM tmp").await?;
         conn.disconnect().await?;
         assert_eq!(result, Some(1_u8));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropped_query_result_should_emit_errors_on_cleanup() -> super::Result<()> {
+        use crate::{Error::Server, ServerError};
+        let mut conn = Conn::new(get_opts()).await?;
+        conn.query_iter("SELECT '1'; BLABLA;").await?;
+        assert!(matches!(
+            conn.query_drop("DO 42;").await.unwrap_err(),
+            Server(ServerError { code: 1064, .. })
+        ));
+        conn.disconnect().await?;
         Ok(())
     }
 

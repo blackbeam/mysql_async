@@ -38,6 +38,16 @@ pub enum Error {
     Url(#[source] UrlError),
 }
 
+impl Error {
+    /// Returns true if the error means that connection is broken.
+    pub fn is_fatal(&self) -> bool {
+        match self {
+            Error::Driver(_) | Error::Io(_) | Error::Other(_) | Error::Url(_) => true,
+            Error::Server(_) => false,
+        }
+    }
+}
+
 /// This type enumerates IO errors.
 #[derive(Debug, Error)]
 pub enum IoError {
