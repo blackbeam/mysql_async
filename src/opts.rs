@@ -136,7 +136,7 @@ pub struct SslOpts {
 }
 
 impl SslOpts {
-    /// Sets path to the pkcs12 archive.
+    /// Sets path to the pkcs12 archive (in `der` format).
     pub fn with_pkcs12_path<T: Into<Cow<'static, Path>>>(mut self, pkcs12_path: Option<T>) -> Self {
         self.pkcs12_path = pkcs12_path.map(Into::into);
         self
@@ -148,7 +148,7 @@ impl SslOpts {
         self
     }
 
-    /// Sets path to a der certificate of the root that connector will trust.
+    /// Sets path to a `pem` or `der` certificate of the root that connector will trust.
     pub fn with_root_cert_path<T: Into<Cow<'static, Path>>>(
         mut self,
         root_cert_path: Option<T>,
