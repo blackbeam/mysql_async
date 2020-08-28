@@ -41,9 +41,34 @@ impl ResultSetMeta {
 
 /// Result of a query or statement execution.
 ///
-/// Represents an asynchronous query result, that may not be fully consumed. Note,
-/// that unconsumed query results are dropped implicitly when corresponding connection
-/// is dropped or queried.
+/// Represents an asynchronous query result, that may not be fully consumed.
+///
+/// # Note
+///
+/// Unconsumed query results are dropped implicitly when corresponding connection
+/// is dropped or queried. Also note, that in this case all remaining errors will be
+/// emitted to the caller:
+///
+/// ```rust
+/// # use mysql_async::test_misc::get_opts;
+/// # #[tokio::main]
+/// # async fn main() -> mysql_async::Result<()> {
+/// use mysql_async::*;
+/// use mysql_async::prelude::*;
+/// let mut conn = Conn::new(get_opts()).await?;
+///
+/// // second result set will contain an error,
+/// // but the first result set is ok, so this line will pass
+/// conn.query_iter("DO 1; BLABLA;").await?;
+/// // `QueryResult` was dropped withot being consumed
+///
+/// // driver must cleanup any unconsumed result to perform another query on `conn`,
+/// // so this operation will be performed implicitly, but the unconsumed result
+/// // contains an error claiming about 'BLABLA', so this error will be emitted here:
+/// assert!(conn.query_iter("DO 1").await.unwrap_err().to_string().contains("BLABLA"));
+///
+/// # conn.disconnect().await }
+/// ```
 #[derive(Debug)]
 pub struct QueryResult<'a, 't: 'a, P> {
     conn: Connection<'a, 't>,
