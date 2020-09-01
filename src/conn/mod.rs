@@ -1390,6 +1390,10 @@ mod test {
         transaction
             .query_drop("INSERT INTO tmp VALUES (1, 'foo'), (2, 'bar')")
             .await?;
+        assert_eq!(transaction.last_insert_id(), None);
+        assert_eq!(transaction.affected_rows(), 2);
+        assert_eq!(transaction.get_warnings(), 0);
+        assert_eq!(transaction.info(), "Records: 2  Duplicates: 0  Warnings: 0");
         transaction.commit().await?;
         let output_opt = conn.query_first("SELECT COUNT(*) FROM tmp").await?;
         assert_eq!(output_opt, Some((2u8,)));

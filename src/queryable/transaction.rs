@@ -6,7 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use std::fmt;
+use std::{fmt, ops::Deref};
 
 use crate::{connection_like::Connection, error::*, queryable::Queryable, Conn};
 
@@ -188,6 +188,14 @@ impl<'a> Transaction<'a> {
         result.drop_result().await?;
         self.0.set_tx_status(TxStatus::None);
         Ok(())
+    }
+}
+
+impl Deref for Transaction<'_> {
+    type Target = Conn;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
     }
 }
 
