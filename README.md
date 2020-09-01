@@ -2,7 +2,9 @@
 
 Tokio based asynchronous MySql client library for rust programming language.
 
-[![CircleCI](https://circleci.com/gh/blackbeam/mysql_async/tree/master.svg?style=shield)](https://circleci.com/gh/blackbeam/mysql_async/tree/master)
+[![Gitter](https://badges.gitter.im/rust-mysql/community.svg)](https://gitter.im/rust-mysql/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
+
+[![Build Status](https://dev.azure.com/aikorsky/mysql%20Rust/_apis/build/status/blackbeam.mysql_async?branchName=master)](https://dev.azure.com/aikorsky/mysql%20Rust/_build/latest?definitionId=2&branchName=master)
 [![](https://meritbadge.herokuapp.com/mysql_async)](https://crates.io/crates/mysql_async)
 [![](https://img.shields.io/crates/d/mysql_async.svg)](https://crates.io/crates/mysql_async)
 [![API Documentation on docs.rs](https://docs.rs/mysql_async/badge.svg)](https://docs.rs/mysql_async)
