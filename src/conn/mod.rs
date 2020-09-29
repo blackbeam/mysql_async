@@ -783,7 +783,7 @@ impl Conn {
 #[cfg(test)]
 mod test {
     use crate::{
-        from_row, params, prelude::*, test_misc::get_opts, Conn, Error, OptsBuilder, TxOpts,
+        from_row, params, prelude::*, test_misc::get_opts, Conn, Error, OptsBuilder, Pool, TxOpts,
         WhiteListFsLocalInfileHandler,
     };
 
@@ -1585,6 +1585,43 @@ mod test {
         assert_eq!(result.columns().map(|x| x.len()).unwrap_or_default(), 1);
 
         c.disconnect().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_expose_query_result_metadata() -> super::Result<()> {
+        let pool = Pool::new(get_opts());
+        let mut c = pool.get_conn().await?;
+
+        c.query_drop(
+            r"
+            CREATE TEMPORARY TABLE `foo`
+                ( `id` SERIAL
+                , `bar_id` varchar(36) NOT NULL
+                , `baz_id` varchar(36) NOT NULL
+                , `ctime` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP()
+                , PRIMARY KEY (`id`)
+                , KEY `bar_idx` (`bar_id`)
+                , KEY `baz_idx` (`baz_id`)
+            );",
+        )
+        .await?;
+
+        const QUERY: &str = "INSERT INTO foo (bar_id, baz_id) VALUES (?, ?)";
+        let params = ("qwerty", "data.employee_id");
+
+        let query_result = c.exec_iter(QUERY, params).await?;
+        assert_eq!(query_result.last_insert_id(), Some(1));
+        query_result.drop_result().await?;
+
+        c.exec_drop(QUERY, params).await?;
+        assert_eq!(c.last_insert_id(), Some(2));
+
+        let mut tx = c.start_transaction(Default::default()).await?;
+
+        tx.exec_drop(QUERY, params).await?;
+        assert_eq!(tx.last_insert_id(), Some(3));
+
         Ok(())
     }
 
