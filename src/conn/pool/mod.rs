@@ -365,14 +365,16 @@ mod test {
             let ids = try_join_all(connections)
                 .await?
                 .into_iter()
-                .map(|conn| (conn.id(),))
+                .map(|conn| conn.id())
                 .collect::<Vec<_>>();
 
             // get_conn should work if connection is available and alive
             pool.get_conn().await?;
 
             // now we'll kill connections..
-            master.exec_batch("KILL ?", ids).await?;
+            for id in ids {
+                master.query_drop(&format!("KILL {}", id)).await?;
+            }
 
             // now check, that they're still in the pool..
             assert_eq!(ex_field!(pool, available).len(), NUM_CONNS);
