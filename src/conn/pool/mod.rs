@@ -478,6 +478,9 @@ mod test {
         // then, wait for ttl_check_interval
         tokio::time::delay_for(TTL_CHECK_INTERVAL).await;
 
+        // wait a bit more to let the connections be reclaimed by the ttl check
+        tokio::time::delay_for(std::time::Duration::from_millis(200)).await;
+
         // check that we have the expected number of connections
         assert_eq!(ex_field!(pool_clone, available).len(), POOL_MIN);
 
