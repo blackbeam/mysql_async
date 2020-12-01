@@ -6,16 +6,14 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use bytes::BufMut;
 use pin_project::pin_project;
 use tokio::{
-    io::{Error, ErrorKind::Interrupted},
+    io::{Error, ErrorKind::Interrupted, ReadBuf},
     prelude::*,
 };
 
 use std::{
     io,
-    mem::MaybeUninit,
     path::Path,
     pin::Pin,
     task::{Context, Poll},
@@ -56,27 +54,11 @@ impl Socket {
 impl AsyncRead for Socket {
     fn poll_read(
         self: Pin<&mut Self>,
-        cx: &mut Context,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, Error>> {
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<Result<(), Error>> {
         let mut this = self.project();
         with_interrupted!(this.inner.as_mut().poll_read(cx, buf))
-    }
-
-    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
-        self.inner.prepare_uninitialized_buffer(buf)
-    }
-
-    fn poll_read_buf<B>(
-        self: Pin<&mut Self>,
-        cx: &mut Context,
-        buf: &mut B,
-    ) -> Poll<Result<usize, Error>>
-    where
-        B: BufMut,
-    {
-        let mut this = self.project();
-        with_interrupted!(this.inner.as_mut().poll_read_buf(cx, buf))
     }
 }
 

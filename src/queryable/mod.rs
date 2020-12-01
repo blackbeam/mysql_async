@@ -156,7 +156,7 @@ pub trait Queryable: Send {
         Q: AsRef<str> + Send + Sync + 'a,
         T: FromRow + Send + 'static;
 
-    /// Performs the given query and returns the first row of the first result set.
+    /// Performs the given query and maps each row of the first result set.
     fn query_map<'a, T, F, Q, U>(&'a mut self, query: Q, f: F) -> BoxFuture<'a, Vec<U>>
     where
         Q: AsRef<str> + Send + Sync + 'a,
@@ -213,7 +213,7 @@ pub trait Queryable: Send {
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static;
 
-    /// Exectues the given stmt and folds the first result set to a signel value.
+    /// Exectues the given stmt and maps each row of the first result set.
     ///
     /// It'll prepare `stmt`, if necessary.
     fn exec_map<'a: 'b, 'b, T, S, P, U, F>(

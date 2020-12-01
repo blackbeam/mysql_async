@@ -8,13 +8,18 @@
 
 pub use self::{read_packet::ReadPacket, write_packet::WritePacket};
 
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 use futures_core::{ready, stream};
 use futures_util::stream::{FuturesUnordered, StreamExt};
+use mio::net::{TcpKeepalive, TcpSocket};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::pin_project;
-use tokio::{io::ErrorKind::Interrupted, net::TcpStream, prelude::*};
+use tokio::{
+    io::{ErrorKind::Interrupted, ReadBuf},
+    net::TcpStream,
+    prelude::*,
+};
 use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 
 use std::{
@@ -26,7 +31,7 @@ use std::{
         ErrorKind::{NotConnected, Other, UnexpectedEof},
         Read,
     },
-    mem::MaybeUninit,
+    net::SocketAddr,
     net::ToSocketAddrs,
     ops::{Deref, DerefMut},
     path::Path,
@@ -90,7 +95,7 @@ impl Encoder<Vec<u8>> for PacketCodec {
 #[derive(Debug)]
 pub(crate) enum Endpoint {
     Plain(Option<TcpStream>),
-    Secure(#[pin] tokio_tls::TlsStream<TcpStream>),
+    Secure(#[pin] tokio_native_tls::TlsStream<TcpStream>),
     Socket(#[pin] Socket),
 }
 
@@ -102,7 +107,7 @@ struct CheckTcpStream<'a>(&'a mut TcpStream);
 
 impl Future for CheckTcpStream<'_> {
     type Output = io::Result<()>;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let buf = &mut [0_u8];
         match self.0.poll_peek(cx, buf) {
             Poll::Ready(Ok(0)) => Poll::Ready(Err(io::Error::new(UnexpectedEof, "broken pipe"))),
@@ -122,7 +127,7 @@ impl Endpoint {
                 Ok(())
             }
             Endpoint::Secure(tls_stream) => {
-                CheckTcpStream(tls_stream.get_mut()).await?;
+                CheckTcpStream(tls_stream.get_mut().get_mut().get_mut()).await?;
                 Ok(())
             }
             Endpoint::Socket(socket) => {
@@ -141,22 +146,13 @@ impl Endpoint {
         }
     }
 
-    pub fn set_keepalive_ms(&self, ms: Option<u32>) -> io::Result<()> {
-        let ms = ms.map(|val| Duration::from_millis(u64::from(val)));
-        match *self {
-            Endpoint::Plain(Some(ref stream)) => stream.set_keepalive(ms)?,
-            Endpoint::Plain(None) => unreachable!(),
-            Endpoint::Secure(ref stream) => stream.get_ref().set_keepalive(ms)?,
-            Endpoint::Socket(_) => (/* inapplicable */),
-        }
-        Ok(())
-    }
-
     pub fn set_tcp_nodelay(&self, val: bool) -> io::Result<()> {
         match *self {
             Endpoint::Plain(Some(ref stream)) => stream.set_nodelay(val)?,
             Endpoint::Plain(None) => unreachable!(),
-            Endpoint::Secure(ref stream) => stream.get_ref().set_nodelay(val)?,
+            Endpoint::Secure(ref stream) => {
+                stream.get_ref().get_ref().get_ref().set_nodelay(val)?
+            }
             Endpoint::Socket(_) => (/* inapplicable */),
         }
         Ok(())
@@ -202,7 +198,7 @@ impl Endpoint {
         }
         builder.danger_accept_invalid_hostnames(ssl_opts.skip_domain_validation());
         builder.danger_accept_invalid_certs(ssl_opts.accept_invalid_certs());
-        let tls_connector: tokio_tls::TlsConnector = builder.build()?.into();
+        let tls_connector: tokio_native_tls::TlsConnector = builder.build()?.into();
 
         *self = match self {
             Endpoint::Plain(stream) => {
@@ -229,8 +225,8 @@ impl From<Socket> for Endpoint {
     }
 }
 
-impl From<tokio_tls::TlsStream<TcpStream>> for Endpoint {
-    fn from(stream: tokio_tls::TlsStream<TcpStream>) -> Self {
+impl From<tokio_native_tls::TlsStream<TcpStream>> for Endpoint {
+    fn from(stream: tokio_native_tls::TlsStream<TcpStream>) -> Self {
         Endpoint::Secure(stream)
     }
 }
@@ -238,9 +234,9 @@ impl From<tokio_tls::TlsStream<TcpStream>> for Endpoint {
 impl AsyncRead for Endpoint {
     fn poll_read(
         self: Pin<&mut Self>,
-        cx: &mut Context,
-        buf: &mut [u8],
-    ) -> Poll<std::result::Result<usize, tokio::io::Error>> {
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::result::Result<(), tokio::io::Error>> {
         let mut this = self.project();
         with_interrupted!(match this {
             EndpointProj::Plain(ref mut stream) => {
@@ -248,33 +244,6 @@ impl AsyncRead for Endpoint {
             }
             EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_read(cx, buf),
             EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_read(cx, buf),
-        })
-    }
-
-    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
-        match self {
-            Endpoint::Plain(Some(stream)) => stream.prepare_uninitialized_buffer(buf),
-            Endpoint::Plain(None) => unreachable!(),
-            Endpoint::Secure(stream) => stream.prepare_uninitialized_buffer(buf),
-            Endpoint::Socket(stream) => stream.prepare_uninitialized_buffer(buf),
-        }
-    }
-
-    fn poll_read_buf<B>(
-        self: Pin<&mut Self>,
-        cx: &mut Context,
-        buf: &mut B,
-    ) -> Poll<std::result::Result<usize, tokio::io::Error>>
-    where
-        B: BufMut,
-    {
-        let mut this = self.project();
-        with_interrupted!(match this {
-            EndpointProj::Plain(ref mut stream) => {
-                Pin::new(stream.as_mut().unwrap()).poll_read_buf(cx, buf)
-            }
-            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_read_buf(cx, buf),
-            EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_read_buf(cx, buf),
         })
     }
 }
@@ -350,16 +319,70 @@ impl Stream {
         }
     }
 
-    pub(crate) async fn connect_tcp<S>(addr: S) -> io::Result<Stream>
+    pub(crate) async fn connect_tcp<S>(addr: S, keepalive: Option<Duration>) -> io::Result<Stream>
     where
         S: ToSocketAddrs,
     {
+        // TODO: Use tokio to setup keepalive (see tokio-rs/tokio#3082)
+        async fn connect_stream(
+            addr: SocketAddr,
+            keepalive_opts: Option<TcpKeepalive>,
+        ) -> io::Result<TcpStream> {
+            let socket = if addr.is_ipv6() {
+                TcpSocket::new_v6()?
+            } else {
+                TcpSocket::new_v4()?
+            };
+
+            if let Some(keepalive_opts) = keepalive_opts {
+                socket.set_keepalive_params(keepalive_opts.clone())?;
+            }
+
+            let stream = tokio::task::spawn_blocking(move || {
+                let mut stream = socket.connect(addr)?;
+                let mut poll = mio::Poll::new()?;
+                let mut events = mio::Events::with_capacity(1024);
+                poll.registry()
+                    .register(&mut stream, mio::Token(0), mio::Interest::WRITABLE)?;
+                loop {
+                    poll.poll(&mut events, None)?;
+
+                    for event in &events {
+                        if event.token() == mio::Token(0) && event.is_writable() {
+                            // The socket connected (probably, it could still be a spurious
+                            // wakeup)
+                            return Ok::<_, io::Error>(stream);
+                        }
+                    }
+                }
+            })
+            .await??;
+
+            #[cfg(unix)]
+            let std_stream = unsafe {
+                use std::os::unix::prelude::*;
+                let fd = stream.into_raw_fd();
+                std::net::TcpStream::from_raw_fd(fd)
+            };
+
+            #[cfg(windows)]
+            let std_stream = unsafe {
+                use std::os::windows::prelude::*;
+                let fd = stream.into_raw_socket();
+                std::net::TcpStream::from_raw_socket(fd)
+            };
+
+            Ok(TcpStream::from_std(std_stream)?)
+        }
+
+        let keepalive_opts = keepalive.map(|time| TcpKeepalive::new().with_time(time));
+
         match addr.to_socket_addrs() {
             Ok(addresses) => {
                 let mut streams = FuturesUnordered::new();
 
                 for address in addresses {
-                    streams.push(TcpStream::connect(address));
+                    streams.push(connect_stream(address, keepalive_opts.clone()));
                 }
 
                 let mut err = None;
@@ -394,10 +417,6 @@ impl Stream {
 
     pub(crate) async fn connect_socket<P: AsRef<Path>>(path: P) -> io::Result<Stream> {
         Ok(Stream::new(Socket::new(path).await?))
-    }
-
-    pub(crate) fn set_keepalive_ms(&self, ms: Option<u32>) -> io::Result<()> {
-        self.codec.as_ref().unwrap().get_ref().set_keepalive_ms(ms)
     }
 
     pub(crate) fn set_tcp_nodelay(&self, val: bool) -> io::Result<()> {
@@ -479,5 +498,48 @@ impl stream::Stream for Stream {
         } else {
             Poll::Ready(None)
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{test_misc::get_opts, Conn};
+
+    #[tokio::test]
+    async fn should_connect_with_keepalive() {
+        let opts = get_opts()
+            .tcp_keepalive(Some(42_000_u32))
+            .prefer_socket(false);
+        let mut conn: Conn = Conn::new(opts).await.unwrap();
+        let stream = conn.stream_mut().unwrap();
+        let endpoint = stream.codec.as_mut().unwrap().get_ref();
+        let stream = match endpoint {
+            super::Endpoint::Plain(Some(stream)) => stream,
+            super::Endpoint::Secure(tls_stream) => tls_stream.get_ref().get_ref().get_ref(),
+            _ => unreachable!(),
+        };
+
+        #[cfg(unix)]
+        let sock = unsafe {
+            use std::os::unix::prelude::*;
+            let raw = stream.as_raw_fd();
+            socket2::Socket::from_raw_fd(raw)
+        };
+
+        #[cfg(windows)]
+        let sock = unsafe {
+            use std::os::windows::prelude::*;
+            let raw = stream.as_raw_socket();
+            socket2::Socket::from_raw_socket(raw)
+        };
+
+        assert_eq!(
+            sock.keepalive().unwrap(),
+            Some(std::time::Duration::from_millis(42_000)),
+        );
+
+        std::mem::forget(sock);
+
+        conn.disconnect().await.unwrap();
     }
 }

@@ -320,7 +320,7 @@ mod test {
             }
         }
 
-        let mut runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
         let database = Database {
             pool: Pool::new(get_opts()),
         };
@@ -379,7 +379,7 @@ mod test {
             // now check, that they're still in the pool..
             assert_eq!(ex_field!(pool, available).len(), NUM_CONNS);
 
-            tokio::time::delay_for(std::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
             // now get new connection..
             let _conn = pool.get_conn().await?;
@@ -470,16 +470,16 @@ mod test {
         drop(conns);
 
         // wait for a bit to let the connections be reclaimed
-        tokio::time::delay_for(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         // check that connections are still in the pool because of inactive_connection_ttl
         assert_eq!(ex_field!(pool_clone, available).len(), POOL_MAX);
 
         // then, wait for ttl_check_interval
-        tokio::time::delay_for(TTL_CHECK_INTERVAL).await;
+        tokio::time::sleep(TTL_CHECK_INTERVAL).await;
 
         // wait a bit more to let the connections be reclaimed by the ttl check
-        tokio::time::delay_for(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // check that we have the expected number of connections
         assert_eq!(ex_field!(pool_clone, available).len(), POOL_MIN);
@@ -512,7 +512,7 @@ mod test {
             let _ = conns.pop();
 
             // then, wait for a bit to let the connection be reclaimed
-            tokio::time::delay_for(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
             // now check that we have the expected # of connections
             // this may look a little funky, but think of it this way:
@@ -593,7 +593,7 @@ mod test {
         assert_eq!(wait_timeout, Some(3));
         assert_eq!(ex_field!(pool, exist), 1);
 
-        tokio::time::delay_for(std::time::Duration::from_secs(6)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(6)).await;
 
         let mut conn = pool.get_conn().await?;
         let id2: Option<usize> = conn.query_first("SELECT CONNECTION_ID()").await?;
@@ -634,8 +634,7 @@ mod test {
         const PANIC_MESSAGE: &str = "ORIGINAL_PANIC";
 
         let result = std::panic::catch_unwind(|| {
-            runtime::Builder::new()
-                .basic_scheduler()
+            runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
@@ -656,7 +655,7 @@ mod test {
     fn should_not_panic_on_unclean_shutdown() {
         // run more than once to trigger different drop orders
         for _ in 0..10 {
-            let mut rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tokio::runtime::Runtime::new().unwrap();
             let (tx, rx) = tokio::sync::oneshot::channel();
             rt.block_on(async move {
                 let pool = Pool::new(get_opts());
@@ -676,7 +675,7 @@ mod test {
     fn should_perform_clean_shutdown() {
         // run more than once to trigger different drop orders
         for _ in 0..10 {
-            let mut rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tokio::runtime::Runtime::new().unwrap();
             let (tx, rx) = tokio::sync::oneshot::channel();
             let jh = rt.spawn(async move {
                 let pool = Pool::new(get_opts());

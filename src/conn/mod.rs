@@ -322,7 +322,6 @@ impl Conn {
     fn setup_stream(&mut self) -> Result<()> {
         debug_assert!(self.inner.stream.is_some());
         if let Some(stream) = self.inner.stream.as_mut() {
-            stream.set_keepalive_ms(self.inner.opts.tcp_keepalive())?;
             stream.set_tcp_nodelay(self.inner.opts.tcp_nodelay())?;
         }
         Ok(())
@@ -603,7 +602,10 @@ impl Conn {
             let stream = if let Some(path) = opts.socket() {
                 Stream::connect_socket(path.to_owned()).await?
             } else {
-                Stream::connect_tcp(opts.hostport_or_url()).await?
+                let keepalive = opts
+                    .tcp_keepalive()
+                    .map(|x| std::time::Duration::from_millis(x.into()));
+                Stream::connect_tcp(opts.hostport_or_url(), keepalive).await?
             };
 
             conn.inner.stream = Some(stream);
@@ -905,7 +907,7 @@ mod test {
     #[test]
     fn should_not_panic_if_dropped_without_tokio_runtime() {
         let fut = Conn::new(get_opts());
-        let mut runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             fut.await.unwrap();
         });

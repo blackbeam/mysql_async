@@ -8,7 +8,7 @@
 
 use mysql_common::row::convert::FromRowError;
 use mysql_common::{io::ReadMysqlExt, packets::parse_local_infile_packet};
-use tokio::prelude::*;
+use tokio::io::AsyncReadExt;
 
 use std::{borrow::Cow, marker::PhantomData, result::Result as StdResult, sync::Arc};
 
