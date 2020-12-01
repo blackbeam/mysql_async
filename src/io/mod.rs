@@ -138,11 +138,7 @@ impl Endpoint {
     }
 
     pub fn is_secure(&self) -> bool {
-        if let Endpoint::Secure(_) = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Endpoint::Secure(_))
     }
 
     pub fn set_tcp_nodelay(&self, val: bool) -> io::Result<()> {
@@ -168,27 +164,24 @@ impl Endpoint {
         }
 
         let mut builder = TlsConnector::builder();
-        match ssl_opts.root_cert_path() {
-            Some(root_cert_path) => {
-                let mut root_cert_data = vec![];
-                let mut root_cert_file = File::open(root_cert_path)?;
-                root_cert_file.read_to_end(&mut root_cert_data)?;
+        if let Some(root_cert_path) = ssl_opts.root_cert_path() {
+            let mut root_cert_data = vec![];
+            let mut root_cert_file = File::open(root_cert_path)?;
+            root_cert_file.read_to_end(&mut root_cert_data)?;
 
-                let root_certs = Certificate::from_der(&*root_cert_data)
-                    .map(|x| vec![x])
-                    .or_else(|_| {
-                        pem::parse_many(&*root_cert_data)
-                            .iter()
-                            .map(pem::encode)
-                            .map(|s| Certificate::from_pem(s.as_bytes()))
-                            .collect()
-                    })?;
+            let root_certs = Certificate::from_der(&*root_cert_data)
+                .map(|x| vec![x])
+                .or_else(|_| {
+                    pem::parse_many(&*root_cert_data)
+                        .iter()
+                        .map(pem::encode)
+                        .map(|s| Certificate::from_pem(s.as_bytes()))
+                        .collect()
+                })?;
 
-                for root_cert in root_certs {
-                    builder.add_root_certificate(root_cert);
-                }
+            for root_cert in root_certs {
+                builder.add_root_certificate(root_cert);
             }
-            None => (),
         }
         if let Some(pkcs12_path) = ssl_opts.pkcs12_path() {
             let der = std::fs::read(pkcs12_path)?;
@@ -334,7 +327,7 @@ impl Stream {
             };
 
             if let Some(keepalive_opts) = keepalive_opts {
-                socket.set_keepalive_params(keepalive_opts.clone())?;
+                socket.set_keepalive_params(keepalive_opts)?;
             }
 
             let stream = tokio::task::spawn_blocking(move || {
@@ -401,16 +394,15 @@ impl Stream {
                 }
 
                 if let Some(e) = err {
-                    Err(e.into())
+                    Err(e)
                 } else {
                     Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "could not resolve to any address",
-                    )
-                    .into())
+                    ))
                 }
             }
-            Err(err) => Err(err.into()),
+            Err(err) => Err(err),
         }
     }
 

@@ -284,10 +284,10 @@ pub mod test_misc {
     }
 
     pub fn test_compression() -> bool {
-        ["true", "1"].contains(&&*env::var("COMPRESS").unwrap_or("".into()))
+        ["true", "1"].contains(&&*env::var("COMPRESS").unwrap_or_default())
     }
 
     pub fn test_ssl() -> bool {
-        ["true", "1"].contains(&&*env::var("SSL").unwrap_or("".into()))
+        ["true", "1"].contains(&&*env::var("SSL").unwrap_or_default())
     }
 }

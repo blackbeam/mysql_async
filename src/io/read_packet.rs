@@ -41,15 +41,13 @@ impl Future for ReadPacket<'_, '_> {
         match packet_opt {
             Some(packet) => {
                 self.0.touch();
-                return Poll::Ready(Ok(packet));
+                Poll::Ready(Ok(packet))
             }
-            None => {
-                return Poll::Ready(Err(Error::new(
-                    ErrorKind::UnexpectedEof,
-                    "connection closed",
-                )
-                .into()));
-            }
+            None => Poll::Ready(Err(Error::new(
+                ErrorKind::UnexpectedEof,
+                "connection closed",
+            )
+            .into())),
         }
     }
 }

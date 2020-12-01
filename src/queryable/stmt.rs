@@ -258,10 +258,11 @@ impl crate::Conn {
             match params {
                 Params::Positional(params) => {
                     if statement.num_params() as usize != params.len() {
-                        Err(DriverError::StmtParamsMismatch {
+                        return Err(DriverError::StmtParamsMismatch {
                             required: statement.num_params(),
                             supplied: params.len() as u16,
-                        })?
+                        }
+                        .into());
                     }
 
                     let params = params.into_iter().collect::<Vec<_>>();

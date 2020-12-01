@@ -7,6 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use crate::error;
+use mysql_common::uuid::Uuid;
 use tokio::prelude::*;
 
 use std::{fmt, future::Future, marker::Unpin, pin::Pin, sync::Arc};
@@ -88,22 +89,21 @@ pub type InfileHandlerFuture = Pin<
 
 /// Object used to wrap `T: LocalInfileHandler` inside of Opts.
 #[derive(Clone)]
-pub struct LocalInfileHandlerObject(Arc<dyn LocalInfileHandler>);
+pub struct LocalInfileHandlerObject(Uuid, Arc<dyn LocalInfileHandler>);
 
 impl LocalInfileHandlerObject {
     pub fn new<T: LocalInfileHandler + 'static>(handler: T) -> Self {
-        LocalInfileHandlerObject(Arc::new(handler))
+        LocalInfileHandlerObject(Uuid::new_v4(), Arc::new(handler))
     }
 
     pub fn clone_inner(&self) -> Arc<dyn LocalInfileHandler> {
-        self.0.clone()
+        self.1.clone()
     }
 }
 
 impl PartialEq for LocalInfileHandlerObject {
     fn eq(&self, other: &LocalInfileHandlerObject) -> bool {
-        self.0.as_ref() as *const dyn LocalInfileHandler
-            == other.0.as_ref() as *const dyn LocalInfileHandler
+        self.0.eq(&other.0)
     }
 }
 

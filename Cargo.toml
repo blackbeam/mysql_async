@@ -33,6 +33,7 @@ tokio-util = { version = "0.5.0", features = ["codec"] }
 tokio-native-tls = "0.2"
 twox-hash = "1"
 url = "2.1"
+uuid = { version = "0.8.1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3.1.0"

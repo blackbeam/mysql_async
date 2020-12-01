@@ -408,7 +408,7 @@ impl Opts {
 
         // We use the URL for socket address resolution later, so make
         // sure it has a port set.
-        if !url.port().is_some() {
+        if url.port().is_none() {
             url.set_port(Some(DEFAULT_PORT))
                 .map_err(|_| UrlError::Invalid)?;
         }
@@ -637,7 +637,7 @@ impl Opts {
     /// # Ok(()) }
     /// ```
     pub fn socket(&self) -> Option<&str> {
-        self.inner.mysql_opts.socket.as_ref().map(|x| &**x)
+        self.inner.mysql_opts.socket.as_deref()
     }
 
     /// If not `None`, then client will ask for compression if server supports it
@@ -926,7 +926,7 @@ impl From<OptsBuilder> for Opts {
 
 fn get_opts_user_from_url(url: &Url) -> Option<String> {
     let user = url.username();
-    if user != "" {
+    if !user.is_empty() {
         Some(
             percent_decode(user.as_ref())
                 .decode_utf8_lossy()
@@ -1110,7 +1110,7 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
             } else {
                 return Err(UrlError::InvalidParamValue {
                     param: "compression".into(),
-                    value: value.to_string(),
+                    value,
                 });
             }
         } else {

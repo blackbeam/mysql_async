@@ -235,21 +235,17 @@ impl Pool {
 
         exchange.spawn_futures_if_needed(&self.inner);
 
-        loop {
-            if let Some(IdlingConn { mut conn, .. }) = exchange.available.pop_back() {
-                if !conn.expired() {
-                    return Poll::Ready(Ok(GetConn {
-                        pool: Some(self.clone()),
-                        inner: GetConnInner::Checking(BoxFuture(Box::pin(async move {
-                            conn.stream_mut()?.check().await?;
-                            Ok(conn)
-                        }))),
-                    }));
-                } else {
-                    self.send_to_recycler(conn);
-                }
+        while let Some(IdlingConn { mut conn, .. }) = exchange.available.pop_back() {
+            if !conn.expired() {
+                return Poll::Ready(Ok(GetConn {
+                    pool: Some(self.clone()),
+                    inner: GetConnInner::Checking(BoxFuture(Box::pin(async move {
+                        conn.stream_mut()?.check().await?;
+                        Ok(conn)
+                    }))),
+                }));
             } else {
-                break;
+                self.send_to_recycler(conn);
             }
         }
 
