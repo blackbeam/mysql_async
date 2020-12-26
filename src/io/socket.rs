@@ -7,10 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use pin_project::pin_project;
-use tokio::{
-    io::{Error, ErrorKind::Interrupted, ReadBuf},
-    prelude::*,
-};
+use tokio::io::{Error, ErrorKind::Interrupted, ReadBuf};
 
 use std::{
     io,
@@ -18,6 +15,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Unix domain socket connection on unix, or named pipe connection on windows.
 #[pin_project]

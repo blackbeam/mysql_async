@@ -8,9 +8,9 @@
 
 use crate::error;
 use mysql_common::uuid::Uuid;
-use tokio::prelude::*;
 
 use std::{fmt, future::Future, marker::Unpin, pin::Pin, sync::Arc};
+use tokio::io::AsyncRead;
 
 pub mod builtin;
 

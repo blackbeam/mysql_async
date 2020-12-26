@@ -18,7 +18,6 @@ use pin_project::pin_project;
 use tokio::{
     io::{ErrorKind::Interrupted, ReadBuf},
     net::TcpStream,
-    prelude::*,
 };
 use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 
@@ -40,6 +39,7 @@ use std::{
 };
 
 use crate::{error::IoError, io::socket::Socket, opts::SslOpts};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 macro_rules! with_interrupted {
     ($e:expr) => {
@@ -108,7 +108,7 @@ impl Future for CheckTcpStream<'_> {
     type Output = io::Result<()>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let buf = &mut [0_u8];
-        match self.0.poll_peek(cx, buf) {
+        match self.0.poll_peek(cx, &mut ReadBuf::new(buf)) {
             Poll::Ready(Ok(0)) => Poll::Ready(Err(io::Error::new(UnexpectedEof, "broken pipe"))),
             Poll::Ready(Ok(_)) => Poll::Ready(Err(io::Error::new(Other, "unexpected read"))),
             Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
