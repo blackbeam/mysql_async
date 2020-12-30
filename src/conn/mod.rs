@@ -42,7 +42,10 @@ use crate::{
     OptsBuilder,
 };
 
+use self::routines::Routine;
+
 pub mod pool;
+pub mod routines;
 pub mod stmt_cache;
 
 /// Helper that asynchronously disconnects the givent connection on the default tokio executor.
@@ -263,6 +266,25 @@ impl Conn {
     /// Returns current status flags.
     pub(crate) fn status(&self) -> StatusFlags {
         self.inner.status
+    }
+
+    pub(crate) async fn routine<'a, F, T>(&mut self, mut f: F) -> crate::Result<T>
+    where
+        F: Routine<T> + 'a,
+    {
+        self.inner.disconnected = true;
+        let result = f.call(&mut *self).await;
+        match result {
+            result @ Ok(_) | result @ Err(crate::Error::Server(_)) => {
+                // either OK or non-fatal error
+                self.inner.disconnected = false;
+                result
+            }
+            Err(err) => {
+                self.take_stream().close().await?;
+                Err(err)
+            }
+        }
     }
 
     /// Returns server version.
@@ -701,9 +723,7 @@ impl Conn {
         let pool = self.inner.pool.clone();
 
         if self.inner.version > (5, 7, 2) {
-            self.write_command_data(Command::COM_RESET_CONNECTION, &[])
-                .await?;
-            self.read_packet().await?;
+            self.routine(routines::ResetRoutine).await?;
         } else {
             let opts = self.inner.opts.clone();
             let old_conn = std::mem::replace(self, Conn::new(opts).await?);
