@@ -485,7 +485,7 @@ mod test {
         delay_for(TTL_CHECK_INTERVAL).await;
 
         // wait a bit more to let the connections be reclaimed by the ttl check
-        delay_for(Duration::from_millis(200)).await;
+        delay_for(Duration::from_millis(500)).await;
 
         // check that we have the expected number of connections
         assert_eq!(ex_field!(pool_clone, available).len(), POOL_MIN);
@@ -763,6 +763,7 @@ mod test {
             let fut = select_all((0_usize..5).map(|_| op(&pool).boxed()));
 
             // we need to cancel the op in the middle
+            // this should not lead to the `packet out of order` error.
             let delay_micros = rand::random::<u128>() % max_delay;
             select(delay_for(Duration::from_micros(delay_micros as u64)), fut).await;
 
