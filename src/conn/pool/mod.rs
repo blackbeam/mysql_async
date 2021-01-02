@@ -287,7 +287,13 @@ impl Drop for Conn {
 
 #[cfg(test)]
 mod test {
-    use futures_util::{future::try_join_all, stream::StreamExt, try_join};
+    use futures_util::{
+        future::{join_all, select, select_all, try_join_all},
+        stream::StreamExt,
+        try_join, FutureExt,
+    };
+    use mysql_common::row::Row;
+    use tokio::time::delay_for;
 
     use std::time::Duration;
 
@@ -379,7 +385,7 @@ mod test {
             // now check, that they're still in the pool..
             assert_eq!(ex_field!(pool, available).len(), NUM_CONNS);
 
-            tokio::time::delay_for(std::time::Duration::from_millis(500)).await;
+            delay_for(Duration::from_millis(500)).await;
 
             // now get new connection..
             let _conn = pool.get_conn().await?;
@@ -470,16 +476,16 @@ mod test {
         drop(conns);
 
         // wait for a bit to let the connections be reclaimed
-        tokio::time::delay_for(std::time::Duration::from_millis(100)).await;
+        delay_for(Duration::from_millis(100)).await;
 
         // check that connections are still in the pool because of inactive_connection_ttl
         assert_eq!(ex_field!(pool_clone, available).len(), POOL_MAX);
 
         // then, wait for ttl_check_interval
-        tokio::time::delay_for(TTL_CHECK_INTERVAL).await;
+        delay_for(TTL_CHECK_INTERVAL).await;
 
         // wait a bit more to let the connections be reclaimed by the ttl check
-        tokio::time::delay_for(std::time::Duration::from_millis(200)).await;
+        delay_for(Duration::from_millis(500)).await;
 
         // check that we have the expected number of connections
         assert_eq!(ex_field!(pool_clone, available).len(), POOL_MIN);
@@ -512,7 +518,7 @@ mod test {
             let _ = conns.pop();
 
             // then, wait for a bit to let the connection be reclaimed
-            tokio::time::delay_for(std::time::Duration::from_millis(50)).await;
+            delay_for(Duration::from_millis(50)).await;
 
             // now check that we have the expected # of connections
             // this may look a little funky, but think of it this way:
@@ -593,7 +599,7 @@ mod test {
         assert_eq!(wait_timeout, Some(3));
         assert_eq!(ex_field!(pool, exist), 1);
 
-        tokio::time::delay_for(std::time::Duration::from_secs(6)).await;
+        delay_for(Duration::from_secs(6)).await;
 
         let mut conn = pool.get_conn().await?;
         let id2: Option<usize> = conn.query_first("SELECT CONNECTION_ID()").await?;
@@ -724,6 +730,46 @@ mod test {
             assert_eq!(id, conn.id());
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_work_if_pooled_connection_operation_is_cancelled() -> super::Result<()> {
+        let pool = Pool::new(get_opts());
+
+        // warm up
+        join_all((0..10).map(|_| pool.get_conn())).await;
+
+        /// some operation
+        async fn op(pool: &Pool) {
+            let _: Option<Row> = pool
+                .get_conn()
+                .await
+                .unwrap()
+                .exec_first("SELECT ?, ?", (42, "foo"))
+                .await
+                .unwrap();
+        }
+
+        // Measure the delay
+        let mut max_delay = 0_u128;
+        for _ in 0..10_usize {
+            let start = std::time::Instant::now();
+            op(&pool).await;
+            max_delay = std::cmp::max(max_delay, start.elapsed().as_micros());
+        }
+
+        for _ in 0_usize..128 {
+            let fut = select_all((0_usize..5).map(|_| op(&pool).boxed()));
+
+            // we need to cancel the op in the middle
+            // this should not lead to the `packet out of order` error.
+            let delay_micros = rand::random::<u128>() % max_delay;
+            select(delay_for(Duration::from_micros(delay_micros as u64)), fut).await;
+
+            // give some time for connections to return to the pool
+            delay_for(Duration::from_millis(100)).await;
+        }
         Ok(())
     }
 
