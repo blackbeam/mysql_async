@@ -23,7 +23,6 @@ pub mod builtin;
 ///
 /// ```rust
 /// # use mysql_async::{prelude::*, test_misc::get_opts, OptsBuilder, Result, Error};
-/// # use tokio::prelude::*;
 /// # use std::env;
 /// # #[tokio::main]
 /// # async fn main() -> Result<()> {
