@@ -60,7 +60,8 @@ jobs:
           echo 'local_infile=1' >> /usr/local/etc/my.cnf
           echo 'socket=/tmp/mysql.sock' >> /usr/local/etc/my.cnf
           brew services start mysql
-          sleep 5
+          /usr/local/Cellar/mysql/*/bin/mysqld --verbose --help
+          sleep 20
           /usr/local/Cellar/mysql/*/bin/mysql -e "SET GLOBAL max_allowed_packet = 36700160;" -uroot
         displayName: Install MySql
       - bash: |

@@ -7,21 +7,17 @@
 // modified, or distributed except according to those terms.
 
 use mysql_common::{
-    constants::MAX_PAYLOAD_LEN,
     named_params::parse_named_params,
-    packets::{
-        column_from_payload, parse_stmt_packet, ComStmtClose, ComStmtExecuteRequestBuilder,
-        ComStmtSendLongData, StmtPacket,
-    },
+    packets::{column_from_payload, parse_stmt_packet, ComStmtClose, StmtPacket},
 };
 
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
-    consts::{CapabilityFlags, Command},
+    conn::routines::{ExecRoutine, PrepareRoutine},
+    consts::CapabilityFlags,
     error::*,
-    queryable::BinaryProtocol,
-    Column, Params, Value,
+    Column, Params,
 };
 
 /// Result of a `StatementLike::to_statement` call.
@@ -217,25 +213,7 @@ impl crate::Conn {
     ///
     /// `raw_query` is a query with `?` placeholders (if any).
     async fn prepare_statement(&mut self, raw_query: Cow<'_, str>) -> Result<Arc<StmtInner>> {
-        let raw_query: Arc<str> = raw_query.into_owned().into_boxed_str().into();
-
-        self.write_command_data(Command::COM_STMT_PREPARE, raw_query.as_bytes())
-            .await?;
-
-        let packet = self.read_packet().await?;
-        let mut inner_stmt = StmtInner::from_payload(&*packet, self.id(), raw_query)?;
-
-        if inner_stmt.num_params() > 0 {
-            let params = self.read_column_defs(inner_stmt.num_params()).await?;
-            inner_stmt = inner_stmt.with_params(params);
-        }
-
-        if inner_stmt.num_columns() > 0 {
-            let columns = self.read_column_defs(inner_stmt.num_columns()).await?;
-            inner_stmt = inner_stmt.with_columns(columns);
-        }
-
-        let inner_stmt = Arc::new(inner_stmt);
+        let inner_stmt = self.routine(PrepareRoutine::new(raw_query)).await?;
 
         if let Some(old_stmt) = self.cache_stmt(&inner_stmt) {
             self.close_statement(old_stmt.id()).await?;
@@ -253,85 +231,8 @@ impl crate::Conn {
     where
         P: Into<Params>,
     {
-        let mut params = params.into();
-        loop {
-            match params {
-                Params::Positional(params) => {
-                    if statement.num_params() as usize != params.len() {
-                        return Err(DriverError::StmtParamsMismatch {
-                            required: statement.num_params(),
-                            supplied: params.len() as u16,
-                        }
-                        .into());
-                    }
-
-                    let params = params.into_iter().collect::<Vec<_>>();
-
-                    let (body, as_long_data) =
-                        ComStmtExecuteRequestBuilder::new(statement.id()).build(&*params);
-
-                    if as_long_data {
-                        self.send_long_data(statement.id(), params.iter()).await?;
-                    }
-
-                    self.write_command_raw(body).await?;
-                    self.read_result_set::<BinaryProtocol>(true).await?;
-                    break;
-                }
-                Params::Named(_) => {
-                    if statement.named_params.is_none() {
-                        let error = DriverError::NamedParamsForPositionalQuery.into();
-                        return Err(error);
-                    }
-
-                    params = match params.into_positional(statement.named_params.as_ref().unwrap())
-                    {
-                        Ok(positional_params) => positional_params,
-                        Err(error) => return Err(error.into()),
-                    };
-
-                    continue;
-                }
-                Params::Empty => {
-                    if statement.num_params() > 0 {
-                        let error = DriverError::StmtParamsMismatch {
-                            required: statement.num_params(),
-                            supplied: 0,
-                        }
-                        .into();
-                        return Err(error);
-                    }
-
-                    let (body, _) = ComStmtExecuteRequestBuilder::new(statement.id()).build(&[]);
-                    self.write_command_raw(body).await?;
-                    self.read_result_set::<BinaryProtocol>(true).await?;
-                    break;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Helper, that sends all `Value::Bytes` in the given list of paramenters as long data.
-    async fn send_long_data<'a, I>(&mut self, statement_id: u32, params: I) -> Result<()>
-    where
-        I: Iterator<Item = &'a Value>,
-    {
-        for (i, value) in params.enumerate() {
-            if let Value::Bytes(bytes) = value {
-                let chunks = bytes.chunks(MAX_PAYLOAD_LEN - 6);
-                let chunks = chunks.chain(if bytes.is_empty() {
-                    Some(&[][..])
-                } else {
-                    None
-                });
-                for chunk in chunks {
-                    let com = ComStmtSendLongData::new(statement_id, i, chunk);
-                    self.write_command_raw(com.into()).await?;
-                }
-            }
-        }
-
+        self.routine(ExecRoutine::new(statement, params.into()))
+            .await?;
         Ok(())
     }
 

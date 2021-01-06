@@ -21,7 +21,8 @@ use self::{
 };
 
 use crate::{
-    consts::{CapabilityFlags, Command},
+    conn::routines::{PingRoutine, QueryRoutine},
+    consts::CapabilityFlags,
     error::*,
     prelude::{FromRow, StatementLike},
     queryable::query_result::ResultSetMeta,
@@ -95,10 +96,8 @@ impl Conn {
     where
         Q: AsRef<str> + Send + Sync + 'a,
     {
-        self.write_command_data(Command::COM_QUERY, query.as_ref().as_bytes())
-            .await?;
-        self.read_result_set::<TextProtocol>(true).await?;
-        Ok(())
+        self.routine(QueryRoutine::new(query.as_ref().as_bytes()))
+            .await
     }
 }
 
@@ -256,9 +255,7 @@ pub trait Queryable: Send {
 impl Queryable for Conn {
     fn ping(&mut self) -> BoxFuture<'_, ()> {
         BoxFuture(Box::pin(async move {
-            self.write_command_raw(vec![Command::COM_PING as u8])
-                .await?;
-            self.read_packet().await?;
+            self.routine(PingRoutine).await?;
             Ok(())
         }))
     }
@@ -271,7 +268,8 @@ impl Queryable for Conn {
         Q: AsRef<str> + Send + Sync + 'a,
     {
         BoxFuture(Box::pin(async move {
-            self.raw_query(query).await?;
+            self.routine(QueryRoutine::new(query.as_ref().as_bytes()))
+                .await?;
             Ok(QueryResult::new(self))
         }))
     }
