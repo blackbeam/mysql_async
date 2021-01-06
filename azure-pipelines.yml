@@ -42,40 +42,39 @@ jobs:
           DATABASE_URL: mysql://root:root@127.0.0.1:3306/mysql
         displayName: Run tests
 
-  - job: "TestBasicMacOs"
-    pool:
-      vmImage: "macOS-10.15"
-    strategy:
-      maxParallel: 10
-      matrix:
-        stable:
-          RUST_TOOLCHAIN: stable
-    steps:
-      - bash: |
-          brew update
-          brew install mysql
-          brew services start mysql
-          brew services stop mysql
-          sleep 3
-          echo 'local_infile=1' >> /usr/local/etc/my.cnf
-          echo 'socket=/tmp/mysql.sock' >> /usr/local/etc/my.cnf
-          brew services start mysql
-          /usr/local/Cellar/mysql/*/bin/mysqld --verbose --help
-          sleep 20
-          /usr/local/Cellar/mysql/*/bin/mysql -e "SET GLOBAL max_allowed_packet = 36700160;" -uroot
-        displayName: Install MySql
-      - bash: |
-          curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $RUST_TOOLCHAIN
-        displayName: Install rust (MacOs)
-      - bash: |
-          SSL=false COMPRESS=false cargo test
-          SSL=true COMPRESS=false cargo test
-          SSL=false COMPRESS=true cargo test
-          SSL=true COMPRESS=true cargo test
-        env:
-          RUST_BACKTRACE: 1
-          DATABASE_URL: mysql://root@127.0.0.1/mysql
-        displayName: Run tests
+  # - job: "TestBasicMacOs"
+  #   pool:
+  #     vmImage: "macOS-10.15"
+  #   strategy:
+  #     maxParallel: 10
+  #     matrix:
+  #       stable:
+  #         RUST_TOOLCHAIN: stable
+  #   steps:
+  #     - bash: |
+  #         brew update
+  #         brew install mysql
+  #         brew services start mysql
+  #         brew services stop mysql
+  #         sleep 3
+  #         echo 'local_infile=1' >> /usr/local/etc/my.cnf
+  #         echo 'socket=/tmp/mysql.sock' >> /usr/local/etc/my.cnf
+  #         brew services start mysql
+  #         sleep 5
+  #         /usr/local/Cellar/mysql/*/bin/mysql -e "SET GLOBAL max_allowed_packet = 36700160;" -uroot
+  #       displayName: Install MySql
+  #     - bash: |
+  #         curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $RUST_TOOLCHAIN
+  #       displayName: Install rust (MacOs)
+  #     - bash: |
+  #         SSL=false COMPRESS=false cargo test
+  #         SSL=true COMPRESS=false cargo test
+  #         SSL=false COMPRESS=true cargo test
+  #         SSL=true COMPRESS=true cargo test
+  #       env:
+  #         RUST_BACKTRACE: 1
+  #         DATABASE_URL: mysql://root@127.0.0.1/mysql
+  #       displayName: Run tests
 
   - job: "TestBasicWindows"
     pool:
