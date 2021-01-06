@@ -92,7 +92,7 @@ impl Future for Recycler {
 
         while !self.eof {
             // see if there are more connections for us to recycle
-            match Pin::new(&mut self.dropped).poll_next(cx) {
+            match Pin::new(&mut self.dropped).poll_recv(cx) {
                 Poll::Ready(Some(Some(conn))) => {
                     assert!(conn.inner.pool.is_none());
                     conn_decision!(self, conn);

@@ -283,7 +283,7 @@ impl Drop for Conn {
 
 #[cfg(test)]
 mod test {
-    use futures_util::{future::try_join_all, stream::StreamExt, try_join};
+    use futures_util::{future::try_join_all, try_join};
 
     use std::time::Duration;
 
@@ -412,7 +412,7 @@ mod test {
             }
             drop(tx);
             // see that all the tx's eventually complete
-            while let Some(_) = rx.next().await {}
+            while let Some(_) = rx.recv().await {}
         }
         drop(pool);
     }
