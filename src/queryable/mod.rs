@@ -121,14 +121,19 @@ pub trait Queryable: Send {
     /// Note, that `Statement` will exist only in the context of this queryable.
     ///
     /// Also note, that this call may close the least recently used statement
-    /// if statement cache is at its capacity (see. [`stmt_cache_size`]).
+    /// if statement cache is at its capacity (see. [`stmt_cache_size`][stmt_cache_size]).
+    ///
+    /// [stmt_cache_size]: crate::Opts::stmt_cache_size
     fn prep<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Statement>
     where
         Q: AsRef<str> + Sync + Send + 'a;
 
     /// Closes the given statement.
     ///
-    /// Usually there is no need to explicitly close statements (see. [`stmt_cache_size`]).
+    /// Usually there is no need to explicitly close statements
+    /// (see. [`stmt_cache_size`][stmt_cache_size]).
+    ///
+    /// [stmt_cache_size]: crate::Opts::stmt_cache_size
     fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()>;
 
     /// Executes the given statement with given params.
