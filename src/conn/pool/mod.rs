@@ -94,12 +94,15 @@ pub struct Inner {
     exchange: Mutex<Exchange>,
 }
 
-#[derive(Clone)]
 /// Asynchronous pool of MySql connections.
+///
+/// Actually `Pool` is a shared reference, i.e. every clone will lead to the same instance
+/// created with [`Pool::new`]. Also `Pool` satisfies `Send` and `Sync`, so you don't have to wrap
+/// it into an `Arc` or `Mutex`.
 ///
 /// Note that you will probably want to await [`Pool::disconnect`] before dropping the runtime, as
 /// otherwise you may end up with a number of connections that are not cleanly terminated.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Pool {
     opts: Opts,
     inner: Arc<Inner>,
