@@ -41,13 +41,17 @@ pub trait Query: Send + Sized {
     /// Query protocol.
     type Protocol: crate::prelude::Protocol;
 
-    /// This methods corresponds to [`Queryable::query_iter`].
+    /// This methods corresponds to [`Queryable::query_iter`][query_iter].
+    ///
+    /// [query_iter]: crate::prelude::Queryable::query_iter
     fn run<'a, 't: 'a, C>(self, conn: C) -> BoxFuture<'a, QueryResult<'a, 't, Self::Protocol>>
     where
         Self: 'a,
         C: ToConnection<'a, 't> + 'a;
 
-    /// This methods corresponds to [`Queryable::query_first`].
+    /// This methods corresponds to [`Queryable::query_first`][query_first].
+    ///
+    /// [query_first]: crate::prelude::Queryable::query_first
     fn first<'a, 't: 'a, T, C>(self, conn: C) -> BoxFuture<'a, Option<T>>
     where
         Self: 'a,
@@ -66,7 +70,9 @@ pub trait Query: Send + Sized {
         }))
     }
 
-    /// This methods corresponds to [`Queryable::query`].
+    /// This methods corresponds to [`Queryable::query`][query].
+    ///
+    /// [query]: crate::prelude::Queryable::query
     fn fetch<'a, 't: 'a, T, C>(self, conn: C) -> BoxFuture<'a, Vec<T>>
     where
         Self: 'a,
@@ -78,7 +84,9 @@ pub trait Query: Send + Sized {
         }))
     }
 
-    /// This methods corresponds to [`Queryable::query_fold`].
+    /// This methods corresponds to [`Queryable::query_fold`][query_fold].
+    ///
+    /// [query_fold]: crate::prelude::Queryable::query_fold
     fn reduce<'a, 't: 'a, T, U, F, C>(self, conn: C, init: U, next: F) -> BoxFuture<'a, U>
     where
         Self: 'a,
@@ -92,7 +100,9 @@ pub trait Query: Send + Sized {
         }))
     }
 
-    /// This methods corresponds to [`Queryable::query_map`].
+    /// This methods corresponds to [`Queryable::query_map`][query_map].
+    ///
+    /// [query_map]: crate::prelude::Queryable::query_map
     fn map<'a, 't: 'a, T, U, F, C>(self, conn: C, mut map: F) -> BoxFuture<'a, Vec<U>>
     where
         Self: 'a,
@@ -109,7 +119,9 @@ pub trait Query: Send + Sized {
         }))
     }
 
-    /// This method corresponds to [`Queryable::query_drop`].
+    /// This method corresponds to [`Queryable::query_drop`][query_drop].
+    ///
+    /// [query_drop]: crate::prelude::Queryable::query_drop
     fn ignore<'a, 't: 'a, C>(self, conn: C) -> BoxFuture<'a, ()>
     where
         Self: 'a,
@@ -193,7 +205,7 @@ where
 
 /// Helper trait for batch statement execution.
 ///
-/// This trait covers the [`Queryable::exec_batch`] method.
+/// This trait covers the [`Queryable::exec_batch`][exec_batch] method.
 ///
 /// Example:
 ///
@@ -213,6 +225,8 @@ where
 ///     .await?;
 /// # Ok(()) }
 /// ```
+///
+/// [exec_batch]: crate::prelude::Queryable::exec_batch
 pub trait BatchQuery {
     fn batch<'a, 't: 'a, C>(self, conn: C) -> BoxFuture<'a, ()>
     where
