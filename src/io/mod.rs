@@ -15,12 +15,16 @@ use mio::net::{TcpKeepalive, TcpSocket};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::pin_project;
+#[cfg(unix)]
+use tokio::io::AsyncWriteExt;
 use tokio::{
-    io::{ErrorKind::Interrupted, ReadBuf},
+    io::{AsyncRead, AsyncWrite, ErrorKind::Interrupted, ReadBuf},
     net::TcpStream,
 };
 use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 
+#[cfg(unix)]
+use std::path::Path;
 use std::{
     fmt,
     fs::File,
@@ -32,14 +36,15 @@ use std::{
     },
     net::{SocketAddr, ToSocketAddrs},
     ops::{Deref, DerefMut},
-    path::Path,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
 };
 
-use crate::{error::IoError, io::socket::Socket, opts::SslOpts};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use crate::{error::IoError, opts::SslOpts};
+
+#[cfg(unix)]
+use crate::io::socket::Socket;
 
 macro_rules! with_interrupted {
     ($e:expr) => {
@@ -95,6 +100,7 @@ impl Encoder<Vec<u8>> for PacketCodec {
 pub(crate) enum Endpoint {
     Plain(Option<TcpStream>),
     Secure(#[pin] tokio_native_tls::TlsStream<TcpStream>),
+    #[cfg(unix)]
     Socket(#[pin] Socket),
 }
 
@@ -129,6 +135,7 @@ impl Endpoint {
                 CheckTcpStream(tls_stream.get_mut().get_mut().get_mut()).await?;
                 Ok(())
             }
+            #[cfg(unix)]
             Endpoint::Socket(socket) => {
                 socket.write(&[]).await?;
                 Ok(())
@@ -148,6 +155,7 @@ impl Endpoint {
             Endpoint::Secure(ref stream) => {
                 stream.get_ref().get_ref().get_ref().set_nodelay(val)?
             }
+            #[cfg(unix)]
             Endpoint::Socket(_) => (/* inapplicable */),
         }
         Ok(())
@@ -158,6 +166,7 @@ impl Endpoint {
         domain: String,
         ssl_opts: SslOpts,
     ) -> std::result::Result<(), IoError> {
+        #[cfg(unix)]
         if let Endpoint::Socket(_) = self {
             // inapplicable
             return Ok(());
@@ -198,7 +207,9 @@ impl Endpoint {
                 let tls_stream = tls_connector.connect(&*domain, stream).await?;
                 Endpoint::Secure(tls_stream)
             }
-            Endpoint::Secure(_) | Endpoint::Socket(_) => unreachable!(),
+            Endpoint::Secure(_) => unreachable!(),
+            #[cfg(unix)]
+            Endpoint::Socket(_) => unreachable!(),
         };
 
         Ok(())
@@ -211,6 +222,7 @@ impl From<TcpStream> for Endpoint {
     }
 }
 
+#[cfg(unix)]
 impl From<Socket> for Endpoint {
     fn from(socket: Socket) -> Self {
         Endpoint::Socket(socket)
@@ -235,6 +247,7 @@ impl AsyncRead for Endpoint {
                 Pin::new(stream.as_mut().unwrap()).poll_read(cx, buf)
             }
             EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_read(cx, buf),
+            #[cfg(unix)]
             EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_read(cx, buf),
         })
     }
@@ -252,6 +265,7 @@ impl AsyncWrite for Endpoint {
                 Pin::new(stream.as_mut().unwrap()).poll_write(cx, buf)
             }
             EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_write(cx, buf),
+            #[cfg(unix)]
             EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_write(cx, buf),
         })
     }
@@ -266,6 +280,7 @@ impl AsyncWrite for Endpoint {
                 Pin::new(stream.as_mut().unwrap()).poll_flush(cx)
             }
             EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_flush(cx),
+            #[cfg(unix)]
             EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_flush(cx),
         })
     }
@@ -280,6 +295,7 @@ impl AsyncWrite for Endpoint {
                 Pin::new(stream.as_mut().unwrap()).poll_shutdown(cx)
             }
             EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_shutdown(cx),
+            #[cfg(unix)]
             EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_shutdown(cx),
         })
     }
@@ -302,6 +318,7 @@ impl fmt::Debug for Stream {
 }
 
 impl Stream {
+    #[cfg(unix)]
     fn new<T: Into<Endpoint>>(endpoint: T) -> Self {
         let endpoint = endpoint.into();
 
@@ -406,6 +423,7 @@ impl Stream {
         }
     }
 
+    #[cfg(unix)]
     pub(crate) async fn connect_socket<P: AsRef<Path>>(path: P) -> io::Result<Stream> {
         Ok(Stream::new(Socket::new(path).await?))
     }

@@ -6,6 +6,8 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+#![cfg(unix)]
+
 use pin_project::pin_project;
 use tokio::io::{Error, ErrorKind::Interrupted, ReadBuf};
 
@@ -24,9 +26,6 @@ pub(crate) struct Socket {
     #[pin]
     #[cfg(unix)]
     inner: tokio::net::UnixStream,
-    #[pin]
-    #[cfg(windows)]
-    inner: tokio::io::PollEvented<mio_named_pipes::NamedPipe>,
 }
 
 impl Socket {
@@ -35,16 +34,6 @@ impl Socket {
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Socket, io::Error> {
         Ok(Socket {
             inner: tokio::net::UnixStream::connect(path).await?,
-        })
-    }
-
-    /// Connects a new socket.
-    #[cfg(windows)]
-    pub async fn new<P: AsRef<Path>>(path: P) -> Result<Socket, io::Error> {
-        let pipe = mio_named_pipes::NamedPipe::new(path.as_ref())?;
-        pipe.connect()?;
-        Ok(Socket {
-            inner: tokio::io::PollEvented::new(pipe)?,
         })
     }
 }

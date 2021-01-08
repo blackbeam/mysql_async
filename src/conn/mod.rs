@@ -616,8 +616,13 @@ impl Conn {
         let fut = Box::pin(async move {
             let mut conn = Conn::empty(opts.clone());
 
-            let stream = if let Some(path) = opts.socket() {
-                Stream::connect_socket(path.to_owned()).await?
+            let stream = if let Some(_path) = opts.socket() {
+                #[cfg(unix)]
+                {
+                    Stream::connect_socket(_path.to_owned()).await?
+                }
+                #[cfg(target_os = "windows")]
+                return Err(crate::DriverError::NamedPipesDisabled.into());
             } else {
                 let keepalive = opts
                     .tcp_keepalive()
