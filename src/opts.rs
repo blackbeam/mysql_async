@@ -596,7 +596,7 @@ impl Opts {
         self.inner.mysql_opts.ssl_opts.as_ref()
     }
 
-    /// Prefer socket connection (defaults to `true`).
+    /// Prefer socket connection (defaults to `true` **temporary `false` on Windows platform**).
     ///
     /// Will reconnect via socket (or named pipe on Windows) after TCP connection to `127.0.0.1`
     /// if `true`.
@@ -697,7 +697,7 @@ impl Default for MysqlOpts {
             conn_ttl: None,
             stmt_cache_size: DEFAULT_STMT_CACHE_SIZE,
             ssl_opts: None,
-            prefer_socket: true,
+            prefer_socket: cfg!(not(target_os = "windows")),
             socket: None,
             compression: None,
         }

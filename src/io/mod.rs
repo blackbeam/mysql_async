@@ -15,31 +15,36 @@ use mio::net::{TcpKeepalive, TcpSocket};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::pin_project;
+#[cfg(unix)]
+use tokio::io::AsyncWriteExt;
 use tokio::{
-    io::{ErrorKind::Interrupted, ReadBuf},
+    io::{AsyncRead, AsyncWrite, ErrorKind::Interrupted, ReadBuf},
     net::TcpStream,
 };
 use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 
+#[cfg(unix)]
+use std::path::Path;
 use std::{
     fmt,
     fs::File,
     future::Future,
     io::{
         self,
-        ErrorKind::{NotConnected, Other, UnexpectedEof},
+        ErrorKind::{BrokenPipe, NotConnected, Other},
         Read,
     },
     net::{SocketAddr, ToSocketAddrs},
     ops::{Deref, DerefMut},
-    path::Path,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
 };
 
-use crate::{error::IoError, io::socket::Socket, opts::SslOpts};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use crate::{error::IoError, opts::SslOpts};
+
+#[cfg(unix)]
+use crate::io::socket::Socket;
 
 macro_rules! with_interrupted {
     ($e:expr) => {
@@ -95,6 +100,7 @@ impl Encoder<Vec<u8>> for PacketCodec {
 pub(crate) enum Endpoint {
     Plain(Option<TcpStream>),
     Secure(#[pin] tokio_native_tls::TlsStream<TcpStream>),
+    #[cfg(unix)]
     Socket(#[pin] Socket),
 }
 
@@ -107,10 +113,17 @@ struct CheckTcpStream<'a>(&'a mut TcpStream);
 impl Future for CheckTcpStream<'_> {
     type Output = io::Result<()>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let buf = &mut [0_u8];
-        match self.0.poll_peek(cx, &mut ReadBuf::new(buf)) {
-            Poll::Ready(Ok(0)) => Poll::Ready(Err(io::Error::new(UnexpectedEof, "broken pipe"))),
-            Poll::Ready(Ok(_)) => Poll::Ready(Err(io::Error::new(Other, "unexpected read"))),
+        match self.0.poll_read_ready(cx) {
+            Poll::Ready(Ok(())) => {
+                // stream is readable
+                let mut buf = [0_u8; 1];
+                match self.0.try_read(&mut buf) {
+                    Ok(0) => Poll::Ready(Err(io::Error::new(BrokenPipe, "broken pipe"))),
+                    Ok(_) => Poll::Ready(Err(io::Error::new(Other, "stream should be empty"))),
+                    Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Ready(Ok(())),
+                    Err(err) => Poll::Ready(Err(err)),
+                }
+            }
             Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
             Poll::Pending => Poll::Ready(Ok(())),
         }
@@ -120,6 +133,7 @@ impl Future for CheckTcpStream<'_> {
 impl Endpoint {
     /// Checks, that connection is alive.
     async fn check(&mut self) -> std::result::Result<(), IoError> {
+        //return Ok(());
         match self {
             Endpoint::Plain(Some(stream)) => {
                 CheckTcpStream(stream).await?;
@@ -129,6 +143,7 @@ impl Endpoint {
                 CheckTcpStream(tls_stream.get_mut().get_mut().get_mut()).await?;
                 Ok(())
             }
+            #[cfg(unix)]
             Endpoint::Socket(socket) => {
                 socket.write(&[]).await?;
                 Ok(())
@@ -148,6 +163,7 @@ impl Endpoint {
             Endpoint::Secure(ref stream) => {
                 stream.get_ref().get_ref().get_ref().set_nodelay(val)?
             }
+            #[cfg(unix)]
             Endpoint::Socket(_) => (/* inapplicable */),
         }
         Ok(())
@@ -158,6 +174,7 @@ impl Endpoint {
         domain: String,
         ssl_opts: SslOpts,
     ) -> std::result::Result<(), IoError> {
+        #[cfg(unix)]
         if let Endpoint::Socket(_) = self {
             // inapplicable
             return Ok(());
@@ -198,7 +215,9 @@ impl Endpoint {
                 let tls_stream = tls_connector.connect(&*domain, stream).await?;
                 Endpoint::Secure(tls_stream)
             }
-            Endpoint::Secure(_) | Endpoint::Socket(_) => unreachable!(),
+            Endpoint::Secure(_) => unreachable!(),
+            #[cfg(unix)]
+            Endpoint::Socket(_) => unreachable!(),
         };
 
         Ok(())
@@ -211,6 +230,7 @@ impl From<TcpStream> for Endpoint {
     }
 }
 
+#[cfg(unix)]
 impl From<Socket> for Endpoint {
     fn from(socket: Socket) -> Self {
         Endpoint::Socket(socket)
@@ -235,6 +255,7 @@ impl AsyncRead for Endpoint {
                 Pin::new(stream.as_mut().unwrap()).poll_read(cx, buf)
             }
             EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_read(cx, buf),
+            #[cfg(unix)]
             EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_read(cx, buf),
         })
     }
@@ -252,6 +273,7 @@ impl AsyncWrite for Endpoint {
                 Pin::new(stream.as_mut().unwrap()).poll_write(cx, buf)
             }
             EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_write(cx, buf),
+            #[cfg(unix)]
             EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_write(cx, buf),
         })
     }
@@ -266,6 +288,7 @@ impl AsyncWrite for Endpoint {
                 Pin::new(stream.as_mut().unwrap()).poll_flush(cx)
             }
             EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_flush(cx),
+            #[cfg(unix)]
             EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_flush(cx),
         })
     }
@@ -280,6 +303,7 @@ impl AsyncWrite for Endpoint {
                 Pin::new(stream.as_mut().unwrap()).poll_shutdown(cx)
             }
             EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_shutdown(cx),
+            #[cfg(unix)]
             EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_shutdown(cx),
         })
     }
@@ -302,6 +326,7 @@ impl fmt::Debug for Stream {
 }
 
 impl Stream {
+    #[cfg(unix)]
     fn new<T: Into<Endpoint>>(endpoint: T) -> Self {
         let endpoint = endpoint.into();
 
@@ -406,6 +431,7 @@ impl Stream {
         }
     }
 
+    #[cfg(unix)]
     pub(crate) async fn connect_socket<P: AsRef<Path>>(path: P) -> io::Result<Stream> {
         Ok(Stream::new(Socket::new(path).await?))
     }
@@ -494,10 +520,11 @@ impl stream::Stream for Stream {
 
 #[cfg(test)]
 mod test {
-    use crate::{test_misc::get_opts, Conn};
-
+    #[cfg(unix)] // no sane way to retrieve current keepalive value on windows
     #[tokio::test]
     async fn should_connect_with_keepalive() {
+        use crate::{test_misc::get_opts, Conn};
+
         let opts = get_opts()
             .tcp_keepalive(Some(42_000_u32))
             .prefer_socket(false);
@@ -509,19 +536,10 @@ mod test {
             super::Endpoint::Secure(tls_stream) => tls_stream.get_ref().get_ref().get_ref(),
             _ => unreachable!(),
         };
-
-        #[cfg(unix)]
         let sock = unsafe {
             use std::os::unix::prelude::*;
             let raw = stream.as_raw_fd();
             socket2::Socket::from_raw_fd(raw)
-        };
-
-        #[cfg(windows)]
-        let sock = unsafe {
-            use std::os::windows::prelude::*;
-            let raw = stream.as_raw_socket();
-            socket2::Socket::from_raw_socket(raw)
         };
 
         assert_eq!(
