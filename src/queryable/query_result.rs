@@ -323,7 +323,7 @@ where
     /// Drops this query result.
     pub async fn drop_result(mut self) -> Result<()> {
         loop {
-            while let Some(_) = self.next().await? {}
+            while self.next().await?.is_some() {}
             if self.conn.get_pending_result().is_none() {
                 break Ok(());
             }

@@ -6,10 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures_util::{
-    future::{ok, FutureExt},
-    stream::{StreamExt, StreamFuture},
-};
+use futures_util::future::{ok, FutureExt};
 use pin_project::pin_project;
 use tokio::time::{self, Interval};
 
@@ -32,14 +29,14 @@ use std::pin::Pin;
 pub(crate) struct TtlCheckInterval {
     inner: Arc<Inner>,
     #[pin]
-    interval: StreamFuture<Interval>,
+    interval: Interval,
     pool_opts: PoolOpts,
 }
 
 impl TtlCheckInterval {
     /// Creates new `TtlCheckInterval`.
     pub fn new(pool_opts: PoolOpts, inner: Arc<Inner>) -> Self {
-        let interval = time::interval(pool_opts.ttl_check_interval()).into_future();
+        let interval = time::interval(pool_opts.ttl_check_interval());
         Self {
             inner,
             interval,
@@ -76,12 +73,11 @@ impl Future for TtlCheckInterval {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
-            let (_, interval) = futures_core::ready!(self.as_mut().project().interval.poll(cx));
+            let _ = futures_core::ready!(self.as_mut().project().interval.poll_tick(cx));
             let close = self.inner.close.load(Ordering::Acquire);
 
             if !close {
                 self.check_ttl();
-                self.interval = interval.into_future();
             } else {
                 return Poll::Ready(());
             }

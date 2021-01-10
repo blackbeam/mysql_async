@@ -143,7 +143,7 @@ impl ConnInner {
     fn stream_mut(&mut self) -> Result<&mut Stream> {
         self.stream
             .as_mut()
-            .ok_or(DriverError::ConnectionClosed.into())
+            .ok_or_else(|| DriverError::ConnectionClosed.into())
     }
 }
 
@@ -281,7 +281,9 @@ impl Conn {
                 result
             }
             Err(err) => {
-                self.take_stream().close().await?;
+                if self.inner.stream.is_some() {
+                    self.take_stream().close().await?;
+                }
                 Err(err)
             }
         }
@@ -344,7 +346,6 @@ impl Conn {
     fn setup_stream(&mut self) -> Result<()> {
         debug_assert!(self.inner.stream.is_some());
         if let Some(stream) = self.inner.stream.as_mut() {
-            stream.set_keepalive_ms(self.inner.opts.tcp_keepalive())?;
             stream.set_tcp_nodelay(self.inner.opts.tcp_nodelay())?;
         }
         Ok(())
@@ -450,7 +451,8 @@ impl Conn {
                 }
                 AuthPlugin::Other(ref name) => Err(DriverError::UnknownAuthPlugin {
                     name: String::from_utf8_lossy(name.as_ref()).to_string(),
-                })?,
+                }
+                .into()),
             }
         })
     }
@@ -500,20 +502,14 @@ impl Conn {
                     self.drop_packet().await?;
                     Ok(())
                 }
-                _ => Err(DriverError::UnexpectedPacket {
-                    payload: packet.into(),
-                }
-                .into()),
+                _ => Err(DriverError::UnexpectedPacket { payload: packet }.into()),
             },
             Some(0xfe) if !self.inner.auth_switched => {
                 let auth_switch_request = parse_auth_switch_request(&*packet)?.into_owned();
                 self.perform_auth_switch(auth_switch_request).await?;
                 Ok(())
             }
-            _ => Err(DriverError::UnexpectedPacket {
-                payload: packet.into(),
-            }
-            .into()),
+            _ => Err(DriverError::UnexpectedPacket { payload: packet }.into()),
         }
     }
 
@@ -541,7 +537,7 @@ impl Conn {
             self.handle_ok(ok_packet.into_owned());
         } else if let Ok(err_packet) = parse_err_packet(&*packet, self.capabilities()) {
             self.handle_err(err_packet.clone().into_owned());
-            return Err(err_packet.into()).into();
+            return Err(err_packet.into());
         }
 
         Ok(())
@@ -583,7 +579,7 @@ impl Conn {
 
     /// Returns future that sends full command body to a server.
     pub(crate) async fn write_command_raw(&mut self, body: Vec<u8>) -> Result<()> {
-        debug_assert!(body.len() > 0);
+        debug_assert!(!body.is_empty());
         self.clean_dirty().await?;
         self.reset_seq_id();
         self.write_packet(body).await
@@ -607,7 +603,7 @@ impl Conn {
     }
 
     async fn run_init_commands(&mut self) -> Result<()> {
-        let mut init: Vec<_> = self.inner.opts.init().iter().cloned().collect();
+        let mut init = self.inner.opts.init().to_vec();
 
         while let Some(query) = init.pop() {
             self.query_drop(query).await?;
@@ -622,10 +618,18 @@ impl Conn {
         let fut = Box::pin(async move {
             let mut conn = Conn::empty(opts.clone());
 
-            let stream = if let Some(path) = opts.socket() {
-                Stream::connect_socket(path.to_owned()).await?
+            let stream = if let Some(_path) = opts.socket() {
+                #[cfg(unix)]
+                {
+                    Stream::connect_socket(_path.to_owned()).await?
+                }
+                #[cfg(target_os = "windows")]
+                return Err(crate::DriverError::NamedPipesDisabled.into());
             } else {
-                Stream::connect_tcp(opts.hostport_or_url()).await?
+                let keepalive = opts
+                    .tcp_keepalive()
+                    .map(|x| std::time::Duration::from_millis(x.into()));
+                Stream::connect_tcp(opts.hostport_or_url(), keepalive).await?
             };
 
             conn.inner.stream = Some(stream);
@@ -659,13 +663,10 @@ impl Conn {
             let opts = self.inner.opts.clone();
             if opts.socket().is_none() {
                 let opts = OptsBuilder::from_opts(opts).socket(Some(&**socket));
-                match Conn::new(opts).await {
-                    Ok(conn) => {
-                        let old_conn = std::mem::replace(self, conn);
-                        // tidy up the old connection
-                        old_conn.close_conn().await?;
-                    }
-                    Err(_) => (),
+                if let Ok(conn) = Conn::new(opts).await {
+                    let old_conn = std::mem::replace(self, conn);
+                    // tidy up the old connection
+                    old_conn.close_conn().await?;
                 }
             }
         }
@@ -925,7 +926,7 @@ mod test {
     #[test]
     fn should_not_panic_if_dropped_without_tokio_runtime() {
         let fut = Conn::new(get_opts());
-        let mut runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             fut.await.unwrap();
         });

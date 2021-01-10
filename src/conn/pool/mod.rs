@@ -238,21 +238,17 @@ impl Pool {
 
         exchange.spawn_futures_if_needed(&self.inner);
 
-        loop {
-            if let Some(IdlingConn { mut conn, .. }) = exchange.available.pop_back() {
-                if !conn.expired() {
-                    return Poll::Ready(Ok(GetConn {
-                        pool: Some(self.clone()),
-                        inner: GetConnInner::Checking(BoxFuture(Box::pin(async move {
-                            conn.stream_mut()?.check().await?;
-                            Ok(conn)
-                        }))),
-                    }));
-                } else {
-                    self.send_to_recycler(conn);
-                }
+        while let Some(IdlingConn { mut conn, .. }) = exchange.available.pop_back() {
+            if !conn.expired() {
+                return Poll::Ready(Ok(GetConn {
+                    pool: Some(self.clone()),
+                    inner: GetConnInner::Checking(BoxFuture(Box::pin(async move {
+                        conn.stream_mut()?.check().await?;
+                        Ok(conn)
+                    }))),
+                }));
             } else {
-                break;
+                self.send_to_recycler(conn);
             }
         }
 
@@ -292,11 +288,10 @@ impl Drop for Conn {
 mod test {
     use futures_util::{
         future::{join_all, select, select_all, try_join_all},
-        stream::StreamExt,
         try_join, FutureExt,
     };
     use mysql_common::row::Row;
-    use tokio::time::delay_for;
+    use tokio::time::sleep;
 
     use std::time::Duration;
 
@@ -329,7 +324,7 @@ mod test {
             }
         }
 
-        let mut runtime = tokio::runtime::Runtime::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
         let database = Database {
             pool: Pool::new(get_opts()),
         };
@@ -388,7 +383,7 @@ mod test {
             // now check, that they're still in the pool..
             assert_eq!(ex_field!(pool, available).len(), NUM_CONNS);
 
-            delay_for(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(500)).await;
 
             // now get new connection..
             let _conn = pool.get_conn().await?;
@@ -425,7 +420,7 @@ mod test {
             }
             drop(tx);
             // see that all the tx's eventually complete
-            while let Some(_) = rx.next().await {}
+            while let Some(_) = rx.recv().await {}
         }
         drop(pool);
     }
@@ -479,16 +474,16 @@ mod test {
         drop(conns);
 
         // wait for a bit to let the connections be reclaimed
-        delay_for(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
 
         // check that connections are still in the pool because of inactive_connection_ttl
         assert_eq!(ex_field!(pool_clone, available).len(), POOL_MAX);
 
         // then, wait for ttl_check_interval
-        delay_for(TTL_CHECK_INTERVAL).await;
+        sleep(TTL_CHECK_INTERVAL).await;
 
         // wait a bit more to let the connections be reclaimed by the ttl check
-        delay_for(Duration::from_millis(500)).await;
+        sleep(Duration::from_millis(500)).await;
 
         // check that we have the expected number of connections
         assert_eq!(ex_field!(pool_clone, available).len(), POOL_MIN);
@@ -521,7 +516,7 @@ mod test {
             let _ = conns.pop();
 
             // then, wait for a bit to let the connection be reclaimed
-            delay_for(Duration::from_millis(50)).await;
+            sleep(Duration::from_millis(50)).await;
 
             // now check that we have the expected # of connections
             // this may look a little funky, but think of it this way:
@@ -602,7 +597,7 @@ mod test {
         assert_eq!(wait_timeout, Some(3));
         assert_eq!(ex_field!(pool, exist), 1);
 
-        delay_for(Duration::from_secs(6)).await;
+        sleep(Duration::from_secs(6)).await;
 
         let mut conn = pool.get_conn().await?;
         let id2: Option<usize> = conn.query_first("SELECT CONNECTION_ID()").await?;
@@ -643,8 +638,7 @@ mod test {
         const PANIC_MESSAGE: &str = "ORIGINAL_PANIC";
 
         let result = std::panic::catch_unwind(|| {
-            runtime::Builder::new()
-                .basic_scheduler()
+            runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
@@ -665,7 +659,7 @@ mod test {
     fn should_not_panic_on_unclean_shutdown() {
         // run more than once to trigger different drop orders
         for _ in 0..10 {
-            let mut rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tokio::runtime::Runtime::new().unwrap();
             let (tx, rx) = tokio::sync::oneshot::channel();
             rt.block_on(async move {
                 let pool = Pool::new(get_opts());
@@ -685,7 +679,7 @@ mod test {
     fn should_perform_clean_shutdown() {
         // run more than once to trigger different drop orders
         for _ in 0..10 {
-            let mut rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tokio::runtime::Runtime::new().unwrap();
             let (tx, rx) = tokio::sync::oneshot::channel();
             let jh = rt.spawn(async move {
                 let pool = Pool::new(get_opts());
@@ -768,10 +762,14 @@ mod test {
             // we need to cancel the op in the middle
             // this should not lead to the `packet out of order` error.
             let delay_micros = rand::random::<u128>() % max_delay;
-            select(delay_for(Duration::from_micros(delay_micros as u64)), fut).await;
+            select(
+                sleep(Duration::from_micros(delay_micros as u64)).boxed(),
+                fut,
+            )
+            .await;
 
             // give some time for connections to return to the pool
-            delay_for(Duration::from_millis(100)).await;
+            sleep(Duration::from_millis(100)).await;
         }
         Ok(())
     }

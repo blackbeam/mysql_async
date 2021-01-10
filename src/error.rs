@@ -149,6 +149,9 @@ pub enum DriverError {
 
     #[error("Bad compressed packet header.")]
     BadCompressedPacketHeader,
+
+    #[error("Named pipe connections temporary disabled (see tokio-rs/tokio#3118)")]
+    NamedPipesDisabled,
 }
 
 impl From<DriverError> for Error {
