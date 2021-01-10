@@ -31,7 +31,7 @@ use std::{
     future::Future,
     io::{
         self,
-        ErrorKind::{NotConnected, Other, UnexpectedEof},
+        ErrorKind::{BrokenPipe, NotConnected, Other},
         Read,
     },
     net::{SocketAddr, ToSocketAddrs},
@@ -113,10 +113,17 @@ struct CheckTcpStream<'a>(&'a mut TcpStream);
 impl Future for CheckTcpStream<'_> {
     type Output = io::Result<()>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let buf = &mut [0_u8];
-        match self.0.poll_peek(cx, &mut ReadBuf::new(buf)) {
-            Poll::Ready(Ok(0)) => Poll::Ready(Err(io::Error::new(UnexpectedEof, "broken pipe"))),
-            Poll::Ready(Ok(_)) => Poll::Ready(Err(io::Error::new(Other, "unexpected read"))),
+        match self.0.poll_read_ready(cx) {
+            Poll::Ready(Ok(())) => {
+                // stream is readable
+                let mut buf = [0_u8; 1];
+                match self.0.try_read(&mut buf) {
+                    Ok(0) => Poll::Ready(Err(io::Error::new(BrokenPipe, "broken pipe"))),
+                    Ok(_) => Poll::Ready(Err(io::Error::new(Other, "stream should be empty"))),
+                    Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Ready(Ok(())),
+                    Err(err) => Poll::Ready(Err(err)),
+                }
+            }
             Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
             Poll::Pending => Poll::Ready(Ok(())),
         }
@@ -126,6 +133,7 @@ impl Future for CheckTcpStream<'_> {
 impl Endpoint {
     /// Checks, that connection is alive.
     async fn check(&mut self) -> std::result::Result<(), IoError> {
+        //return Ok(());
         match self {
             Endpoint::Plain(Some(stream)) => {
                 CheckTcpStream(stream).await?;
@@ -512,10 +520,11 @@ impl stream::Stream for Stream {
 
 #[cfg(test)]
 mod test {
-    use crate::{test_misc::get_opts, Conn};
-
+    #[cfg(unix)] // no sane way to retrieve current keepalive value on windows
     #[tokio::test]
     async fn should_connect_with_keepalive() {
+        use crate::{test_misc::get_opts, Conn};
+
         let opts = get_opts()
             .tcp_keepalive(Some(42_000_u32))
             .prefer_socket(false);
@@ -527,19 +536,10 @@ mod test {
             super::Endpoint::Secure(tls_stream) => tls_stream.get_ref().get_ref().get_ref(),
             _ => unreachable!(),
         };
-
-        #[cfg(unix)]
         let sock = unsafe {
             use std::os::unix::prelude::*;
             let raw = stream.as_raw_fd();
             socket2::Socket::from_raw_fd(raw)
-        };
-
-        #[cfg(windows)]
-        let sock = unsafe {
-            use std::os::windows::prelude::*;
-            let raw = stream.as_raw_socket();
-            socket2::Socket::from_raw_socket(raw)
         };
 
         assert_eq!(

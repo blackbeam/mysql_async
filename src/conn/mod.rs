@@ -281,7 +281,9 @@ impl Conn {
                 result
             }
             Err(err) => {
-                self.take_stream().close().await?;
+                if self.inner.stream.is_some() {
+                    self.take_stream().close().await?;
+                }
                 Err(err)
             }
         }
