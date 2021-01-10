@@ -29,7 +29,7 @@ serde_json = "1"
 thiserror = "1.0.4"
 tokio = { version = "1.0", features = ["io-util", "fs", "net", "time"] }
 tokio-util = { version = "0.6.0", features = ["codec"] }
-tokio-native-tls = { git = "https://github.com/tokio-rs/tls.git" }
+tokio-native-tls = "0.3.0"
 twox-hash = "1"
 url = "2.1"
 uuid = { version = "0.8.1", features = ["v4"] }
