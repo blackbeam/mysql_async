@@ -41,7 +41,7 @@ pub trait Query: Send + Sized {
     /// Query protocol.
     type Protocol: crate::prelude::Protocol;
 
-    /// This methods corresponds to [`Queryable::query_iter`][query_iter].
+    /// This method corresponds to [`Queryable::query_iter`][query_iter].
     ///
     /// [query_iter]: crate::prelude::Queryable::query_iter
     fn run<'a, 't: 'a, C>(self, conn: C) -> BoxFuture<'a, QueryResult<'a, 't, Self::Protocol>>
@@ -163,11 +163,11 @@ pub struct QueryWithParams<Q, P> {
 
 /// Helper, that constructs [`QueryWithParams`].
 pub trait WithParams: Sized {
-    fn with<P>(&self, params: P) -> QueryWithParams<Self, P>;
+    fn with<P>(self, params: P) -> QueryWithParams<Self, P>;
 }
 
-impl<'a, T: StatementLike + ?Sized> WithParams for &'a T {
-    fn with<P>(&self, params: P) -> QueryWithParams<Self, P> {
+impl<T: StatementLike> WithParams for T {
+    fn with<P>(self, params: P) -> QueryWithParams<Self, P> {
         QueryWithParams {
             query: self,
             params,
@@ -175,9 +175,9 @@ impl<'a, T: StatementLike + ?Sized> WithParams for &'a T {
     }
 }
 
-impl<Q, P> Query for QueryWithParams<&'_ Q, P>
+impl<Q, P> Query for QueryWithParams<Q, P>
 where
-    Q: StatementLike + ?Sized,
+    Q: StatementLike,
     P: Into<Params> + Send,
 {
     type Protocol = BinaryProtocol;
@@ -234,9 +234,9 @@ pub trait BatchQuery {
         C: ToConnection<'a, 't> + 'a;
 }
 
-impl<Q, I, P> BatchQuery for QueryWithParams<&'_ Q, I>
+impl<Q, I, P> BatchQuery for QueryWithParams<Q, I>
 where
-    Q: StatementLike + ?Sized,
+    Q: StatementLike,
     I: IntoIterator<Item = P> + Send,
     I::IntoIter: Send,
     P: Into<Params> + Send,
@@ -327,8 +327,22 @@ mod tests {
 
     #[tokio::test]
     async fn should_run_bin_query() -> Result<()> {
-        let query_static = "SELECT ?, ? UNION ALL SELECT ?, ?";
-        let query_string = String::from(query_static);
+        macro_rules! query {
+            (@static) => {
+                "SELECT ?, ? UNION ALL SELECT ?, ?"
+            };
+            (@string) => {
+                String::from("SELECT ?, ? UNION ALL SELECT ?, ?")
+            };
+            (@boxed) => {
+                query!(@string).into_boxed_str()
+            };
+            (@arc) => {
+                std::sync::Arc::<str>::from(query!(@boxed))
+            };
+        }
+
+        let query_string = query!(@string);
         let params_static = ("1", "2", "3", "4");
         let params_string = (
             "1".to_owned(),
@@ -339,7 +353,8 @@ mod tests {
 
         macro_rules! test {
             ($query:expr, $params:expr, $conn:expr) => {{
-                let mut result = $query.with($params).run($conn).await?;
+                let query = { $query.with($params) };
+                let mut result = query.run($conn).await?;
                 let result1: Vec<(u8, u8)> = result.collect().await?;
                 assert_eq!(result1, vec![(1, 2), (3, 4)]);
 
@@ -371,23 +386,34 @@ mod tests {
         }
 
         let mut conn = Conn::new(get_opts()).await?;
-        test!(query_static, params_static, &mut conn);
-        test!(query_string.as_str(), params_string.clone(), &mut conn);
+        let statement = conn.prep(query!(@static)).await?;
+        test!(query!(@static), params_static, &mut conn);
+        test!(query!(@string), params_string.clone(), &mut conn);
+        test!(query!(@boxed), params_string.clone(), &mut conn);
+        test!(query!(@arc), params_string.clone(), &mut conn);
+        test!(&query_string, params_string.clone(), &mut conn);
+        test!(&statement, params_string.clone(), &mut conn);
+        test!(statement.clone(), params_string.clone(), &mut conn);
 
         let mut tx = conn.start_transaction(Default::default()).await?;
-        test!(query_static, params_string.clone(), &mut tx);
-        test!(query_string.as_str(), params_static, &mut tx);
+        test!(query!(@static), params_string.clone(), &mut tx);
+        test!(query!(@string), params_static, &mut tx);
+        test!(&query_string, params_static, &mut tx);
+        test!(&statement, params_string.clone(), &mut tx);
+        test!(statement.clone(), params_string.clone(), &mut tx);
         tx.rollback().await?;
 
         conn.disconnect().await?;
 
         let pool = Pool::new(get_opts());
-        test!(query_static, params_static, &pool);
-        test!(query_string.as_str(), params_string.clone(), &pool);
+        test!(query!(@static), params_static, &pool);
+        test!(query!(@string), params_string.clone(), &pool);
+        test!(&query_string, params_string.clone(), &pool);
 
         let mut tx = pool.start_transaction(Default::default()).await?;
-        test!(query_static, params_string.clone(), &mut tx);
-        test!(query_string.as_str(), params_static, &mut tx);
+        test!(query!(@static), params_string.clone(), &mut tx);
+        test!(query!(@string), params_static, &mut tx);
+        test!(&query_string, params_static, &mut tx);
         tx.rollback().await?;
 
         pool.disconnect().await?;

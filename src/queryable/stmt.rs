@@ -30,26 +30,86 @@ pub enum ToStatementResult<'a> {
 
 pub trait StatementLike: Send + Sync {
     /// Returns a statement.
-    fn to_statement<'a>(&'a self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>;
+    fn to_statement<'a>(self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>
+    where
+        Self: 'a;
 }
 
-impl StatementLike for str {
-    fn to_statement<'a>(&'a self, conn: &'a mut crate::Conn) -> ToStatementResult<'a> {
-        let fut = crate::BoxFuture(Box::pin(async move {
-            let (named_params, raw_query) = parse_named_params(self)?;
-            let inner_stmt = match conn.get_cached_stmt(&*raw_query) {
-                Some(inner_stmt) => inner_stmt,
-                None => conn.prepare_statement(raw_query).await?,
-            };
-            Ok(Statement::new(inner_stmt, named_params))
-        }));
-        ToStatementResult::Mediate(fut)
+fn to_statement_move<'a, T: AsRef<str> + Send + Sync + 'a>(
+    stmt: T,
+    conn: &'a mut crate::Conn,
+) -> ToStatementResult<'a> {
+    let fut = crate::BoxFuture(Box::pin(async move {
+        let (named_params, raw_query) = parse_named_params(stmt.as_ref())?;
+        let inner_stmt = match conn.get_cached_stmt(&*raw_query) {
+            Some(inner_stmt) => inner_stmt,
+            None => conn.prepare_statement(raw_query).await?,
+        };
+        Ok(Statement::new(inner_stmt, named_params))
+    }));
+    ToStatementResult::Mediate(fut)
+}
+
+impl StatementLike for Cow<'_, str> {
+    fn to_statement<'a>(self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>
+    where
+        Self: 'a,
+    {
+        to_statement_move(self, conn)
+    }
+}
+
+impl StatementLike for &'_ str {
+    fn to_statement<'a>(self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>
+    where
+        Self: 'a,
+    {
+        to_statement_move(self, conn)
+    }
+}
+
+impl StatementLike for String {
+    fn to_statement<'a>(self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>
+    where
+        Self: 'a,
+    {
+        to_statement_move(self, conn)
+    }
+}
+
+impl StatementLike for Box<str> {
+    fn to_statement<'a>(self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>
+    where
+        Self: 'a,
+    {
+        to_statement_move(self, conn)
+    }
+}
+
+impl StatementLike for Arc<str> {
+    fn to_statement<'a>(self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>
+    where
+        Self: 'a,
+    {
+        to_statement_move(self, conn)
     }
 }
 
 impl StatementLike for Statement {
-    fn to_statement<'a>(&'a self, _conn: &'a mut crate::Conn) -> ToStatementResult<'static> {
+    fn to_statement<'a>(self, _conn: &'a mut crate::Conn) -> ToStatementResult<'static>
+    where
+        Self: 'a,
+    {
         ToStatementResult::Immediate(self.clone())
+    }
+}
+
+impl<T: StatementLike + Clone> StatementLike for &'_ T {
+    fn to_statement<'a>(self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>
+    where
+        Self: 'a,
+    {
+        self.clone().to_statement(conn)
     }
 }
 
@@ -199,9 +259,9 @@ impl crate::Conn {
     }
 
     /// Helper, that retrieves `Statement` from `StatementLike`.
-    pub(crate) async fn get_statement<U>(&mut self, stmt_like: &U) -> Result<Statement>
+    pub(crate) async fn get_statement<U>(&mut self, stmt_like: U) -> Result<Statement>
     where
-        U: StatementLike + ?Sized,
+        U: StatementLike,
     {
         match stmt_like.to_statement(self) {
             ToStatementResult::Immediate(statement) => Ok(statement),
