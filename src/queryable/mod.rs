@@ -136,11 +136,11 @@ pub trait Queryable: Send {
     /// It'll prepare `stmt`, if necessary.
     fn exec_iter<'a: 's, 's, Q, P>(
         &'a mut self,
-        stmt: &'s Q,
+        stmt: Q,
         params: P,
     ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
     where
-        Q: StatementLike + ?Sized + 'a,
+        Q: StatementLike + 'a,
         P: Into<Params>;
 
     /// Performs the given query and collects the first result set.
@@ -179,13 +179,9 @@ pub trait Queryable: Send {
     /// Exectues the given statement for each item in the given params iterator.
     ///
     /// It'll prepare `stmt` (once), if necessary.
-    fn exec_batch<'a: 'b, 'b, S, P, I>(
-        &'a mut self,
-        stmt: &'b S,
-        params_iter: I,
-    ) -> BoxFuture<'b, ()>
+    fn exec_batch<'a: 'b, 'b, S, P, I>(&'a mut self, stmt: S, params_iter: I) -> BoxFuture<'b, ()>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         I: IntoIterator<Item = P> + Send + 'b,
         I::IntoIter: Send,
         P: Into<Params> + Send;
@@ -193,9 +189,9 @@ pub trait Queryable: Send {
     /// Exectues the given statement and collects the first result set.
     ///
     /// It'll prepare `stmt`, if necessary.
-    fn exec<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, Vec<T>>
+    fn exec<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, Vec<T>>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static;
 
@@ -204,11 +200,11 @@ pub trait Queryable: Send {
     /// It'll prepare `stmt`, if necessary.
     fn exec_first<'a: 'b, 'b, T, S, P>(
         &'a mut self,
-        stmt: &'b S,
+        stmt: S,
         params: P,
     ) -> BoxFuture<'b, Option<T>>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static;
 
@@ -217,12 +213,12 @@ pub trait Queryable: Send {
     /// It'll prepare `stmt`, if necessary.
     fn exec_map<'a: 'b, 'b, T, S, P, U, F>(
         &'a mut self,
-        stmt: &'b S,
+        stmt: S,
         params: P,
         f: F,
     ) -> BoxFuture<'b, Vec<U>>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static,
         F: FnMut(T) -> U + Send + 'a,
@@ -233,22 +229,22 @@ pub trait Queryable: Send {
     /// It'll prepare `stmt`, if necessary.
     fn exec_fold<'a: 'b, 'b, T, S, P, U, F>(
         &'a mut self,
-        stmt: &'b S,
+        stmt: S,
         params: P,
         init: U,
         f: F,
     ) -> BoxFuture<'b, U>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static,
         F: FnMut(U, T) -> U + Send + 'a,
         U: Send + 'a;
 
     /// Exectues the given statement and drops the result.
-    fn exec_drop<'a: 'b, 'b, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, ()>
+    fn exec_drop<'a: 'b, 'b, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, ()>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b;
 }
 
@@ -292,11 +288,11 @@ impl Queryable for Conn {
 
     fn exec_iter<'a: 's, 's, Q, P>(
         &'a mut self,
-        stmt: &'s Q,
+        stmt: Q,
         params: P,
     ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
     where
-        Q: StatementLike + ?Sized + 'a,
+        Q: StatementLike + 'a,
         P: Into<Params>,
     {
         let params = params.into();
@@ -374,13 +370,9 @@ impl Queryable for Conn {
         }))
     }
 
-    fn exec_batch<'a: 'b, 'b, S, P, I>(
-        &'a mut self,
-        stmt: &'b S,
-        params_iter: I,
-    ) -> BoxFuture<'b, ()>
+    fn exec_batch<'a: 'b, 'b, S, P, I>(&'a mut self, stmt: S, params_iter: I) -> BoxFuture<'b, ()>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         I: IntoIterator<Item = P> + Send + 'b,
         I::IntoIter: Send,
         P: Into<Params> + Send,
@@ -397,9 +389,9 @@ impl Queryable for Conn {
         }))
     }
 
-    fn exec<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, Vec<T>>
+    fn exec<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, Vec<T>>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static,
     {
@@ -411,13 +403,9 @@ impl Queryable for Conn {
         }))
     }
 
-    fn exec_first<'a: 'b, 'b, T, S, P>(
-        &'a mut self,
-        stmt: &'b S,
-        params: P,
-    ) -> BoxFuture<'b, Option<T>>
+    fn exec_first<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, Option<T>>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static,
     {
@@ -435,12 +423,12 @@ impl Queryable for Conn {
 
     fn exec_map<'a: 'b, 'b, T, S, P, U, F>(
         &'a mut self,
-        stmt: &'b S,
+        stmt: S,
         params: P,
         mut f: F,
     ) -> BoxFuture<'b, Vec<U>>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static,
         F: FnMut(T) -> U + Send + 'a,
@@ -457,13 +445,13 @@ impl Queryable for Conn {
 
     fn exec_fold<'a: 'b, 'b, T, S, P, U, F>(
         &'a mut self,
-        stmt: &'b S,
+        stmt: S,
         params: P,
         init: U,
         mut f: F,
     ) -> BoxFuture<'b, U>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static,
         F: FnMut(U, T) -> U + Send + 'a,
@@ -477,9 +465,9 @@ impl Queryable for Conn {
         }))
     }
 
-    fn exec_drop<'a: 'b, 'b, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, ()>
+    fn exec_drop<'a: 'b, 'b, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, ()>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
     {
         BoxFuture(Box::pin(async move {
@@ -514,11 +502,11 @@ impl Queryable for Transaction<'_> {
     }
     fn exec_iter<'a: 's, 's, Q, P>(
         &'a mut self,
-        stmt: &'s Q,
+        stmt: Q,
         params: P,
     ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
     where
-        Q: StatementLike + ?Sized + 'a,
+        Q: StatementLike + 'a,
         P: Into<Params>,
     {
         self.0.exec_iter(stmt, params)
@@ -561,34 +549,26 @@ impl Queryable for Transaction<'_> {
     {
         self.0.query_drop(query)
     }
-    fn exec_batch<'a: 'b, 'b, S, P, I>(
-        &'a mut self,
-        stmt: &'b S,
-        params_iter: I,
-    ) -> BoxFuture<'b, ()>
+    fn exec_batch<'a: 'b, 'b, S, P, I>(&'a mut self, stmt: S, params_iter: I) -> BoxFuture<'b, ()>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         I: IntoIterator<Item = P> + Send + 'b,
         I::IntoIter: Send,
         P: Into<Params> + Send,
     {
         self.0.exec_batch(stmt, params_iter)
     }
-    fn exec<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, Vec<T>>
+    fn exec<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, Vec<T>>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static,
     {
         self.0.exec(stmt, params)
     }
-    fn exec_first<'a: 'b, 'b, T, S, P>(
-        &'a mut self,
-        stmt: &'b S,
-        params: P,
-    ) -> BoxFuture<'b, Option<T>>
+    fn exec_first<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, Option<T>>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static,
     {
@@ -596,12 +576,12 @@ impl Queryable for Transaction<'_> {
     }
     fn exec_map<'a: 'b, 'b, T, S, P, U, F>(
         &'a mut self,
-        stmt: &'b S,
+        stmt: S,
         params: P,
         f: F,
     ) -> BoxFuture<'b, Vec<U>>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static,
         F: FnMut(T) -> U + Send + 'a,
@@ -611,13 +591,13 @@ impl Queryable for Transaction<'_> {
     }
     fn exec_fold<'a: 'b, 'b, T, S, P, U, F>(
         &'a mut self,
-        stmt: &'b S,
+        stmt: S,
         params: P,
         init: U,
         f: F,
     ) -> BoxFuture<'b, U>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
         T: FromRow + Send + 'static,
         F: FnMut(U, T) -> U + Send + 'a,
@@ -625,9 +605,9 @@ impl Queryable for Transaction<'_> {
     {
         self.0.exec_fold(stmt, params, init, f)
     }
-    fn exec_drop<'a: 'b, 'b, S, P>(&'a mut self, stmt: &'b S, params: P) -> BoxFuture<'b, ()>
+    fn exec_drop<'a: 'b, 'b, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, ()>
     where
-        S: StatementLike + ?Sized + 'b,
+        S: StatementLike + 'b,
         P: Into<Params> + Send + 'b,
     {
         self.0.exec_drop(stmt, params)

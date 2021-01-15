@@ -218,12 +218,29 @@ pub mod prelude {
     pub use mysql_common::value::convert::{ConvIr, FromValue, ToValue};
 
     /// Everything that is a statement.
+    ///
+    /// ```no_run
+    /// # use std::{borrow::Cow, sync::Arc};
+    /// # use mysql_async::{Statement, prelude::StatementLike};
+    /// fn type_is_a_stmt<T: StatementLike>() {}
+    ///
+    /// type_is_a_stmt::<Cow<'_, str>>();
+    /// type_is_a_stmt::<&'_ str>();
+    /// type_is_a_stmt::<String>();
+    /// type_is_a_stmt::<Box<str>>();
+    /// type_is_a_stmt::<Arc<str>>();
+    /// type_is_a_stmt::<Statement>();
+    ///
+    /// fn ref_to_a_clonable_stmt_is_also_a_stmt<T: StatementLike + Clone>() {
+    ///     type_is_a_stmt::<&T>();
+    /// }
+    /// ```
     pub trait StatementLike: crate::queryable::stmt::StatementLike {}
-    impl StatementLike for str {}
-    impl StatementLike for crate::Statement {}
+    impl<T: crate::queryable::stmt::StatementLike> StatementLike for T {}
 
     /// Everything that is a connection.
     pub trait ToConnection<'a, 't: 'a>: crate::connection_like::ToConnection<'a, 't> {}
+    // explicitly implemented because of rusdoc
     impl<'a> ToConnection<'a, 'static> for &'a crate::Pool {}
     impl ToConnection<'static, 'static> for crate::Conn {}
     impl<'a> ToConnection<'a, 'static> for &'a mut crate::Conn {}
