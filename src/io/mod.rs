@@ -359,12 +359,21 @@ impl Stream {
                 let mut stream = socket.connect(addr)?;
                 let mut poll = mio::Poll::new()?;
                 let mut events = mio::Events::with_capacity(1024);
+
                 poll.registry()
                     .register(&mut stream, mio::Token(0), mio::Interest::WRITABLE)?;
+
                 loop {
                     poll.poll(&mut events, None)?;
 
                     for event in &events {
+                        if event.token() == mio::Token(0) && event.is_error() {
+                            return Err(io::Error::new(
+                                io::ErrorKind::ConnectionRefused,
+                                "Connection refused",
+                            ));
+                        }
+
                         if event.token() == mio::Token(0) && event.is_writable() {
                             // The socket connected (probably, it could still be a spurious
                             // wakeup)
