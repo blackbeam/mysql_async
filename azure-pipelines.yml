@@ -33,6 +33,7 @@ jobs:
         condition: and(succeeded(), eq(variables['installRust.toolchain'], 'stable'))
         displayName: cargo fmt
       - bash: |
+          cargo +nightly build -Zfeatures=dev_dep
           SSL=false COMPRESS=false cargo test
           SSL=true COMPRESS=false cargo test
           SSL=false COMPRESS=true cargo test
