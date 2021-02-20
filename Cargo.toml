@@ -27,7 +27,7 @@ pin-project = "1.0.2"
 serde = "1"
 serde_json = "1"
 thiserror = "1.0.4"
-tokio = { version = "1.0", features = ["io-util", "fs", "net", "time"] }
+tokio = { version = "1.0", features = ["io-util", "fs", "net", "time", "rt"] }
 tokio-util = { version = "0.6.0", features = ["codec"] }
 tokio-native-tls = "0.3.0"
 twox-hash = "1"
