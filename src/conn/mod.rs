@@ -360,7 +360,10 @@ impl Conn {
         };
 
         self.inner.capabilities = handshake.capabilities() & self.inner.opts.get_capabilities();
-        self.inner.version = handshake.server_version_parsed().unwrap_or((0, 0, 0));
+        self.inner.version = handshake
+            .maria_db_server_version_parsed()
+            .or_else(|| handshake.server_version_parsed())
+            .unwrap_or((0, 0, 0));
         self.inner.id = handshake.connection_id();
         self.inner.status = handshake.status_flags();
         self.inner.auth_plugin = match handshake.auth_plugin() {
