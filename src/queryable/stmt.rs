@@ -6,6 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use futures_util::FutureExt;
 use mysql_common::{
     io::ParseBuf,
     named_params::parse_named_params,
@@ -40,14 +41,15 @@ fn to_statement_move<'a, T: AsRef<str> + Send + Sync + 'a>(
     stmt: T,
     conn: &'a mut crate::Conn,
 ) -> ToStatementResult<'a> {
-    let fut = crate::BoxFuture(Box::pin(async move {
+    let fut = async move {
         let (named_params, raw_query) = parse_named_params(stmt.as_ref())?;
         let inner_stmt = match conn.get_cached_stmt(&*raw_query) {
             Some(inner_stmt) => inner_stmt,
             None => conn.prepare_statement(raw_query).await?,
         };
         Ok(Statement::new(inner_stmt, named_params))
-    }));
+    }
+    .boxed();
     ToStatementResult::Mediate(fut)
 }
 

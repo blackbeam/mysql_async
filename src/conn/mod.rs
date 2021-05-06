@@ -6,6 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use futures_util::FutureExt;
 pub use mysql_common::named_params;
 
 use mysql_common::{
@@ -679,7 +680,7 @@ impl Conn {
     /// Returns a future that resolves to [`Conn`].
     pub fn new<T: Into<Opts>>(opts: T) -> crate::BoxFuture<'static, Conn> {
         let opts = opts.into();
-        let fut = Box::pin(async move {
+        async move {
             let mut conn = Conn::empty(opts.clone());
 
             let stream = if let Some(_path) = opts.socket() {
@@ -710,8 +711,8 @@ impl Conn {
             conn.run_init_commands().await?;
 
             Ok(conn)
-        });
-        crate::BoxFuture(fut)
+        }
+        .boxed()
     }
 
     /// Returns a future that resolves to [`Conn`].
