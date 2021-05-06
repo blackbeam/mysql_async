@@ -100,7 +100,9 @@ extern crate test;
 
 pub use mysql_common::{chrono, constants as consts, params, time, uuid};
 
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, sync::Arc};
+
+mod buffer_pool;
 
 #[macro_use]
 mod macros;
@@ -116,6 +118,9 @@ mod queryable;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct BoxFuture<'a, T>(Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>);
+
+static BUFFER_POOL: once_cell::sync::Lazy<Arc<crate::buffer_pool::BufferPool>> =
+    once_cell::sync::Lazy::new(|| Default::default());
 
 impl<T> Future for BoxFuture<'_, T> {
     type Output = Result<T>;

@@ -9,7 +9,7 @@
 pub use url::ParseError;
 
 use mysql_common::{
-    named_params::MixedParamsError, packets::ErrPacket, params::MissingNamedParameterError,
+    named_params::MixedParamsError, params::MissingNamedParameterError,
     proto::codec::error::PacketCodecError, row::Row, value::Value,
 };
 use thiserror::Error;
@@ -196,8 +196,8 @@ impl From<native_tls::Error> for IoError {
     }
 }
 
-impl From<ErrPacket<'_>> for ServerError {
-    fn from(packet: ErrPacket<'_>) -> Self {
+impl From<mysql_common::packets::ServerError<'_>> for ServerError {
+    fn from(packet: mysql_common::packets::ServerError<'_>) -> Self {
         ServerError {
             code: packet.error_code(),
             message: packet.message_str().into(),
@@ -206,8 +206,8 @@ impl From<ErrPacket<'_>> for ServerError {
     }
 }
 
-impl From<ErrPacket<'_>> for Error {
-    fn from(packet: ErrPacket<'_>) -> Self {
+impl From<mysql_common::packets::ServerError<'_>> for Error {
+    fn from(packet: mysql_common::packets::ServerError<'_>) -> Self {
         Error::Server(packet.into())
     }
 }

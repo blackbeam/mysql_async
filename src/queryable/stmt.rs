@@ -7,8 +7,9 @@
 // modified, or distributed except according to those terms.
 
 use mysql_common::{
+    io::ParseBuf,
     named_params::parse_named_params,
-    packets::{column_from_payload, parse_stmt_packet, ComStmtClose, StmtPacket},
+    packets::{ComStmtClose, StmtPacket},
 };
 
 use std::{borrow::Cow, sync::Arc};
@@ -129,7 +130,7 @@ impl StmtInner {
         connection_id: u32,
         raw_query: Arc<str>,
     ) -> std::io::Result<Self> {
-        let stmt_packet = parse_stmt_packet(pld)?;
+        let stmt_packet = ParseBuf(pld).parse(())?;
 
         Ok(Self {
             raw_query,
@@ -244,7 +245,7 @@ impl crate::Conn {
         let packets = self.read_packets(num).await?;
         let defs = packets
             .into_iter()
-            .map(column_from_payload)
+            .map(|x| ParseBuf(&*x).parse(()))
             .collect::<std::result::Result<Vec<Column>, _>>()
             .map_err(Error::from)?;
 
@@ -299,6 +300,6 @@ impl crate::Conn {
     /// Helper, that closes statement with the given id.
     pub(crate) async fn close_statement(&mut self, id: u32) -> Result<()> {
         self.stmt_cache_mut().remove(id);
-        self.write_command_raw(ComStmtClose::new(id).into()).await
+        self.write_command(&ComStmtClose::new(id)).await
     }
 }
