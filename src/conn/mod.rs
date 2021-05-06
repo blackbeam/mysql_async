@@ -200,6 +200,11 @@ impl Conn {
             .unwrap_or_default()
     }
 
+    /// Returns a reference to the last OK packet.
+    pub fn last_ok_packet(&self) -> Option<&OkPacket<'static>> {
+        self.inner.last_ok_packet.as_ref()
+    }
+
     pub(crate) fn stream_mut(&mut self) -> Result<&mut Stream> {
         self.inner.stream_mut()
     }
