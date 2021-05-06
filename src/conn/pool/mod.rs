@@ -6,6 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use futures_util::FutureExt;
 use tokio::sync::mpsc;
 
 use std::{
@@ -22,7 +23,6 @@ use crate::{
     error::*,
     opts::{Opts, PoolOpts},
     queryable::transaction::{Transaction, TxOpts, TxStatus},
-    BoxFuture,
 };
 
 mod recycler;
@@ -242,10 +242,13 @@ impl Pool {
             if !conn.expired() {
                 return Poll::Ready(Ok(GetConn {
                     pool: Some(self.clone()),
-                    inner: GetConnInner::Checking(BoxFuture(Box::pin(async move {
-                        conn.stream_mut()?.check().await?;
-                        Ok(conn)
-                    }))),
+                    inner: GetConnInner::Checking(
+                        async move {
+                            conn.stream_mut()?.check().await?;
+                            Ok(conn)
+                        }
+                        .boxed(),
+                    ),
                 }));
             } else {
                 self.send_to_recycler(conn);
@@ -260,7 +263,7 @@ impl Pool {
 
             return Poll::Ready(Ok(GetConn {
                 pool: Some(self.clone()),
-                inner: GetConnInner::Connecting(BoxFuture(Box::pin(Conn::new(self.opts.clone())))),
+                inner: GetConnInner::Connecting(Conn::new(self.opts.clone()).boxed()),
             }));
         }
 
@@ -358,11 +361,12 @@ mod test {
 
             // create some conns..
             let connections = (0..NUM_CONNS).map(|_| {
-                crate::BoxFuture(Box::pin(async {
+                async {
                     let mut conn = pool.get_conn().await?;
                     conn.ping().await?;
-                    Ok(conn)
-                }))
+                    crate::Result::Ok(conn)
+                }
+                .boxed()
             });
 
             // collect ids..

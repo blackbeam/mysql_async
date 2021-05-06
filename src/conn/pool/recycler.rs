@@ -7,7 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use futures_core::stream::Stream;
-use futures_util::stream::futures_unordered::FuturesUnordered;
+use futures_util::{stream::futures_unordered::FuturesUnordered, FutureExt};
 use tokio::sync::mpsc;
 
 use std::{
@@ -64,22 +64,18 @@ impl Future for Recycler {
             ($self:ident, $conn:ident) => {
                 if $conn.inner.stream.is_none() || $conn.inner.disconnected {
                     // drop unestablished connection
-                    $self
-                        .discard
-                        .push(BoxFuture(Box::pin(::futures_util::future::ok(()))));
+                    $self.discard.push(futures_util::future::ok(()).boxed());
                 } else if $conn.inner.tx_status != TxStatus::None
                     || $conn.inner.pending_result.is_some()
                 {
-                    $self
-                        .cleaning
-                        .push(BoxFuture(Box::pin($conn.cleanup_for_pool())));
+                    $self.cleaning.push($conn.cleanup_for_pool().boxed());
                 } else if $conn.expired() || close {
-                    $self.discard.push(BoxFuture(Box::pin($conn.close_conn())));
+                    $self.discard.push($conn.close_conn().boxed());
                 } else {
                     let mut exchange = $self.inner.exchange.lock().unwrap();
                     if exchange.available.len() >= $self.pool_opts.active_bound() {
                         drop(exchange);
-                        $self.discard.push(BoxFuture(Box::pin($conn.close_conn())));
+                        $self.discard.push($conn.close_conn().boxed());
                     } else {
                         exchange.available.push_back($conn.into());
                         if let Some(w) = exchange.waiting.pop_front() {

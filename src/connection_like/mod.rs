@@ -6,6 +6,8 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use futures_util::FutureExt;
+
 use crate::{BoxFuture, Pool};
 
 /// Connection.
@@ -79,10 +81,11 @@ impl<'a, 't: 'a, T: Into<Connection<'a, 't>> + Send> ToConnection<'a, 't> for T 
 
 impl<'a> ToConnection<'a, 'static> for &'a Pool {
     fn to_connection(self) -> ToConnectionResult<'a, 'static> {
-        let fut = BoxFuture(Box::pin(async move {
+        let fut = async move {
             let conn = self.get_conn().await?;
             Ok(conn.into())
-        }));
+        }
+        .boxed();
         ToConnectionResult::Mediate(fut)
     }
 }
