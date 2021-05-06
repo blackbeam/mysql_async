@@ -146,7 +146,13 @@ pub use self::opts::{
 pub use self::local_infile_handler::{builtin::WhiteListFsLocalInfileHandler, InfileHandlerFuture};
 
 #[doc(inline)]
-pub use mysql_common::packets::Column;
+pub use mysql_common::packets::{
+    session_state_change::{
+        Gtids, Schema, SessionStateChange, SystemVariable, TransactionCharacteristics,
+        TransactionState, Unsupported,
+    },
+    Column, OkPacket, SessionStateInfo,
+};
 
 #[doc(inline)]
 pub use mysql_common::proto::codec::Compression;
