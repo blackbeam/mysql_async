@@ -7,9 +7,11 @@
 // modified, or distributed except according to those terms.
 
 use mysql_common::{
-    packets::{parse_ok_packet, OkPacketKind},
-    row::new_row,
-    value::{read_bin_values, read_text_values, ServerSide},
+    io::ParseBuf,
+    packets::{OkPacketDeserializer, ResultSetTerminator},
+    proto::{Binary, Text},
+    row::RowDeserializer,
+    value::ServerSide,
 };
 
 use std::{fmt, sync::Arc};
@@ -38,7 +40,10 @@ pub trait Protocol: fmt::Debug + Send + Sync + 'static {
     fn result_set_meta(columns: Arc<[Column]>) -> ResultSetMeta;
     fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row>;
     fn is_last_result_set_packet(capabilities: CapabilityFlags, packet: &[u8]) -> bool {
-        parse_ok_packet(packet, capabilities, OkPacketKind::ResultSetTerminator).is_ok()
+        packet.len() < 8
+            && ParseBuf(packet)
+                .parse::<OkPacketDeserializer<ResultSetTerminator>>(capabilities)
+                .is_ok()
     }
 }
 
@@ -56,8 +61,9 @@ impl Protocol for TextProtocol {
     }
 
     fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row> {
-        read_text_values(packet, columns.len())
-            .map(|values| new_row(values, columns))
+        ParseBuf(packet)
+            .parse::<RowDeserializer<ServerSide, Text>>(columns)
+            .map(Into::into)
             .map_err(Into::into)
     }
 }
@@ -68,8 +74,9 @@ impl Protocol for BinaryProtocol {
     }
 
     fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row> {
-        read_bin_values::<ServerSide>(packet, &*columns)
-            .map(|values| new_row(values, columns))
+        ParseBuf(packet)
+            .parse::<RowDeserializer<ServerSide, Binary>>(columns)
+            .map(Into::into)
             .map_err(Into::into)
     }
 }

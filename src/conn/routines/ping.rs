@@ -13,8 +13,7 @@ pub struct PingRoutine;
 impl Routine<()> for PingRoutine {
     fn call<'a>(&'a mut self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<()>> {
         async move {
-            conn.write_command_raw(vec![Command::COM_PING as u8])
-                .await?;
+            conn.write_command_data(Command::COM_PING, &[]).await?;
             conn.read_packet().await?;
             Ok(())
         }

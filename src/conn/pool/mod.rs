@@ -651,7 +651,7 @@ mod test {
 
         assert_eq!(
             *result.unwrap_err().downcast::<&str>().unwrap(),
-            PANIC_MESSAGE,
+            "ORIGINAL_PANIC",
         );
     }
 

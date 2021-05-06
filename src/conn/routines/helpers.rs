@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use mysql_common::{
     constants::MAX_PAYLOAD_LEN,
-    io::ReadMysqlExt,
-    packets::{parse_local_infile_packet, ComStmtSendLongData},
+    io::{ParseBuf, ReadMysqlExt},
+    packets::{ComStmtSendLongData, LocalInfilePacket},
     value::Value,
 };
 use tokio::io::AsyncReadExt;
@@ -34,8 +34,8 @@ impl Conn {
                     None
                 });
                 for chunk in chunks {
-                    let com = ComStmtSendLongData::new(statement_id, i, chunk);
-                    self.write_command_raw(com.into()).await?;
+                    let com = ComStmtSendLongData::new(statement_id, i as u16, chunk);
+                    self.write_command(&com).await?;
                 }
             }
         }
@@ -86,7 +86,7 @@ impl Conn {
     where
         P: Protocol,
     {
-        let local_infile = parse_local_infile_packet(&*packet)?;
+        let local_infile = ParseBuf(packet).parse::<LocalInfilePacket>(())?;
         let (local_infile, handler) = match self.opts().local_infile_handler() {
             Some(handler) => ((local_infile.into_owned(), handler)),
             None => return Err(DriverError::NoLocalInfileHandler.into()),
@@ -96,7 +96,7 @@ impl Conn {
         let mut buf = [0; 4096];
         loop {
             let read = reader.read(&mut buf[..]).await?;
-            self.write_packet(&buf[..read]).await?;
+            self.write_bytes(&buf[..read]).await?;
 
             if read == 0 {
                 break;

@@ -9,13 +9,14 @@
 pub use mysql_common::named_params;
 
 use mysql_common::{
-    constants::DEFAULT_MAX_ALLOWED_PACKET,
+    constants::{DEFAULT_MAX_ALLOWED_PACKET, UTF8_GENERAL_CI},
     crypto,
+    io::ParseBuf,
     packets::{
-        parse_auth_switch_request, parse_err_packet, parse_handshake_packet, parse_ok_packet,
-        AuthPlugin, AuthSwitchRequest, ErrPacket, HandshakeResponse, OkPacket, OkPacketKind,
-        SslRequest,
+        AuthPlugin, AuthSwitchRequest, CommonOkPacket, ErrPacket, HandshakePacket,
+        HandshakeResponse, OkPacket, OkPacketDeserializer, ResultSetTerminator, SslRequest,
     },
+    proto::MySerialize,
 };
 
 use std::{
@@ -29,6 +30,7 @@ use std::{
 };
 
 use crate::{
+    buffer_pool::PooledBuf,
     conn::{pool::Pool, stmt_cache::StmtCache},
     consts::{CapabilityFlags, Command, StatusFlags},
     error::*,
@@ -82,7 +84,7 @@ struct ConnInner {
     capabilities: CapabilityFlags,
     status: StatusFlags,
     last_ok_packet: Option<OkPacket<'static>>,
-    last_err_packet: Option<ErrPacket<'static>>,
+    last_err_packet: Option<mysql_common::packets::ServerError<'static>>,
     pool: Option<Pool>,
     pending_result: Option<ResultSetMeta>,
     tx_status: TxStatus,
@@ -232,10 +234,16 @@ impl Conn {
     }
 
     /// Handles ERR packet.
-    pub(crate) fn handle_err(&mut self, err_packet: ErrPacket<'static>) {
-        self.inner.status = StatusFlags::empty();
-        self.inner.last_ok_packet = None;
-        self.inner.last_err_packet = Some(err_packet);
+    pub(crate) fn handle_err(&mut self, err_packet: ErrPacket<'_>) -> Result<()> {
+        match err_packet {
+            ErrPacket::Error(err) => {
+                self.inner.status = StatusFlags::empty();
+                self.inner.last_ok_packet = None;
+                self.inner.last_err_packet = Some(err.clone().into_owned());
+                Err(Error::from(err))
+            }
+            ErrPacket::Progress(_) => Ok(()),
+        }
     }
 
     /// Returns the current transaction status.
@@ -353,7 +361,7 @@ impl Conn {
 
     async fn handle_handshake(&mut self) -> Result<()> {
         let packet = self.read_packet().await?;
-        let handshake = parse_handshake_packet(&*packet)?;
+        let handshake = ParseBuf(&*packet).parse::<HandshakePacket>(())?;
         self.inner.nonce = {
             let mut nonce = Vec::from(handshake.scramble_1_ref());
             nonce.extend_from_slice(handshake.scramble_2_ref().unwrap_or(&[][..]));
@@ -386,8 +394,12 @@ impl Conn {
             .get_capabilities()
             .contains(CapabilityFlags::CLIENT_SSL)
         {
-            let ssl_request = SslRequest::new(self.inner.capabilities);
-            self.write_packet(ssl_request.as_ref()).await?;
+            let ssl_request = SslRequest::new(
+                self.inner.capabilities,
+                DEFAULT_MAX_ALLOWED_PACKET as u32,
+                UTF8_GENERAL_CI as u8,
+            );
+            self.write_struct(&ssl_request).await?;
             let conn = self;
             let ssl_opts = conn.opts().ssl_opts().cloned().expect("unreachable");
             let domain = conn.opts().ip_or_hostname().into();
@@ -405,16 +417,20 @@ impl Conn {
             .gen_data(self.inner.opts.pass(), &*self.inner.nonce);
 
         let handshake_response = HandshakeResponse::new(
-            &auth_data,
+            auth_data.as_deref(),
             self.inner.version,
-            self.inner.opts.user(),
-            self.inner.opts.db_name(),
-            &self.inner.auth_plugin,
+            self.inner.opts.user().map(|x| x.as_bytes()),
+            self.inner.opts.db_name().map(|x| x.as_bytes()),
+            Some(self.inner.auth_plugin.borrow()),
             self.capabilities(),
-            &Default::default(), // TODO: Add support
+            Default::default(), // TODO: Add support
         );
 
-        self.write_packet(handshake_response.as_ref()).await?;
+        // Serialize here to satisfy borrow checker.
+        let mut buf = crate::BUFFER_POOL.get();
+        handshake_response.serialize(buf.as_mut());
+
+        self.write_packet(buf).await?;
         Ok(())
     }
 
@@ -429,9 +445,12 @@ impl Conn {
             let plugin_data = self
                 .inner
                 .auth_plugin
-                .gen_data(self.inner.opts.pass(), &*self.inner.nonce)
-                .unwrap_or_else(Vec::new);
-            self.write_packet(plugin_data).await?;
+                .gen_data(self.inner.opts.pass(), &*self.inner.nonce);
+            if let Some(plugin_data) = plugin_data {
+                self.write_struct(&plugin_data).await?;
+            } else {
+                self.write_packet(crate::BUFFER_POOL.get()).await?;
+            }
             self.continue_auth().await?;
             Ok(())
         } else {
@@ -487,32 +506,39 @@ impl Conn {
                     self.drop_packet().await
                 }
                 Some(0x04) => {
-                    let mut pass = self.inner.opts.pass().map(Vec::from).unwrap_or_default();
-                    pass.push(0);
+                    let pass = self.inner.opts.pass().unwrap_or_default();
+                    let mut pass = crate::BUFFER_POOL.get_with(pass.as_bytes());
+                    pass.as_mut().push(0);
 
                     if self.is_secure() {
-                        self.write_packet(&*pass).await?;
+                        self.write_packet(pass).await?;
                     } else {
-                        self.write_packet(&[0x02][..]).await?;
+                        self.write_bytes(&[0x02][..]).await?;
                         let packet = self.read_packet().await?;
                         let key = &packet[1..];
-                        for (i, byte) in pass.iter_mut().enumerate() {
+                        for (i, byte) in pass.as_mut().iter_mut().enumerate() {
                             *byte ^= self.inner.nonce[i % self.inner.nonce.len()];
                         }
                         let encrypted_pass = crypto::encrypt(&*pass, key);
-                        self.write_packet(&*encrypted_pass).await?;
+                        self.write_bytes(&*encrypted_pass).await?;
                     };
                     self.drop_packet().await?;
                     Ok(())
                 }
-                _ => Err(DriverError::UnexpectedPacket { payload: packet }.into()),
+                _ => Err(DriverError::UnexpectedPacket {
+                    payload: packet.to_vec(),
+                }
+                .into()),
             },
             Some(0xfe) if !self.inner.auth_switched => {
-                let auth_switch_request = parse_auth_switch_request(&*packet)?.into_owned();
+                let auth_switch_request = ParseBuf(&*packet).parse::<AuthSwitchRequest>(())?;
                 self.perform_auth_switch(auth_switch_request).await?;
                 Ok(())
             }
-            _ => Err(DriverError::UnexpectedPacket { payload: packet }.into()),
+            _ => Err(DriverError::UnexpectedPacket {
+                payload: packet.to_vec(),
+            }
+            .into()),
         }
     }
 
@@ -521,45 +547,62 @@ impl Conn {
         match packet.get(0) {
             Some(0x00) => Ok(()),
             Some(0xfe) if !self.inner.auth_switched => {
-                let auth_switch_request = parse_auth_switch_request(packet.as_ref())?.into_owned();
+                let auth_switch_request = ParseBuf(&*packet).parse::<AuthSwitchRequest>(())?;
                 self.perform_auth_switch(auth_switch_request).await?;
                 Ok(())
             }
-            _ => Err(DriverError::UnexpectedPacket { payload: packet }.into()),
+            _ => Err(DriverError::UnexpectedPacket {
+                payload: packet.to_vec(),
+            }
+            .into()),
         }
     }
 
-    fn handle_packet(&mut self, packet: &[u8]) -> Result<()> {
-        let kind = if self.get_pending_result().is_some() {
-            OkPacketKind::ResultSetTerminator
+    /// Returns `true` for ProgressReport packet.
+    fn handle_packet(&mut self, packet: &PooledBuf) -> Result<bool> {
+        let ok_packet = if self.get_pending_result().is_some() {
+            ParseBuf(&*packet)
+                .parse::<OkPacketDeserializer<ResultSetTerminator>>(self.capabilities())
+                .map(|x| x.into_inner())
         } else {
-            OkPacketKind::Other
+            ParseBuf(&*packet)
+                .parse::<OkPacketDeserializer<CommonOkPacket>>(self.capabilities())
+                .map(|x| x.into_inner())
         };
 
-        if let Ok(ok_packet) = parse_ok_packet(&*packet, self.capabilities(), kind) {
+        if let Ok(ok_packet) = ok_packet {
             self.handle_ok(ok_packet.into_owned());
-        } else if let Ok(err_packet) = parse_err_packet(&*packet, self.capabilities()) {
-            self.handle_err(err_packet.clone().into_owned());
-            return Err(err_packet.into());
+        } else {
+            let err_packet = ParseBuf(&*packet).parse::<ErrPacket>(self.capabilities());
+            if let Ok(err_packet) = err_packet {
+                self.handle_err(err_packet)?;
+                return Ok(true);
+            }
         }
 
-        Ok(())
+        Ok(false)
     }
 
-    pub(crate) async fn read_packet(&mut self) -> Result<Vec<u8>> {
-        let packet = crate::io::ReadPacket::new(&mut *self)
-            .await
-            .map_err(|io_err| {
-                self.inner.stream.take();
-                self.inner.disconnected = true;
-                Error::from(io_err)
-            })?;
-        self.handle_packet(&*packet)?;
-        Ok(packet)
+    pub(crate) async fn read_packet(&mut self) -> Result<PooledBuf> {
+        loop {
+            let packet = crate::io::ReadPacket::new(&mut *self)
+                .await
+                .map_err(|io_err| {
+                    self.inner.stream.take();
+                    self.inner.disconnected = true;
+                    Error::from(io_err)
+                })?;
+            if self.handle_packet(&packet)? {
+                // ignore progress report
+                continue;
+            } else {
+                return Ok(packet);
+            }
+        }
     }
 
     /// Returns future that reads packets from a server.
-    pub(crate) async fn read_packets(&mut self, n: usize) -> Result<Vec<Vec<u8>>> {
+    pub(crate) async fn read_packets(&mut self, n: usize) -> Result<Vec<PooledBuf>> {
         let mut packets = Vec::with_capacity(n);
         for _ in 0..n {
             packets.push(self.read_packet().await?);
@@ -567,11 +610,8 @@ impl Conn {
         Ok(packets)
     }
 
-    pub(crate) async fn write_packet<T>(&mut self, data: T) -> Result<()>
-    where
-        T: Into<Vec<u8>>,
-    {
-        crate::io::WritePacket::new(&mut *self, data.into())
+    pub(crate) async fn write_packet(&mut self, data: PooledBuf) -> Result<()> {
+        crate::io::WritePacket::new(&mut *self, data)
             .await
             .map_err(|io_err| {
                 self.inner.stream.take();
@@ -580,8 +620,28 @@ impl Conn {
             })
     }
 
+    /// Writes bytes to a server.
+    pub(crate) async fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        let buf = crate::BUFFER_POOL.get_with(bytes);
+        self.write_packet(buf).await
+    }
+
+    /// Sends a serializable structure to a server.
+    pub(crate) async fn write_struct<T: MySerialize>(&mut self, x: &T) -> Result<()> {
+        let mut buf = crate::BUFFER_POOL.get();
+        x.serialize(buf.as_mut());
+        self.write_packet(buf).await
+    }
+
+    /// Sends a command to a server.
+    pub(crate) async fn write_command<T: MySerialize>(&mut self, cmd: &T) -> Result<()> {
+        self.clean_dirty().await?;
+        self.reset_seq_id();
+        self.write_struct(cmd).await
+    }
+
     /// Returns future that sends full command body to a server.
-    pub(crate) async fn write_command_raw(&mut self, body: Vec<u8>) -> Result<()> {
+    pub(crate) async fn write_command_raw(&mut self, body: PooledBuf) -> Result<()> {
         debug_assert!(!body.is_empty());
         self.clean_dirty().await?;
         self.reset_seq_id();
@@ -594,10 +654,11 @@ impl Conn {
         T: AsRef<[u8]>,
     {
         let cmd_data = cmd_data.as_ref();
-        let mut body = Vec::with_capacity(1 + cmd_data.len());
+        let mut buf = crate::BUFFER_POOL.get();
+        let body = buf.as_mut();
         body.push(cmd as u8);
         body.extend_from_slice(cmd_data);
-        self.write_command_raw(body).await
+        self.write_command_raw(buf).await
     }
 
     async fn drop_packet(&mut self) -> Result<()> {

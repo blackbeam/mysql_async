@@ -16,18 +16,18 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{connection_like::Connection, error::IoError};
+use crate::{buffer_pool::PooledBuf, connection_like::Connection, error::IoError};
 
 /// Writes a packet.
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct WritePacket<'a, 't> {
     conn: Connection<'a, 't>,
-    data: Option<Vec<u8>>,
+    data: Option<PooledBuf>,
 }
 
 impl<'a, 't> WritePacket<'a, 't> {
-    pub(crate) fn new<T: Into<Connection<'a, 't>>>(conn: T, data: Vec<u8>) -> Self {
+    pub(crate) fn new<T: Into<Connection<'a, 't>>>(conn: T, data: PooledBuf) -> Self {
         Self {
             conn: conn.into(),
             data: Some(data),
