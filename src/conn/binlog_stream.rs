@@ -8,8 +8,17 @@
 
 use futures_core::ready;
 use mysql_common::{
-    binlog::{events::TableMapEvent, BinlogVersion::Version4, Event, EventStreamReader},
-    packets::{ComBinlogDump, ComBinlogDumpGtid, OkPacketKind, SidBlock},
+    binlog::{
+        consts::BinlogVersion::Version4,
+        events::{Event, TableMapEvent},
+        EventStreamReader,
+    },
+    io::ParseBuf,
+    misc::raw::Either,
+    packets::{
+        ComBinlogDump, ComBinlogDumpGtid, ErrPacket, NetworkStreamTerminator, OkPacketDeserializer,
+        Sid,
+    },
 };
 
 use std::{
@@ -38,7 +47,7 @@ impl BinlogStream {
     }
 
     /// Returns a table map event for the given table id.
-    pub fn get_tme(table_id: u64) -> Option<&TableMapEvent<'static>> {
+    pub fn get_tme(&self, table_id: u64) -> Option<&TableMapEvent<'static>> {
         self.esr.get_tme(table_id)
     }
 }
@@ -47,38 +56,45 @@ impl futures_core::stream::Stream for BinlogStream {
     type Item = Result<Event>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match ready!(Pin::new(&mut self.read_packet).poll(cx)) {
-            Ok(packet) if packet.get(0) == Some(&0) => {
-                let event_data = &packet[1..];
-                match self.esr.read(event_data) {
-                    Ok(event) => {
-                        return Poll::Ready(Some(Ok(event)));
-                    }
-                    Err(err) => return Poll::Ready(Some(Err(err.into()))),
-                }
-            }
-            Ok(packet) if packet.get(0) == Some(&254) => {
-                let eof_packet = mysql_common::packets::parse_ok_packet(
-                    &packet,
-                    self.read_packet.conn_ref().capabilities(),
-                    OkPacketKind::NetworkStreamTerminator,
-                );
-                match eof_packet {
-                    Ok(_) => return Poll::Ready(None),
-                    Err(_) => {
-                        return Poll::Ready(Some(Err(DriverError::UnexpectedPacket {
-                            payload: packet,
-                        }
-                        .into())))
-                    }
-                }
-            }
-            Ok(packet) => {
-                return Poll::Ready(Some(Err(
-                    DriverError::UnexpectedPacket { payload: packet }.into()
-                )))
-            }
+        let packet = match ready!(Pin::new(&mut self.read_packet).poll(cx)) {
+            Ok(packet) => packet,
             Err(err) => return Poll::Ready(Some(Err(err.into()))),
+        };
+
+        let first_byte = packet.get(0).copied();
+
+        if first_byte == Some(255) {
+            if let Ok(ErrPacket::Error(err)) =
+                ParseBuf(&*packet).parse(self.read_packet.conn_ref().capabilities())
+            {
+                return Poll::Ready(Some(Err(From::from(err))));
+            }
+        }
+
+        if first_byte == Some(254) && packet.len() < 8 {
+            if ParseBuf(&*packet)
+                .parse::<OkPacketDeserializer<NetworkStreamTerminator>>(
+                    self.read_packet.conn_ref().capabilities(),
+                )
+                .is_ok()
+            {
+                return Poll::Ready(None);
+            }
+        }
+
+        if first_byte == Some(0) {
+            let event_data = &packet[1..];
+            match self.esr.read(event_data) {
+                Ok(event) => {
+                    return Poll::Ready(Some(Ok(event)));
+                }
+                Err(err) => return Poll::Ready(Some(Err(err.into()))),
+            }
+        } else {
+            return Poll::Ready(Some(Err(DriverError::UnexpectedPacket {
+                payload: packet.to_vec(),
+            }
+            .into())));
         }
     }
 }
@@ -99,7 +115,7 @@ pub struct BinlogRequest {
     /// If `use_gtid` is `false`, then the value will be truncated to u32.
     pos: u64,
     /// SID blocks. If `use_gtid` is `false`, then this value is ignored.
-    sid_blocks: Vec<SidBlock>,
+    sids: Vec<Sid<'static>>,
 }
 
 impl BinlogRequest {
@@ -111,7 +127,7 @@ impl BinlogRequest {
             flags: BinlogDumpFlags::empty(),
             filename: Vec::new(),
             pos: 4,
-            sid_blocks: vec![],
+            sids: vec![],
         }
     }
 
@@ -144,8 +160,8 @@ impl BinlogRequest {
     }
 
     /// If `use_gtid` is `false`, then this value will be ignored (defaults to an empty vector).
-    pub fn sid_blocks(&self) -> &[SidBlock] {
-        &self.sid_blocks
+    pub fn sids(&self) -> &[Sid<'_>] {
+        &self.sids
     }
 
     /// Returns modified `self` with the given value of the `server_id` field.
@@ -179,36 +195,28 @@ impl BinlogRequest {
     }
 
     /// Returns modified `self` with the given value of the `sid_blocks` field.
-    pub fn with_sid_blocks<T>(mut self, sid_blocks: T) -> Self
+    pub fn with_sids<T>(mut self, sids: T) -> Self
     where
-        T: IntoIterator<Item = SidBlock>,
+        T: IntoIterator<Item = Sid<'static>>,
     {
-        self.sid_blocks = sid_blocks.into_iter().collect();
+        self.sids = sids.into_iter().collect();
         self
     }
 
-    pub(super) fn serialize_cmd(self) -> Vec<u8> {
-        macro_rules! to_buf {
-            ($cmd:ident) => {{
-                let mut buf = vec![0_u8; $cmd.len()];
-                $cmd.write(&mut buf[..]).expect("unreachable");
-                buf
-            }};
-        }
-
+    pub(super) fn as_cmd(&self) -> Either<ComBinlogDump<'_>, ComBinlogDumpGtid<'_>> {
         if self.use_gtid() {
             let cmd = ComBinlogDumpGtid::new(self.server_id)
                 .with_pos(self.pos)
                 .with_flags(self.flags)
-                .with_filename(self.filename)
-                .with_sid_blocks(self.sid_blocks);
-            to_buf!(cmd)
+                .with_filename(&*self.filename)
+                .with_sids(&*self.sids);
+            Either::Right(cmd)
         } else {
             let cmd = ComBinlogDump::new(self.server_id)
                 .with_pos(self.pos as u32)
-                .with_filename(self.filename)
+                .with_filename(&*self.filename)
                 .with_flags(self.flags & BinlogDumpFlags::BINLOG_DUMP_NON_BLOCK);
-            to_buf!(cmd)
+            Either::Left(cmd)
         }
     }
 }

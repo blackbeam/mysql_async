@@ -875,11 +875,8 @@ impl Conn {
         use mysql_common::packets::ComRegisterSlave;
 
         self.query_drop("SET @master_binlog_checksum='ALL'").await?;
-
-        let cmd = ComRegisterSlave::new(server_id);
-        let mut buf = Vec::with_capacity(cmd.len());
-        cmd.write(&mut buf)?;
-        self.write_command_raw(buf).await?;
+        self.write_command(&ComRegisterSlave::new(server_id))
+            .await?;
 
         // Server will respond with OK.
         self.read_packet().await?;
@@ -889,8 +886,7 @@ impl Conn {
 
     async fn request_binlog(&mut self, request: BinlogRequest) -> Result<()> {
         self.register_as_slave(request.server_id()).await?;
-        let cmd_buf = request.serialize_cmd();
-        self.write_command_raw(cmd_buf).await?;
+        self.write_command(&request.as_cmd()).await?;
         Ok(())
     }
 
@@ -906,10 +902,10 @@ impl Conn {
 #[cfg(test)]
 mod test {
     use futures_util::stream::StreamExt;
-    use mysql_common::binlog::*;
+    use mysql_common::binlog::events::EventData;
     use tokio::time::timeout;
 
-    use std::{collections::HashMap, time::Duration};
+    use std::time::Duration;
 
     use crate::{
         from_row, params, prelude::*, test_misc::get_opts, BinlogDumpFlags, BinlogRequest, Conn,
@@ -939,32 +935,41 @@ mod test {
     async fn should_read_binlog() -> super::Result<()> {
         async fn get_conn() -> super::Result<(Conn, String, u64)> {
             let mut conn = Conn::new(get_opts()).await?;
+            let gtid_mode: String = "SELECT @@GLOBAL.GTID_MODE".first(&mut conn).await?.unwrap();
+
+            if gtid_mode != "ON" {
+                panic!(
+                    "GTID_MODE is disabled \
+                    (enable using --gtid_mode=ON --enforce_gtid_consistency=ON)"
+                );
+            }
+
             let (filename, position, _enc): (_, _, crate::Value) =
                 "SHOW BINARY LOGS".first(&mut conn).await?.unwrap();
-            gen_dummy_data().await?;
+            gen_dummy_data().await.unwrap();
             Ok((conn, filename, position))
         }
 
         // iterate using COM_BINLOG_DUMP
-        let (conn, filename, pos) = get_conn().await?;
+        let (conn, filename, pos) = get_conn().await.unwrap();
 
         let mut binlog_stream = conn
             .get_binlog_stream(BinlogRequest::new(12).with_filename(filename).with_pos(pos))
-            .await?;
+            .await
+            .unwrap();
 
+        let mut events_num = 0;
         while let Ok(Some(event)) = timeout(Duration::from_secs(1), binlog_stream.next()).await {
-            let event = event?;
-            event.header.event_type.get().unwrap();
+            let event = event.unwrap();
+            events_num += 1;
+
+            // assert that event type is known
+            event.header().event_type().unwrap();
 
             // iterate over rows of an event
             match event.read_data()?.unwrap() {
-                EventData::WriteRowsEvent(WriteRowsEvent(re))
-                | EventData::UpdateRowsEvent(UpdateRowsEvent(re))
-                | EventData::DeleteRowsEvent(DeleteRowsEvent(re))
-                | EventData::WriteRowsEventV1(WriteRowsEventV1(re))
-                | EventData::UpdateRowsEventV1(UpdateRowsEventV1(re))
-                | EventData::DeleteRowsEventV1(DeleteRowsEventV1(re)) => {
-                    let tme = binlog_stream.get_tme(&re.table_id());
+                EventData::RowsEvent(re) => {
+                    let tme = binlog_stream.get_tme(re.table_id());
                     for row in re.rows(tme.unwrap()) {
                         row.unwrap();
                     }
@@ -972,60 +977,63 @@ mod test {
                 _ => (),
             }
         }
+        assert!(events_num > 0);
 
         // iterate using COM_BINLOG_DUMP_GTID
-        let mut table_map = HashMap::new();
-        let (conn, filename, pos) = get_conn().await?;
+        let (conn, filename, pos) = get_conn().await.unwrap();
 
         let mut binlog_stream = conn
             .get_binlog_stream(
-                BinlogRequest::new(12)
+                BinlogRequest::new(13)
                     .with_use_gtid(true)
                     .with_filename(filename)
                     .with_pos(pos),
             )
-            .await?;
+            .await
+            .unwrap();
 
+        events_num = 0;
         while let Ok(Some(event)) = timeout(Duration::from_secs(1), binlog_stream.next()).await {
-            let event = event?;
-            event.header.event_type.get().unwrap();
+            let event = event.unwrap();
+            events_num += 1;
+
+            // assert that event type is known
+            event.header().event_type().unwrap();
 
             // iterate over rows of an event
             match event.read_data()?.unwrap() {
-                EventData::WriteRowsEvent(WriteRowsEvent(re))
-                | EventData::UpdateRowsEvent(UpdateRowsEvent(re))
-                | EventData::DeleteRowsEvent(DeleteRowsEvent(re))
-                | EventData::WriteRowsEventV1(WriteRowsEventV1(re))
-                | EventData::UpdateRowsEventV1(UpdateRowsEventV1(re))
-                | EventData::DeleteRowsEventV1(DeleteRowsEventV1(re)) => {
-                    for row in re.rows(table_map.get(&re.table_id).unwrap()) {
-                        dbg!(row.unwrap());
+                EventData::RowsEvent(re) => {
+                    let tme = binlog_stream.get_tme(re.table_id());
+                    for row in re.rows(tme.unwrap()) {
+                        row.unwrap();
                     }
-                }
-                EventData::TableMapEvent(tme) => {
-                    table_map.insert(tme.table_id, tme);
                 }
                 _ => (),
             }
         }
+        assert!(events_num > 0);
 
         // iterate using COM_BINLOG_DUMP with BINLOG_DUMP_NON_BLOCK flag
-        let (conn, filename, pos) = get_conn().await?;
+        let (conn, filename, pos) = get_conn().await.unwrap();
 
         let mut binlog_stream = conn
             .get_binlog_stream(
-                BinlogRequest::new(12)
+                BinlogRequest::new(14)
                     .with_filename(filename)
                     .with_pos(pos)
                     .with_flags(BinlogDumpFlags::BINLOG_DUMP_NON_BLOCK),
             )
-            .await?;
+            .await
+            .unwrap();
 
+        events_num = 0;
         while let Some(event) = binlog_stream.next().await {
-            let event = event?;
-            event.header.event_type.get().unwrap();
+            let event = event.unwrap();
+            events_num += 1;
+            event.header().event_type().unwrap();
             event.read_data()?;
         }
+        assert!(events_num > 0);
 
         Ok(())
     }

@@ -22,9 +22,9 @@ use crate::{
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ResultSetMeta {
     /// Text result set, that may contain rows.
-    Text(Arc<[Column<'static>]>),
+    Text(Arc<[Column]>),
     /// Binary result set, that may contain rows.
-    Binary(Arc<[Column<'static>]>),
+    Binary(Arc<[Column]>),
     /// Error result set.
     Error(ServerError),
 }
