@@ -21,6 +21,11 @@ jobs:
           sudo apt-get -y install mysql-server libmysqlclient-dev curl
           sudo service mysql start
           mysql -e "SET GLOBAL max_allowed_packet = 36700160;" -uroot -proot
+          mysql -e "SET @@GLOBAL.ENFORCE_GTID_CONSISTENCY = WARN;" -uroot -proot
+          mysql -e "SET @@GLOBAL.ENFORCE_GTID_CONSISTENCY = ON;" -uroot -proot
+          mysql -e "SET @@GLOBAL.GTID_MODE = OFF_PERMISSIVE;" -uroot -proot
+          mysql -e "SET @@GLOBAL.GTID_MODE = ON_PERMISSIVE;" -uroot -proot
+          mysql -e "SET @@GLOBAL.GTID_MODE = ON;" -uroot -proot
         displayName: Install MySql
       - bash: |
           curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $(RUST_TOOLCHAIN)
@@ -95,6 +100,11 @@ jobs:
           call "C:\Program Files (x86)\MySQL\MySQL Installer for Windows\MySQLInstallerConsole.exe" community install server;8.0.11;x64:*:port=3306;rootpasswd=password;servicename=MySQL -silent
           netsh advfirewall firewall add rule name="Allow mysql" dir=in action=allow edge=yes remoteip=any protocol=TCP localport=80,8080,3306
           "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql" -e "SET GLOBAL max_allowed_packet = 36700160;" -uroot -ppassword
+          "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql" -e "SET @@GLOBAL.ENFORCE_GTID_CONSISTENCY = WARN;" -uroot -ppassword
+          "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql" -e "SET @@GLOBAL.ENFORCE_GTID_CONSISTENCY = ON;" -uroot -ppassword
+          "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql" -e "SET @@GLOBAL.GTID_MODE = OFF_PERMISSIVE;" -uroot -ppassword
+          "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql" -e "SET @@GLOBAL.GTID_MODE = ON_PERMISSIVE;" -uroot -ppassword
+          "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql" -e "SET @@GLOBAL.GTID_MODE = ON;" -uroot -ppassword
         displayName: Install MySql
       - bash: |
           rustup install $RUST_TOOLCHAIN
@@ -130,7 +140,7 @@ jobs:
           docker --version
         displayName: Install docker
       - bash: |
-          docker run --rm --name container -v `pwd`:/root -p 3307:3306 -d -e MYSQL_ROOT_PASSWORD=password mysql:$(DB_VERSION) --max-allowed-packet=36700160 --local-infile
+          docker run --rm --name container -v `pwd`:/root -p 3307:3306 -d -e MYSQL_ROOT_PASSWORD=password mysql:$(DB_VERSION) --max-allowed-packet=36700160 --local-infile --gtid_mode=ON --enforce_gtid_consistency=ON
           while ! nc -W 1 localhost 3307 | grep -q -P '.+'; do sleep 1; done
         displayName: Run MySql in Docker
       - bash: |
@@ -186,6 +196,7 @@ jobs:
                   --max-allowed-packet=36700160 \
                   --local-infile \
                   --performance-schema=on \
+                  --gtid_mode=ON --enforce_gtid_consistency=ON \
                   --ssl \
                   --ssl-ca=/root/rust-mysql-simple/tests/ca-cert.pem \
                   --ssl-cert=/root/rust-mysql-simple/tests/server-cert.pem \
