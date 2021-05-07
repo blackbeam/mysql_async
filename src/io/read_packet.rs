@@ -15,7 +15,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{buffer_pool::PooledBuf, connection_like::Connection, error::IoError};
+use crate::{buffer_pool::PooledBuf, connection_like::Connection, error::IoError, Conn};
 
 /// Reads a packet.
 #[derive(Debug)]
@@ -25,6 +25,10 @@ pub struct ReadPacket<'a, 't>(Connection<'a, 't>);
 impl<'a, 't> ReadPacket<'a, 't> {
     pub(crate) fn new<T: Into<Connection<'a, 't>>>(conn: T) -> Self {
         Self(conn.into())
+    }
+
+    pub(crate) fn conn_ref(&self) -> &Conn {
+        &*self.0
     }
 }
 
