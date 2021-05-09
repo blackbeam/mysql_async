@@ -14,8 +14,9 @@ use mysql_common::{
     crypto,
     io::ParseBuf,
     packets::{
-        AuthPlugin, AuthSwitchRequest, CommonOkPacket, ErrPacket, HandshakePacket,
-        HandshakeResponse, OkPacket, OkPacketDeserializer, ResultSetTerminator, SslRequest,
+        binlog_request::BinlogRequest, AuthPlugin, AuthSwitchRequest, CommonOkPacket, ErrPacket,
+        HandshakePacket, HandshakeResponse, OkPacket, OkPacketDeserializer, ResultSetTerminator,
+        SslRequest,
     },
     proto::MySerialize,
 };
@@ -42,7 +43,7 @@ use crate::{
         transaction::TxStatus,
         BinaryProtocol, Queryable, TextProtocol,
     },
-    BinlogRequest, BinlogStream, OptsBuilder,
+    BinlogStream, OptsBuilder,
 };
 
 use self::routines::Routine;
@@ -884,13 +885,13 @@ impl Conn {
         Ok(())
     }
 
-    async fn request_binlog(&mut self, request: BinlogRequest) -> Result<()> {
+    async fn request_binlog(&mut self, request: BinlogRequest<'_>) -> Result<()> {
         self.register_as_slave(request.server_id()).await?;
         self.write_command(&request.as_cmd()).await?;
         Ok(())
     }
 
-    pub async fn get_binlog_stream(mut self, request: BinlogRequest) -> Result<BinlogStream> {
+    pub async fn get_binlog_stream(mut self, request: BinlogRequest<'_>) -> Result<BinlogStream> {
         // We'll disconnect this connection from a pool before requesting the binlog.
         self.inner.pool = None;
         self.request_binlog(request).await?;
@@ -933,7 +934,7 @@ mod test {
 
     #[tokio::test]
     async fn should_read_binlog() -> super::Result<()> {
-        async fn get_conn() -> super::Result<(Conn, String, u64)> {
+        async fn get_conn() -> super::Result<(Conn, Vec<u8>, u64)> {
             let mut conn = Conn::new(get_opts()).await?;
             let gtid_mode: String = "SELECT @@GLOBAL.GTID_MODE".first(&mut conn).await?.unwrap();
 

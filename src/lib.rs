@@ -122,10 +122,7 @@ static BUFFER_POOL: once_cell::sync::Lazy<Arc<crate::buffer_pool::BufferPool>> =
     once_cell::sync::Lazy::new(|| Default::default());
 
 #[doc(inline)]
-pub use self::conn::{
-    binlog_stream::{BinlogRequest, BinlogStream},
-    Conn,
-};
+pub use self::conn::{binlog_stream::BinlogStream, Conn};
 
 #[doc(inline)]
 pub use self::conn::pool::Pool;
@@ -150,11 +147,12 @@ pub use self::local_infile_handler::{builtin::WhiteListFsLocalInfileHandler, Inf
 
 #[doc(inline)]
 pub use mysql_common::packets::{
+    binlog_request::BinlogRequest,
     session_state_change::{
         Gtids, Schema, SessionStateChange, SystemVariable, TransactionCharacteristics,
         TransactionState, Unsupported,
     },
-    BinlogDumpFlags, Column, OkPacket, SessionStateInfo,
+    BinlogDumpFlags, Column, Interval, OkPacket, SessionStateInfo, Sid,
 };
 
 #[doc(inline)]
