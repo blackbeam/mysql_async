@@ -26,6 +26,7 @@ jobs:
           mysql -e "SET @@GLOBAL.GTID_MODE = OFF_PERMISSIVE;" -uroot -proot
           mysql -e "SET @@GLOBAL.GTID_MODE = ON_PERMISSIVE;" -uroot -proot
           mysql -e "SET @@GLOBAL.GTID_MODE = ON;" -uroot -proot
+          mysql -e "PURGE BINARY LOGS BEFORE now();" -uroot -proot
         displayName: Install MySql
       - bash: |
           curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $(RUST_TOOLCHAIN)
@@ -47,40 +48,6 @@ jobs:
           RUST_BACKTRACE: 1
           DATABASE_URL: mysql://root:root@127.0.0.1:3306/mysql
         displayName: Run tests
-
-  # - job: "TestBasicMacOs"
-  #   pool:
-  #     vmImage: "macOS-10.15"
-  #   strategy:
-  #     maxParallel: 10
-  #     matrix:
-  #       stable:
-  #         RUST_TOOLCHAIN: stable
-  #   steps:
-  #     - bash: |
-  #         brew update
-  #         brew install mysql
-  #         brew services start mysql
-  #         brew services stop mysql
-  #         sleep 3
-  #         echo 'local_infile=1' >> /usr/local/etc/my.cnf
-  #         echo 'socket=/tmp/mysql.sock' >> /usr/local/etc/my.cnf
-  #         brew services start mysql
-  #         sleep 5
-  #         /usr/local/Cellar/mysql/*/bin/mysql -e "SET GLOBAL max_allowed_packet = 36700160;" -uroot
-  #       displayName: Install MySql
-  #     - bash: |
-  #         curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $RUST_TOOLCHAIN
-  #       displayName: Install rust (MacOs)
-  #     - bash: |
-  #         SSL=false COMPRESS=false cargo test
-  #         SSL=true COMPRESS=false cargo test
-  #         SSL=false COMPRESS=true cargo test
-  #         SSL=true COMPRESS=true cargo test
-  #       env:
-  #         RUST_BACKTRACE: 1
-  #         DATABASE_URL: mysql://root@127.0.0.1/mysql
-  #       displayName: Run tests
 
   - job: "TestBasicWindows"
     pool:
@@ -140,7 +107,7 @@ jobs:
           docker --version
         displayName: Install docker
       - bash: |
-          docker run --rm --name container -v `pwd`:/root -p 3307:3306 -d -e MYSQL_ROOT_PASSWORD=password mysql:$(DB_VERSION) --max-allowed-packet=36700160 --local-infile --gtid_mode=ON --enforce_gtid_consistency=ON
+          docker run -d --name container -v `pwd`:/root -p 3307:3306 -e MYSQL_ROOT_PASSWORD=password mysql:$(DB_VERSION) --max-allowed-packet=36700160 --local-infile --log-bin=mysql-bin --log-slave-updates --gtid_mode=ON --enforce_gtid_consistency=ON --server-id=1
           while ! nc -W 1 localhost 3307 | grep -q -P '.+'; do sleep 1; done
         displayName: Run MySql in Docker
       - bash: |
@@ -196,11 +163,11 @@ jobs:
                   --max-allowed-packet=36700160 \
                   --local-infile \
                   --performance-schema=on \
-                  --gtid_mode=ON --enforce_gtid_consistency=ON \
+                  --log-bin=mysql-bin --gtid-domain-id=1 --server-id=1 \
                   --ssl \
                   --ssl-ca=/root/rust-mysql-simple/tests/ca-cert.pem \
                   --ssl-cert=/root/rust-mysql-simple/tests/server-cert.pem \
-                  --ssl-key=/root/rust-mysql-simple/tests/server-key.pem
+                  --ssl-key=/root/rust-mysql-simple/tests/server-key.pem &
           while ! nc -W 1 localhost 3307 | grep -q -P '.+'; do sleep 1; done
         displayName: Run MariaDb in Docker
       - bash: |

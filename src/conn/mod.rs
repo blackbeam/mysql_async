@@ -936,17 +936,23 @@ mod test {
     async fn should_read_binlog() -> super::Result<()> {
         async fn get_conn() -> super::Result<(Conn, Vec<u8>, u64)> {
             let mut conn = Conn::new(get_opts()).await?;
-            let gtid_mode: String = "SELECT @@GLOBAL.GTID_MODE".first(&mut conn).await?.unwrap();
 
-            if gtid_mode != "ON" {
-                panic!(
-                    "GTID_MODE is disabled \
-                    (enable using --gtid_mode=ON --enforce_gtid_consistency=ON)"
-                );
+            if let Ok(Some(gtid_mode)) = "SELECT @@GLOBAL.GTID_MODE"
+                .first::<String, _>(&mut conn)
+                .await
+            {
+                if !gtid_mode.starts_with("ON") {
+                    panic!(
+                        "GTID_MODE is disabled \
+                            (enable using --gtid_mode=ON --enforce_gtid_consistency=ON)"
+                    );
+                }
             }
 
-            let (filename, position, _enc): (_, _, crate::Value) =
-                "SHOW BINARY LOGS".first(&mut conn).await?.unwrap();
+            let row: crate::Row = "SHOW BINARY LOGS".first(&mut conn).await?.unwrap();
+            let filename = row.get(0).unwrap();
+            let position = row.get(1).unwrap();
+
             gen_dummy_data().await.unwrap();
             Ok((conn, filename, position))
         }
