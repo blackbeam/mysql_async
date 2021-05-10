@@ -155,6 +155,14 @@ pub use mysql_common::packets::{
     BinlogDumpFlags, Column, Interval, OkPacket, SessionStateInfo, Sid,
 };
 
+pub mod binlog {
+    #[doc(inline)]
+    pub use mysql_common::binlog::consts::*;
+
+    #[doc(inline)]
+    pub use mysql_common::binlog::{events, jsonb, jsondiff, row, value};
+}
+
 #[doc(inline)]
 pub use mysql_common::proto::codec::Compression;
 
