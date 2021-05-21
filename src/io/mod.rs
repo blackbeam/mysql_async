@@ -570,8 +570,8 @@ mod test {
         };
 
         assert_eq!(
-            sock.keepalive().unwrap(),
-            Some(std::time::Duration::from_millis(42_000)),
+            sock.keepalive_time().unwrap(),
+            std::time::Duration::from_millis(42_000),
         );
 
         std::mem::forget(sock);
