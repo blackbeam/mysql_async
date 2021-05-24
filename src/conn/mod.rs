@@ -801,7 +801,14 @@ impl Conn {
     pub async fn reset(&mut self) -> Result<()> {
         let pool = self.inner.pool.clone();
 
-        if self.inner.version > (5, 7, 2) {
+        let supports_com_reset_connection = if self.inner.is_mariadb {
+            self.inner.version >= (10, 2, 4)
+        } else {
+            // assuming mysql
+            self.inner.version > (5, 7, 2)
+        };
+
+        if supports_com_reset_connection {
             self.routine(routines::ResetRoutine).await?;
         } else {
             let opts = self.inner.opts.clone();
