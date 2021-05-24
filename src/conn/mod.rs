@@ -82,6 +82,7 @@ fn disconnect(mut conn: Conn) {
 struct ConnInner {
     stream: Option<Stream>,
     id: u32,
+    is_mariadb: bool,
     version: (u16, u16, u16),
     socket: Option<String>,
     capabilities: CapabilityFlags,
@@ -125,6 +126,7 @@ impl ConnInner {
             last_ok_packet: None,
             last_err_packet: None,
             stream: None,
+            is_mariadb: false,
             version: (0, 0, 0),
             id: 0,
             pending_result: None,
@@ -379,6 +381,10 @@ impl Conn {
         self.inner.capabilities = handshake.capabilities() & self.inner.opts.get_capabilities();
         self.inner.version = handshake
             .maria_db_server_version_parsed()
+            .map(|version| {
+                self.inner.is_mariadb = true;
+                version
+            })
             .or_else(|| handshake.server_version_parsed())
             .unwrap_or((0, 0, 0));
         self.inner.id = handshake.connection_id();
@@ -959,6 +965,7 @@ mod test {
 
         // iterate using COM_BINLOG_DUMP
         let (conn, filename, pos) = get_conn().await.unwrap();
+        let is_mariadb = conn.inner.is_mariadb;
 
         let mut binlog_stream = conn
             .get_binlog_stream(BinlogRequest::new(12).with_filename(filename).with_pos(pos))
@@ -986,39 +993,42 @@ mod test {
         }
         assert!(events_num > 0);
 
-        // iterate using COM_BINLOG_DUMP_GTID
-        let (conn, filename, pos) = get_conn().await.unwrap();
+        if !is_mariadb {
+            // iterate using COM_BINLOG_DUMP_GTID
+            let (conn, filename, pos) = get_conn().await.unwrap();
 
-        let mut binlog_stream = conn
-            .get_binlog_stream(
-                BinlogRequest::new(13)
-                    .with_use_gtid(true)
-                    .with_filename(filename)
-                    .with_pos(pos),
-            )
-            .await
-            .unwrap();
+            let mut binlog_stream = conn
+                .get_binlog_stream(
+                    BinlogRequest::new(13)
+                        .with_use_gtid(true)
+                        .with_filename(filename)
+                        .with_pos(pos),
+                )
+                .await
+                .unwrap();
 
-        events_num = 0;
-        while let Ok(Some(event)) = timeout(Duration::from_secs(1), binlog_stream.next()).await {
-            let event = event.unwrap();
-            events_num += 1;
+            events_num = 0;
+            while let Ok(Some(event)) = timeout(Duration::from_secs(1), binlog_stream.next()).await
+            {
+                let event = event.unwrap();
+                events_num += 1;
 
-            // assert that event type is known
-            event.header().event_type().unwrap();
+                // assert that event type is known
+                event.header().event_type().unwrap();
 
-            // iterate over rows of an event
-            match event.read_data()?.unwrap() {
-                EventData::RowsEvent(re) => {
-                    let tme = binlog_stream.get_tme(re.table_id());
-                    for row in re.rows(tme.unwrap()) {
-                        row.unwrap();
+                // iterate over rows of an event
+                match event.read_data()?.unwrap() {
+                    EventData::RowsEvent(re) => {
+                        let tme = binlog_stream.get_tme(re.table_id());
+                        for row in re.rows(tme.unwrap()) {
+                            row.unwrap();
+                        }
                     }
+                    _ => (),
                 }
-                _ => (),
             }
+            assert!(events_num > 0);
         }
-        assert!(events_num > 0);
 
         // iterate using COM_BINLOG_DUMP with BINLOG_DUMP_NON_BLOCK flag
         let (conn, filename, pos) = get_conn().await.unwrap();
