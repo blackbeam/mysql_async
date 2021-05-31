@@ -99,6 +99,10 @@ impl StmtCache {
         }
     }
 
+    pub fn capacity(&self) -> usize {
+        self.cap
+    }
+
     #[cfg(test)]
     pub fn iter(&self) -> impl Iterator<Item = (&u32, &Entry)> {
         self.cache.iter()

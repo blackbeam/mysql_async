@@ -304,6 +304,11 @@ impl Queryable for Conn {
         BoxFuture(Box::pin(async move {
             let statement = self.get_statement(stmt).await?;
             self.execute_statement(&statement, params).await?;
+
+            if self.stmt_cache_mut().capacity() == 0 {
+                self.close(statement).await?;
+            }
+
             Ok(QueryResult::new(self))
         }))
     }
@@ -384,12 +389,18 @@ impl Queryable for Conn {
     {
         BoxFuture(Box::pin(async move {
             let statement = self.get_statement(stmt).await?;
+
             for params in params_iter {
                 self.execute_statement(&statement, params).await?;
                 QueryResult::<BinaryProtocol>::new(&mut *self)
                     .drop_result()
                     .await?;
             }
+
+            if self.stmt_cache_mut().capacity() == 0 {
+                self.close(statement).await?;
+            }
+
             Ok(())
         }))
     }
