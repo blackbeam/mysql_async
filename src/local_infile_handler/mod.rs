@@ -64,7 +64,7 @@ pub mod builtin;
 /// assert_eq!(result.len(), 1);
 /// assert_eq!(result[0], "foobar");
 ///
-/// conn; // dropped connection will go to the pool
+/// drop(conn); // dropped connection will go to the pool
 ///
 /// pool.disconnect().await?;
 /// # Ok(())
