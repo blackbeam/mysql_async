@@ -79,7 +79,7 @@
 //!     ).await?;
 //!
 //!     // Dropped connection will go to the pool
-//!     conn;
+//!     drop(conn);
 //!
 //!     // Pool must be disconnected explicitly because
 //!     // it's an asynchronous operation.
