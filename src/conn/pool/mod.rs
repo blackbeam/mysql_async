@@ -645,7 +645,7 @@ mod test {
                 .block_on(async {
                     let pool = Pool::new(get_opts());
                     let _conn = pool.get_conn().await.unwrap();
-                    panic!(PANIC_MESSAGE);
+                    std::panic::panic_any(PANIC_MESSAGE);
                 });
         });
 
