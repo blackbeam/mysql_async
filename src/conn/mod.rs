@@ -764,18 +764,25 @@ impl Conn {
 
     /// Reads and stores `max_allowed_packet` in the connection.
     async fn read_max_allowed_packet(&mut self) -> Result<()> {
-        let row_opt = self.query_first("SELECT @@max_allowed_packet").await?;
+        let max_allowed_packet = if let Some(value) = self.opts().max_allowed_packet() {
+            Some(value)
+        } else {
+            self.query_first("SELECT @@max_allowed_packet").await?
+        };
         if let Some(stream) = self.inner.stream.as_mut() {
-            stream.set_max_allowed_packet(row_opt.unwrap_or((DEFAULT_MAX_ALLOWED_PACKET,)).0);
+            stream.set_max_allowed_packet(max_allowed_packet.unwrap_or(DEFAULT_MAX_ALLOWED_PACKET));
         }
         Ok(())
     }
 
     /// Reads and stores `wait_timeout` in the connection.
     async fn read_wait_timeout(&mut self) -> Result<()> {
-        let row_opt = self.query_first("SELECT @@wait_timeout").await?;
-        let wait_timeout_secs = row_opt.unwrap_or((28800,)).0;
-        self.inner.wait_timeout = Duration::from_secs(wait_timeout_secs);
+        let wait_timeout = if let Some(value) = self.opts().wait_timeout() {
+            Some(value)
+        } else {
+            self.query_first("SELECT @@wait_timeout").await?
+        };
+        self.inner.wait_timeout = Duration::from_secs(wait_timeout.unwrap_or(28800) as u64);
         Ok(())
     }
 
