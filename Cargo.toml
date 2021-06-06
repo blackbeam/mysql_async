@@ -10,6 +10,7 @@ repository = "https://github.com/blackbeam/mysql_async"
 version = "0.27.1"
 exclude = ["test/*"]
 edition = "2018"
+categories = ["asynchronous", "database"]
 
 [dependencies]
 bytes = "1.0"
