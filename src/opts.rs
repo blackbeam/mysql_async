@@ -11,6 +11,7 @@ use url::{Host, Url};
 
 use std::{
     borrow::Cow,
+    convert::TryFrom,
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     path::Path,
@@ -399,6 +400,11 @@ pub(crate) struct MysqlOpts {
     /// By default `Conn` will query this value from the server. One can avoid this step
     /// by explicitly specifying it.
     wait_timeout: Option<usize>,
+
+    /// Disables `mysql_old_password` plugin (defaults to `true`).
+    ///
+    /// Available via `secure_auth` connection url parameter.
+    secure_auth: bool,
 }
 
 /// Mysql connection options.
@@ -689,6 +695,13 @@ impl Opts {
         self.inner.mysql_opts.wait_timeout
     }
 
+    /// Disables `mysql_old_password` plugin (defaults to `true`).
+    ///
+    /// Available via `secure_auth` connection url parameter.
+    pub fn secure_auth(&self) -> bool {
+        self.inner.mysql_opts.secure_auth
+    }
+
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
         let mut out = CapabilityFlags::CLIENT_PROTOCOL_41
             | CapabilityFlags::CLIENT_SECURE_CONNECTION
@@ -734,6 +747,7 @@ impl Default for MysqlOpts {
             compression: None,
             max_allowed_packet: None,
             wait_timeout: None,
+            secure_auth: true,
         }
     }
 }
@@ -831,8 +845,16 @@ impl Default for OptsBuilder {
 
 impl OptsBuilder {
     /// Creates new builder from the given `Opts`.
-    pub fn from_opts<T: Into<Opts>>(opts: T) -> Self {
-        let opts = opts.into();
+    ///
+    /// # Panic
+    ///
+    /// It'll panic if `Opts::try_from(opts)` returns error.
+    pub fn from_opts<T>(opts: T) -> Self
+    where
+        Opts: TryFrom<T>,
+        <Opts as TryFrom<T>>::Error: std::error::Error,
+    {
+        let opts = Opts::try_from(opts).unwrap();
 
         OptsBuilder {
             tcp_port: opts.inner.address.get_tcp_port(),
@@ -966,6 +988,14 @@ impl OptsBuilder {
 
             val
         });
+        self
+    }
+
+    /// Disables `mysql_old_password` plugin (defaults to `true`).
+    ///
+    /// Available via `secure_auth` connection url parameter.
+    pub fn secure_auth(mut self, secure_auth: bool) -> Self {
+        self.opts.secure_auth = secure_auth;
         self
     }
 }
@@ -1180,6 +1210,18 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                     });
                 }
             }
+        } else if key == "secure_auth" {
+            match bool::from_str(&*value) {
+                Ok(secure_auth) => {
+                    opts.secure_auth = secure_auth;
+                }
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "secure_auth".into(),
+                        value,
+                    });
+                }
+            }
         } else if key == "socket" {
             opts.socket = Some(value)
         } else if key == "compression" {
@@ -1224,9 +1266,11 @@ impl FromStr for Opts {
     }
 }
 
-impl<T: AsRef<str> + Sized> From<T> for Opts {
-    fn from(url: T) -> Opts {
-        Opts::from_url(url.as_ref()).unwrap()
+impl<'a> TryFrom<&'a str> for Opts {
+    type Error = UrlError;
+
+    fn try_from(s: &str) -> std::result::Result<Self, UrlError> {
+        Opts::from_url(s)
     }
 }
 
@@ -1306,21 +1350,21 @@ mod test {
     #[should_panic]
     fn should_panic_on_invalid_url() {
         let opts = "42";
-        let _: Opts = opts.into();
+        let _: Opts = Opts::from_str(opts).unwrap();
     }
 
     #[test]
     #[should_panic]
     fn should_panic_on_invalid_scheme() {
         let opts = "postgres://localhost";
-        let _: Opts = opts.into();
+        let _: Opts = Opts::from_str(opts).unwrap();
     }
 
     #[test]
     #[should_panic]
     fn should_panic_on_unknown_query_param() {
         let opts = "mysql://localhost/foo?bar=baz";
-        let _: Opts = opts.into();
+        let _: Opts = Opts::from_str(opts).unwrap();
     }
 
     #[test]

@@ -152,6 +152,9 @@ pub enum DriverError {
 
     #[error("Named pipe connections temporary disabled (see tokio-rs/tokio#3118)")]
     NamedPipesDisabled,
+
+    #[error("`mysql_old_password` plugin is insecure and disabled by default")]
+    MysqlOldPasswordDisabled,
 }
 
 impl From<DriverError> for Error {

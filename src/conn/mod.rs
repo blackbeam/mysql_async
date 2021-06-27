@@ -15,8 +15,8 @@ use mysql_common::{
     io::ParseBuf,
     packets::{
         binlog_request::BinlogRequest, AuthPlugin, AuthSwitchRequest, CommonOkPacket, ErrPacket,
-        HandshakePacket, HandshakeResponse, OkPacket, OkPacketDeserializer, ResultSetTerminator,
-        SslRequest,
+        HandshakePacket, HandshakeResponse, OkPacket, OkPacketDeserializer, OldAuthSwitchRequest,
+        ResultSetTerminator, SslRequest,
     },
     proto::MySerialize,
 };
@@ -390,7 +390,9 @@ impl Conn {
         self.inner.id = handshake.connection_id();
         self.inner.status = handshake.status_flags();
         self.inner.auth_plugin = match handshake.auth_plugin() {
-            Some(AuthPlugin::MysqlNativePassword) => AuthPlugin::MysqlNativePassword,
+            Some(AuthPlugin::MysqlNativePassword | AuthPlugin::MysqlOldPassword) => {
+                AuthPlugin::MysqlNativePassword
+            }
             Some(AuthPlugin::CachingSha2Password) => AuthPlugin::CachingSha2Password,
             Some(AuthPlugin::Other(ref name)) => {
                 let name = String::from_utf8_lossy(name).into();
@@ -454,18 +456,31 @@ impl Conn {
     ) -> Result<()> {
         if !self.inner.auth_switched {
             self.inner.auth_switched = true;
-            self.inner.nonce = auth_switch_request.plugin_data().into();
+
+            if matches!(
+                auth_switch_request.auth_plugin(),
+                AuthPlugin::MysqlOldPassword
+            ) {
+                if self.inner.opts.secure_auth() {
+                    return Err(DriverError::MysqlOldPasswordDisabled.into());
+                }
+            }
+
             self.inner.auth_plugin = auth_switch_request.auth_plugin().clone().into_owned();
+
             let plugin_data = self
                 .inner
                 .auth_plugin
                 .gen_data(self.inner.opts.pass(), &*self.inner.nonce);
+
             if let Some(plugin_data) = plugin_data {
                 self.write_struct(&plugin_data).await?;
             } else {
                 self.write_packet(crate::BUFFER_POOL.get()).await?;
             }
+
             self.continue_auth().await?;
+
             Ok(())
         } else {
             unreachable!("auth_switched flag should be checked by caller")
@@ -477,7 +492,7 @@ impl Conn {
         // see https://github.com/rust-lang/rust/issues/46415#issuecomment-528099782
         Box::pin(async move {
             match self.inner.auth_plugin {
-                AuthPlugin::MysqlNativePassword => {
+                AuthPlugin::MysqlNativePassword | AuthPlugin::MysqlOldPassword => {
                     self.continue_mysql_native_password_auth().await?;
                     Ok(())
                 }
@@ -561,9 +576,17 @@ impl Conn {
         match packet.get(0) {
             Some(0x00) => Ok(()),
             Some(0xfe) if !self.inner.auth_switched => {
-                let auth_switch_request = ParseBuf(&*packet).parse::<AuthSwitchRequest>(())?;
-                self.perform_auth_switch(auth_switch_request).await?;
-                Ok(())
+                let auth_switch = if packet.len() > 1 {
+                    ParseBuf(&*packet).parse(())?
+                } else {
+                    let _ = ParseBuf(&*packet).parse::<OldAuthSwitchRequest>(())?;
+                    // map OldAuthSwitch to AuthSwitch with mysql_old_password plugin
+                    AuthSwitchRequest::new(
+                        "mysql_old_password".as_bytes(),
+                        self.inner.nonce.clone(),
+                    )
+                };
+                self.perform_auth_switch(auth_switch).await
             }
             _ => Err(DriverError::UnexpectedPacket {
                 payload: packet.to_vec(),
