@@ -41,7 +41,7 @@ impl Routine<()> for ExecRoutine<'_> {
                             conn.send_long_data(self.stmt.id(), params.iter()).await?;
                         }
 
-                        conn.write_command_raw(body).await?;
+                        conn.write_command(&body).await?;
                         conn.read_result_set::<BinaryProtocol>(true).await?;
                         break;
                     }
@@ -69,7 +69,7 @@ impl Routine<()> for ExecRoutine<'_> {
 
                         let (body, _) =
                             ComStmtExecuteRequestBuilder::new(self.stmt.id()).build(&[]);
-                        conn.write_command_raw(body).await?;
+                        conn.write_command(&body).await?;
                         conn.read_result_set::<BinaryProtocol>(true).await?;
                         break;
                     }

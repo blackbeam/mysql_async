@@ -100,7 +100,9 @@ extern crate test;
 
 pub use mysql_common::{chrono, constants as consts, params, time, uuid};
 
-use std::{future::Future, pin::Pin};
+use std::sync::Arc;
+
+mod buffer_pool;
 
 #[macro_use]
 mod macros;
@@ -114,33 +116,13 @@ mod opts;
 mod query;
 mod queryable;
 
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct BoxFuture<'a, T>(Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>);
+type BoxFuture<'a, T> = futures_core::future::BoxFuture<'a, Result<T>>;
 
-impl<T> Future for BoxFuture<'_, T> {
-    type Output = Result<T>;
-
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        self.0.as_mut().poll(cx)
-    }
-}
-
-impl<'a, T> std::fmt::Debug for BoxFuture<'a, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("BoxFuture")
-            .field(&format!(
-                "dyn Future<Output = {}>",
-                std::any::type_name::<T>()
-            ))
-            .finish()
-    }
-}
+static BUFFER_POOL: once_cell::sync::Lazy<Arc<crate::buffer_pool::BufferPool>> =
+    once_cell::sync::Lazy::new(|| Default::default());
 
 #[doc(inline)]
-pub use self::conn::Conn;
+pub use self::conn::{binlog_stream::BinlogStream, Conn};
 
 #[doc(inline)]
 pub use self::conn::pool::Pool;
@@ -164,7 +146,22 @@ pub use self::opts::{
 pub use self::local_infile_handler::{builtin::WhiteListFsLocalInfileHandler, InfileHandlerFuture};
 
 #[doc(inline)]
-pub use mysql_common::packets::Column;
+pub use mysql_common::packets::{
+    binlog_request::BinlogRequest,
+    session_state_change::{
+        Gtids, Schema, SessionStateChange, SystemVariable, TransactionCharacteristics,
+        TransactionState, Unsupported,
+    },
+    BinlogDumpFlags, Column, Interval, OkPacket, SessionStateInfo, Sid,
+};
+
+pub mod binlog {
+    #[doc(inline)]
+    pub use mysql_common::binlog::consts::*;
+
+    #[doc(inline)]
+    pub use mysql_common::binlog::{events, jsonb, jsondiff, row, value};
+}
 
 #[doc(inline)]
 pub use mysql_common::proto::codec::Compression;
@@ -287,7 +284,7 @@ pub mod test_misc {
     }
 
     pub fn get_opts() -> OptsBuilder {
-        let mut builder = OptsBuilder::from_opts(&**DATABASE_URL);
+        let mut builder = OptsBuilder::from_opts(Opts::from_url(&**DATABASE_URL).unwrap());
         if test_ssl() {
             let ssl_opts = SslOpts::default()
                 .with_danger_skip_domain_validation(true)

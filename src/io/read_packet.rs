@@ -15,7 +15,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{connection_like::Connection, error::IoError};
+use crate::{buffer_pool::PooledBuf, connection_like::Connection, error::IoError, Conn};
 
 /// Reads a packet.
 #[derive(Debug)]
@@ -26,10 +26,14 @@ impl<'a, 't> ReadPacket<'a, 't> {
     pub(crate) fn new<T: Into<Connection<'a, 't>>>(conn: T) -> Self {
         Self(conn.into())
     }
+
+    pub(crate) fn conn_ref(&self) -> &Conn {
+        &*self.0
+    }
 }
 
 impl Future for ReadPacket<'_, '_> {
-    type Output = std::result::Result<Vec<u8>, IoError>;
+    type Output = std::result::Result<PooledBuf, IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let packet_opt = match self.0.stream_mut() {

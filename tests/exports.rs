@@ -7,9 +7,9 @@ use mysql_async::{
         BatchQuery, ConvIr, FromRow, FromValue, LocalInfileHandler, Protocol, Query, Queryable,
         StatementLike, ToValue,
     },
-    time, uuid, BinaryProtocol, BoxFuture, Column, Conn, Deserialized, DriverError, Error,
-    FromRowError, FromValueError, IoError, IsolationLevel, Opts, OptsBuilder, Params, ParseError,
-    Pool, PoolConstraints, PoolOpts, QueryResult, Result, Row, Serialized, ServerError, SslOpts,
+    time, uuid, BinaryProtocol, Column, Conn, Deserialized, DriverError, Error, FromRowError,
+    FromValueError, IoError, IsolationLevel, Opts, OptsBuilder, Params, ParseError, Pool,
+    PoolConstraints, PoolOpts, QueryResult, Result, Row, Serialized, ServerError, SslOpts,
     Statement, TextProtocol, Transaction, TxOpts, UrlError, Value, WhiteListFsLocalInfileHandler,
     DEFAULT_INACTIVE_CONNECTION_TTL, DEFAULT_TTL_CHECK_INTERVAL,
 };

@@ -11,6 +11,7 @@ use url::{Host, Url};
 
 use std::{
     borrow::Cow,
+    convert::TryFrom,
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     path::Path,
@@ -387,6 +388,23 @@ pub(crate) struct MysqlOpts {
     ///
     /// Note that compression level defined here will affect only outgoing packets.
     compression: Option<crate::Compression>,
+
+    /// Client side `max_allowed_packet` value (defaults to `None`).
+    ///
+    /// By default `Conn` will query this value from the server. One can avoid this step
+    /// by explicitly specifying it.
+    max_allowed_packet: Option<usize>,
+
+    /// Client side `wait_timeout` value (defaults to `None`).
+    ///
+    /// By default `Conn` will query this value from the server. One can avoid this step
+    /// by explicitly specifying it.
+    wait_timeout: Option<usize>,
+
+    /// Disables `mysql_old_password` plugin (defaults to `true`).
+    ///
+    /// Available via `secure_auth` connection url parameter.
+    secure_auth: bool,
 }
 
 /// Mysql connection options.
@@ -657,6 +675,33 @@ impl Opts {
         self.inner.mysql_opts.compression
     }
 
+    /// Client side `max_allowed_packet` value (defaults to `None`).
+    ///
+    /// By default `Conn` will query this value from the server. One can avoid this step
+    /// by explicitly specifying it. Server side default is 4MB.
+    ///
+    /// Available in connection URL via `max_allowed_packet` parameter.
+    pub fn max_allowed_packet(&self) -> Option<usize> {
+        self.inner.mysql_opts.max_allowed_packet
+    }
+
+    /// Client side `wait_timeout` value (defaults to `None`).
+    ///
+    /// By default `Conn` will query this value from the server. One can avoid this step
+    /// by explicitly specifying it. Server side default is 28800.
+    ///
+    /// Available in connection URL via `wait_timeout` parameter.
+    pub fn wait_timeout(&self) -> Option<usize> {
+        self.inner.mysql_opts.wait_timeout
+    }
+
+    /// Disables `mysql_old_password` plugin (defaults to `true`).
+    ///
+    /// Available via `secure_auth` connection url parameter.
+    pub fn secure_auth(&self) -> bool {
+        self.inner.mysql_opts.secure_auth
+    }
+
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
         let mut out = CapabilityFlags::CLIENT_PROTOCOL_41
             | CapabilityFlags::CLIENT_SECURE_CONNECTION
@@ -700,6 +745,9 @@ impl Default for MysqlOpts {
             prefer_socket: cfg!(not(target_os = "windows")),
             socket: None,
             compression: None,
+            max_allowed_packet: None,
+            wait_timeout: None,
+            secure_auth: true,
         }
     }
 }
@@ -797,8 +845,16 @@ impl Default for OptsBuilder {
 
 impl OptsBuilder {
     /// Creates new builder from the given `Opts`.
-    pub fn from_opts<T: Into<Opts>>(opts: T) -> Self {
-        let opts = opts.into();
+    ///
+    /// # Panic
+    ///
+    /// It'll panic if `Opts::try_from(opts)` returns error.
+    pub fn from_opts<T>(opts: T) -> Self
+    where
+        Opts: TryFrom<T>,
+        <Opts as TryFrom<T>>::Error: std::error::Error,
+    {
+        let opts = Opts::try_from(opts).unwrap();
 
         OptsBuilder {
             tcp_port: opts.inner.address.get_tcp_port(),
@@ -906,6 +962,40 @@ impl OptsBuilder {
     /// Defines compression. See [`Opts::compression`].
     pub fn compression<T: Into<Option<crate::Compression>>>(mut self, compression: T) -> Self {
         self.opts.compression = compression.into();
+        self
+    }
+
+    /// Defines `max_allowed_packet` option. See [`Opts::max_allowed_packet`].
+    ///
+    /// Note that it'll saturate to proper minimum and maximum values
+    /// for this parameter (see MySql documentation).
+    pub fn max_allowed_packet(mut self, max_allowed_packet: Option<usize>) -> Self {
+        self.opts.max_allowed_packet =
+            max_allowed_packet.map(|x| std::cmp::max(1024, std::cmp::min(1073741824, x)));
+        self
+    }
+
+    /// Defines `wait_timeout` option. See [`Opts::wait_timeout`].
+    ///
+    /// Note that it'll saturate to proper minimum and maximum values
+    /// for this parameter (see MySql documentation).
+    pub fn wait_timeout(mut self, wait_timeout: Option<usize>) -> Self {
+        self.opts.wait_timeout = wait_timeout.map(|x| {
+            #[cfg(windows)]
+            let val = std::cmp::min(2147483, x);
+            #[cfg(not(windows))]
+            let val = std::cmp::min(31536000, x);
+
+            val
+        });
+        self
+    }
+
+    /// Disables `mysql_old_password` plugin (defaults to `true`).
+    ///
+    /// Available via `secure_auth` connection url parameter.
+    pub fn secure_auth(mut self, secure_auth: bool) -> Self {
+        self.opts.secure_auth = secure_auth;
         self
     }
 }
@@ -1060,6 +1150,32 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                     });
                 }
             }
+        } else if key == "max_allowed_packet" {
+            match usize::from_str(&*value) {
+                Ok(value) => {
+                    opts.max_allowed_packet =
+                        Some(std::cmp::max(1024, std::cmp::min(1073741824, value)))
+                }
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "max_allowed_packet".into(),
+                        value,
+                    });
+                }
+            }
+        } else if key == "wait_timeout" {
+            match usize::from_str(&*value) {
+                #[cfg(windows)]
+                Ok(value) => opts.wait_timeout = Some(std::cmp::min(2147483, value)),
+                #[cfg(not(windows))]
+                Ok(value) => opts.wait_timeout = Some(std::cmp::min(31536000, value)),
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "wait_timeout".into(),
+                        value,
+                    });
+                }
+            }
         } else if key == "tcp_nodelay" {
             match bool::from_str(&*value) {
                 Ok(value) => opts.tcp_nodelay = value,
@@ -1090,6 +1206,18 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                 _ => {
                     return Err(UrlError::InvalidParamValue {
                         param: "prefer_socket".into(),
+                        value,
+                    });
+                }
+            }
+        } else if key == "secure_auth" {
+            match bool::from_str(&*value) {
+                Ok(secure_auth) => {
+                    opts.secure_auth = secure_auth;
+                }
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "secure_auth".into(),
                         value,
                     });
                 }
@@ -1138,9 +1266,11 @@ impl FromStr for Opts {
     }
 }
 
-impl<T: AsRef<str> + Sized> From<T> for Opts {
-    fn from(url: T) -> Opts {
-        Opts::from_url(url.as_ref()).unwrap()
+impl<'a> TryFrom<&'a str> for Opts {
+    type Error = UrlError;
+
+    fn try_from(s: &str) -> std::result::Result<Self, UrlError> {
+        Opts::from_url(s)
     }
 }
 
@@ -1220,21 +1350,21 @@ mod test {
     #[should_panic]
     fn should_panic_on_invalid_url() {
         let opts = "42";
-        let _: Opts = opts.into();
+        let _: Opts = Opts::from_str(opts).unwrap();
     }
 
     #[test]
     #[should_panic]
     fn should_panic_on_invalid_scheme() {
         let opts = "postgres://localhost";
-        let _: Opts = opts.into();
+        let _: Opts = Opts::from_str(opts).unwrap();
     }
 
     #[test]
     #[should_panic]
     fn should_panic_on_unknown_query_param() {
         let opts = "mysql://localhost/foo?bar=baz";
-        let _: Opts = opts.into();
+        let _: Opts = Opts::from_str(opts).unwrap();
     }
 
     #[test]

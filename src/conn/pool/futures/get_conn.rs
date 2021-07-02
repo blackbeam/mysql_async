@@ -6,28 +6,45 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use futures_core::ready;
 use std::{
+    fmt,
     future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
 
+use futures_core::ready;
+
 use crate::{
     conn::{pool::Pool, Conn},
     error::*,
-    BoxFuture,
 };
 
 /// States of the GetConn future.
-#[derive(Debug)]
 pub(crate) enum GetConnInner {
     New,
     Done,
     // TODO: one day this should be an existential
-    Connecting(BoxFuture<'static, Conn>),
+    Connecting(crate::BoxFuture<'static, Conn>),
     /// This future will check, that idling connection is alive.
-    Checking(BoxFuture<'static, Conn>),
+    Checking(crate::BoxFuture<'static, Conn>),
+}
+
+impl fmt::Debug for GetConnInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GetConnInner::New => f.debug_tuple("GetConnInner::New").finish(),
+            GetConnInner::Done => f.debug_tuple("GetConnInner::Done").finish(),
+            GetConnInner::Connecting(_) => f
+                .debug_tuple("GetConnInner::Connecting")
+                .field(&"<future>")
+                .finish(),
+            GetConnInner::Checking(_) => f
+                .debug_tuple("GetConnInner::Checking")
+                .field(&"<future>")
+                .finish(),
+        }
+    }
 }
 
 impl GetConnInner {

@@ -34,6 +34,7 @@ use std::{
         ErrorKind::{BrokenPipe, NotConnected, Other},
         Read,
     },
+    mem::replace,
     net::{SocketAddr, ToSocketAddrs},
     ops::{Deref, DerefMut},
     pin::Pin,
@@ -41,7 +42,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{error::IoError, opts::SslOpts};
+use crate::{buffer_pool::PooledBuf, error::IoError, opts::SslOpts};
 
 #[cfg(unix)]
 use crate::io::socket::Socket;
@@ -61,37 +62,54 @@ mod read_packet;
 mod socket;
 mod write_packet;
 
-#[derive(Debug, Default)]
-pub struct PacketCodec(PacketCodecInner);
+#[derive(Debug)]
+pub struct PacketCodec {
+    inner: PacketCodecInner,
+    decode_buf: PooledBuf,
+}
+
+impl Default for PacketCodec {
+    fn default() -> Self {
+        Self {
+            inner: Default::default(),
+            decode_buf: crate::BUFFER_POOL.get(),
+        }
+    }
+}
 
 impl Deref for PacketCodec {
     type Target = PacketCodecInner;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.inner
     }
 }
 
 impl DerefMut for PacketCodec {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        &mut self.inner
     }
 }
 
 impl Decoder for PacketCodec {
-    type Item = Vec<u8>;
+    type Item = PooledBuf;
     type Error = IoError;
 
     fn decode(&mut self, src: &mut BytesMut) -> std::result::Result<Option<Self::Item>, IoError> {
-        Ok(self.0.decode(src)?)
+        if self.inner.decode(src, self.decode_buf.as_mut())? {
+            let new_buf = crate::BUFFER_POOL.get();
+            Ok(Some(replace(&mut self.decode_buf, new_buf)))
+        } else {
+            Ok(None)
+        }
     }
 }
 
-impl Encoder<Vec<u8>> for PacketCodec {
+impl Encoder<PooledBuf> for PacketCodec {
     type Error = IoError;
 
-    fn encode(&mut self, item: Vec<u8>, dst: &mut BytesMut) -> std::result::Result<(), IoError> {
-        Ok(self.0.encode(item, dst)?)
+    fn encode(&mut self, item: PooledBuf, dst: &mut BytesMut) -> std::result::Result<(), IoError> {
+        Ok(self.inner.encode(&mut item.as_ref(), dst)?)
     }
 }
 
@@ -515,7 +533,7 @@ impl Stream {
 }
 
 impl stream::Stream for Stream {
-    type Item = std::result::Result<Vec<u8>, IoError>;
+    type Item = std::result::Result<PooledBuf, IoError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.closed {
@@ -552,8 +570,8 @@ mod test {
         };
 
         assert_eq!(
-            sock.keepalive().unwrap(),
-            Some(std::time::Duration::from_millis(42_000)),
+            sock.keepalive_time().unwrap(),
+            std::time::Duration::from_millis(42_000),
         );
 
         std::mem::forget(sock);
