@@ -93,7 +93,7 @@
 //! ```
 
 #![recursion_limit = "1024"]
-#![cfg_attr(feature = "nightly", feature(test, const_fn))]
+#![cfg_attr(feature = "nightly", feature(test))]
 
 #[cfg(feature = "nightly")]
 extern crate test;
