@@ -390,9 +390,8 @@ impl Conn {
         self.inner.id = handshake.connection_id();
         self.inner.status = handshake.status_flags();
         self.inner.auth_plugin = match handshake.auth_plugin() {
-            Some(AuthPlugin::MysqlNativePassword | AuthPlugin::MysqlOldPassword) => {
-                AuthPlugin::MysqlNativePassword
-            }
+            Some(AuthPlugin::MysqlNativePassword) => AuthPlugin::MysqlNativePassword,
+            Some(AuthPlugin::MysqlOldPassword) => AuthPlugin::MysqlNativePassword,
             Some(AuthPlugin::CachingSha2Password) => AuthPlugin::CachingSha2Password,
             Some(AuthPlugin::Other(ref name)) => {
                 let name = String::from_utf8_lossy(name).into();
