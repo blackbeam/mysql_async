@@ -65,9 +65,7 @@ impl Future for Recycler {
                 if $conn.inner.stream.is_none() || $conn.inner.disconnected {
                     // drop unestablished connection
                     $self.discard.push(futures_util::future::ok(()).boxed());
-                } else if $conn.inner.tx_status != TxStatus::None
-                    || $conn.inner.pending_result.is_some()
-                {
+                } else if $conn.inner.tx_status != TxStatus::None || $conn.has_pending_result() {
                     $self.cleaning.push($conn.cleanup_for_pool().boxed());
                 } else if $conn.expired() || close {
                     $self.discard.push($conn.close_conn().boxed());

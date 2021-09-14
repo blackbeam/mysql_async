@@ -12,7 +12,7 @@ use crate::{
     connection_like::ToConnectionResult,
     from_row,
     prelude::{FromRow, StatementLike, ToConnection},
-    BinaryProtocol, BoxFuture, Params, QueryResult, TextProtocol,
+    BinaryProtocol, BoxFuture, Params, QueryResult, ResultSetStream, TextProtocol,
 };
 
 /// MySql text query.
@@ -115,6 +115,32 @@ pub trait Query: Send + Sized {
                 .await?
                 .map_and_drop(|row| map(from_row(row)))
                 .await
+        }
+        .boxed()
+    }
+
+    /// Returns a stream over the first result set.
+    ///
+    /// This method corresponds to [`QueryResult::stream_and_drop`][stream_and_drop].
+    ///
+    /// [stream_and_drop]: crate::QueryResult::stream_and_drop
+    fn stream<'a, 't: 'a, T, C>(
+        self,
+        conn: C,
+    ) -> BoxFuture<'a, ResultSetStream<'a, 'a, 't, T, Self::Protocol>>
+    where
+        Self: 'a,
+        Self::Protocol: Unpin,
+        T: Unpin + FromRow + Send + 'static,
+        C: ToConnection<'a, 't> + 'a,
+    {
+        async move {
+            self.run(conn)
+                .await?
+                .stream_and_drop()
+                .await
+                .transpose()
+                .expect("At least one result set is expected")
         }
         .boxed()
     }

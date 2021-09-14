@@ -185,7 +185,7 @@ pub use mysql_common::value::convert::{from_value, from_value_opt, FromValueErro
 pub use mysql_common::value::json::{Deserialized, Serialized};
 
 #[doc(inline)]
-pub use self::queryable::query_result::QueryResult;
+pub use self::queryable::query_result::{result_set_stream::ResultSetStream, QueryResult};
 
 #[doc(inline)]
 pub use self::queryable::transaction::{Transaction, TxOpts};
@@ -236,9 +236,12 @@ pub mod prelude {
     impl<T: crate::queryable::stmt::StatementLike> StatementLike for T {}
 
     /// Everything that is a connection.
+    ///
+    /// Note that you could obtain a `'static` connection by giving away `Conn` or `Pool`.
     pub trait ToConnection<'a, 't: 'a>: crate::connection_like::ToConnection<'a, 't> {}
     // explicitly implemented because of rusdoc
     impl<'a> ToConnection<'a, 'static> for &'a crate::Pool {}
+    impl<'a> ToConnection<'static, 'static> for crate::Pool {}
     impl ToConnection<'static, 'static> for crate::Conn {}
     impl<'a> ToConnection<'a, 'static> for &'a mut crate::Conn {}
     impl<'a, 't> ToConnection<'a, 't> for &'a mut crate::Transaction<'t> {}

@@ -29,7 +29,7 @@ use crate::{
     error::*,
     prelude::{FromRow, StatementLike},
     queryable::query_result::ResultSetMeta,
-    BoxFuture, Column, Conn, Params, Row,
+    BoxFuture, Column, Conn, Params, ResultSetStream, Row,
 };
 
 pub mod query_result;
@@ -259,6 +259,34 @@ pub trait Queryable: Send {
     where
         S: StatementLike + 'b,
         P: Into<Params> + Send + 'b;
+
+    /// Returns a stream over the first result set.
+    ///
+    /// This method corresponds to [`QueryResult::stream_and_drop`][stream_and_drop].
+    ///
+    /// [stream_and_drop]: crate::QueryResult::stream_and_drop
+    fn query_stream<'a, T, Q>(
+        &'a mut self,
+        query: Q,
+    ) -> BoxFuture<'a, ResultSetStream<'a, 'a, 'static, T, TextProtocol>>
+    where
+        T: Unpin + FromRow + Send + 'static,
+        Q: AsRef<str> + Send + Sync + 'a;
+
+    /// Returns a stream over the first result set.
+    ///
+    /// This method corresponds to [`QueryResult::stream_and_drop`][stream_and_drop].
+    ///
+    /// [stream_and_drop]: crate::QueryResult::stream_and_drop
+    fn exec_stream<'a: 's, 's, T, Q, P>(
+        &'a mut self,
+        stmt: Q,
+        params: P,
+    ) -> BoxFuture<'s, ResultSetStream<'a, 'a, 'static, T, BinaryProtocol>>
+    where
+        T: Unpin + FromRow + Send + 'static,
+        Q: StatementLike + 'a,
+        P: Into<Params> + Send + 's;
 }
 
 impl Queryable for Conn {
@@ -491,6 +519,46 @@ impl Queryable for Conn {
     {
         async move { self.exec_iter(stmt, params).await?.drop_result().await }.boxed()
     }
+
+    fn query_stream<'a, T, Q>(
+        &'a mut self,
+        query: Q,
+    ) -> BoxFuture<'a, ResultSetStream<'a, 'a, 'static, T, TextProtocol>>
+    where
+        T: Unpin + FromRow + Send + 'static,
+        Q: AsRef<str> + Send + Sync + 'a,
+    {
+        async move {
+            self.query_iter(query)
+                .await?
+                .stream_and_drop()
+                .await
+                .transpose()
+                .expect("At least one result set is expected")
+        }
+        .boxed()
+    }
+
+    fn exec_stream<'a: 's, 's, T, Q, P>(
+        &'a mut self,
+        stmt: Q,
+        params: P,
+    ) -> BoxFuture<'s, ResultSetStream<'a, 'a, 'static, T, BinaryProtocol>>
+    where
+        T: Unpin + FromRow + Send + 'static,
+        Q: StatementLike + 'a,
+        P: Into<Params> + Send + 's,
+    {
+        async move {
+            self.exec_iter(stmt, params)
+                .await?
+                .stream_and_drop()
+                .await
+                .transpose()
+                .expect("At least one result set is expected")
+        }
+        .boxed()
+    }
 }
 
 impl Queryable for Transaction<'_> {
@@ -628,6 +696,30 @@ impl Queryable for Transaction<'_> {
         P: Into<Params> + Send + 'b,
     {
         self.0.exec_drop(stmt, params)
+    }
+
+    fn query_stream<'a, T, Q>(
+        &'a mut self,
+        query: Q,
+    ) -> BoxFuture<'a, ResultSetStream<'a, 'a, 'static, T, TextProtocol>>
+    where
+        T: Unpin + FromRow + Send + 'static,
+        Q: AsRef<str> + Send + Sync + 'a,
+    {
+        self.0.query_stream(query)
+    }
+
+    fn exec_stream<'a: 's, 's, T, Q, P>(
+        &'a mut self,
+        stmt: Q,
+        params: P,
+    ) -> BoxFuture<'s, ResultSetStream<'a, 'a, 'static, T, BinaryProtocol>>
+    where
+        T: Unpin + FromRow + Send + 'static,
+        Q: StatementLike + 'a,
+        P: Into<Params> + Send + 's,
+    {
+        self.0.exec_stream(stmt, params)
     }
 }
 

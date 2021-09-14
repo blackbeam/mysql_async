@@ -10,10 +10,7 @@ use mysql_common::{
 };
 use tokio::io::AsyncReadExt;
 
-use crate::{
-    queryable::{query_result::ResultSetMeta, Protocol},
-    Conn, DriverError, Error,
-};
+use crate::{queryable::Protocol, Conn, DriverError, Error};
 
 impl Conn {
     /// Helper, that sends all `Value::Bytes` in the given list of paramenters as long data.
@@ -59,7 +56,7 @@ impl Conn {
             }
             Err(Error::Server(error)) => {
                 // error will be consumed as a part of a multi-result set
-                self.set_pending_result(Some(ResultSetMeta::Error(error)));
+                self.set_pending_result_error(error)?;
                 return Ok(());
             }
             Err(err) => {
@@ -72,7 +69,7 @@ impl Conn {
             Some(0x00) => {
                 self.set_pending_result(Some(P::result_set_meta(Arc::from(
                     Vec::new().into_boxed_slice(),
-                ))));
+                ))))?;
             }
             Some(0xFB) => self.handle_local_infile::<P>(&*packet).await?,
             _ => self.handle_result_set::<P>(&*packet).await?,
@@ -106,7 +103,7 @@ impl Conn {
         self.read_packet().await?;
         self.set_pending_result(Some(P::result_set_meta(Arc::from(
             Vec::new().into_boxed_slice(),
-        ))));
+        ))))?;
         Ok(())
     }
 
@@ -120,7 +117,7 @@ impl Conn {
         let column_count = packet.read_lenenc_int()?;
         let columns = self.read_column_defs(column_count as usize).await?;
         let meta = P::result_set_meta(Arc::from(columns.into_boxed_slice()));
-        self.set_pending_result(Some(meta));
+        self.set_pending_result(Some(meta))?;
         Ok(())
     }
 }
