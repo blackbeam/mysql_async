@@ -7,10 +7,10 @@
 // modified, or distributed except according to those terms.
 
 //! ## mysql-async
-//! Tokio based asynchronous MySql client library for rust programming language.
+//! Tokio based asynchronous MySql client library for The Rust Programming Language.
 //!
 //! ### Installation
-//! Library hosted on [crates.io](https://crates.io/crates/mysql_async/).
+//! The library is hosted on [crates.io](https://crates.io/crates/mysql_async/).
 //!
 //! ```toml
 //! [dependencies]
@@ -47,41 +47,34 @@
 //!     let pool = mysql_async::Pool::new(database_url);
 //!     let mut conn = pool.get_conn().await?;
 //!
-//!     // Create temporary table
-//!     conn.query_drop(
-//!         r"CREATE TEMPORARY TABLE payment (
-//!             customer_id int not null,
-//!             amount int not null,
-//!             account_name text
-//!         )"
-//!     ).await?;
+//!     // Create a temporary table
+//!     r"CREATE TEMPORARY TABLE payment (
+//!         customer_id int not null,
+//!         amount int not null,
+//!         account_name text
+//!     )".ignore(&mut conn).await?;
 //!
 //!     // Save payments
-//!     let params = payments.clone().into_iter().map(|payment| {
-//!         params! {
+//!     r"INSERT INTO payment (customer_id, amount, account_name)
+//!       VALUES (:customer_id, :amount, :account_name)"
+//!         .with(payments.iter().map(|payment| params! {
 //!             "customer_id" => payment.customer_id,
 //!             "amount" => payment.amount,
-//!             "account_name" => payment.account_name,
-//!         }
-//!     });
+//!             "account_name" => payment.account_name.as_ref(),
+//!         }))
+//!         .batch(&mut conn)
+//!         .await?;
 //!
-//!     conn.exec_batch(
-//!         r"INSERT INTO payment (customer_id, amount, account_name)
-//!           VALUES (:customer_id, :amount, :account_name)",
-//!         params,
-//!     ).await?;
-//!
-//!     // Load payments from database. Type inference will work here.
-//!     let loaded_payments = conn.exec_map(
-//!         "SELECT customer_id, amount, account_name FROM payment",
-//!         (),
-//!         |(customer_id, amount, account_name)| Payment { customer_id, amount, account_name },
-//!     ).await?;
+//!     // Load payments from the database. Type inference will work here.
+//!     let loaded_payments = "SELECT customer_id, amount, account_name FROM payment"
+//!         .with(())
+//!         .map(&mut conn, |(customer_id, amount, account_name)| Payment { customer_id, amount, account_name })
+//!         .await?;
 //!
 //!     // Dropped connection will go to the pool
 //!     drop(conn);
 //!
-//!     // Pool must be disconnected explicitly because
+//!     // The Pool must be disconnected explicitly because
 //!     // it's an asynchronous operation.
 //!     pool.disconnect().await?;
 //!
