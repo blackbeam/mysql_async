@@ -25,9 +25,10 @@ use std::{
     borrow::Cow,
     fmt,
     future::Future,
-    mem,
+    mem::{self, replace},
     pin::Pin,
     str::FromStr,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -78,6 +79,15 @@ fn disconnect(mut conn: Conn) {
     }
 }
 
+/// Pending result set.
+#[derive(Debug, Clone)]
+pub(crate) enum PendingResult {
+    /// There is a pending result set.
+    Pending(ResultSetMeta),
+    /// Result set metadata was taken but not yet consumed.
+    Taken(Arc<ResultSetMeta>),
+}
+
 /// Mysql connection
 struct ConnInner {
     stream: Option<Stream>,
@@ -90,7 +100,7 @@ struct ConnInner {
     last_ok_packet: Option<OkPacket<'static>>,
     last_err_packet: Option<mysql_common::packets::ServerError<'static>>,
     pool: Option<Pool>,
-    pending_result: Option<ResultSetMeta>,
+    pending_result: std::result::Result<Option<PendingResult>, ServerError>,
     tx_status: TxStatus,
     opts: Opts,
     last_io: Instant,
@@ -129,7 +139,7 @@ impl ConnInner {
             is_mariadb: false,
             version: (0, 0, 0),
             id: 0,
-            pending_result: None,
+            pending_result: Ok(None),
             pool: None,
             tx_status: TxStatus::None,
             last_io: Instant::now(),
@@ -269,16 +279,63 @@ impl Conn {
     /// Returns pending result metadata, if any.
     ///
     /// If `Some(_)`, then result is not yet consumed.
-    pub(crate) fn get_pending_result(&self) -> Option<&ResultSetMeta> {
-        self.inner.pending_result.as_ref()
+    pub(crate) fn use_pending_result(
+        &mut self,
+    ) -> std::result::Result<Option<&PendingResult>, ServerError> {
+        if let Err(ref e) = self.inner.pending_result {
+            let e = e.clone();
+            self.inner.pending_result = Ok(None);
+            return Err(e);
+        } else {
+            Ok(self.inner.pending_result.as_ref().unwrap().as_ref())
+        }
+    }
+
+    pub(crate) fn get_pending_result(
+        &self,
+    ) -> std::result::Result<Option<&PendingResult>, &ServerError> {
+        self.inner.pending_result.as_ref().map(|x| x.as_ref())
+    }
+
+    pub(crate) fn has_pending_result(&self) -> bool {
+        matches!(self.inner.pending_result, Err(_))
+            || matches!(self.inner.pending_result, Ok(Some(_)))
     }
 
     /// Sets the given pening result metadata for this connection. Returns the previous value.
     pub(crate) fn set_pending_result(
         &mut self,
         meta: Option<ResultSetMeta>,
-    ) -> Option<ResultSetMeta> {
-        std::mem::replace(&mut self.inner.pending_result, meta)
+    ) -> std::result::Result<Option<PendingResult>, ServerError> {
+        replace(
+            &mut self.inner.pending_result,
+            Ok(meta.map(PendingResult::Pending)),
+        )
+    }
+
+    pub(crate) fn set_pending_result_error(
+        &mut self,
+        error: ServerError,
+    ) -> std::result::Result<Option<PendingResult>, ServerError> {
+        replace(&mut self.inner.pending_result, Err(error))
+    }
+
+    /// Gives the currently pending result to a caller for consumption.
+    pub(crate) fn take_pending_result(
+        &mut self,
+    ) -> std::result::Result<Option<Arc<ResultSetMeta>>, ServerError> {
+        let mut output = None;
+
+        self.inner.pending_result = match replace(&mut self.inner.pending_result, Ok(None))? {
+            Some(PendingResult::Pending(x)) => {
+                let meta = Arc::new(x);
+                output = Some(meta.clone());
+                Ok(Some(PendingResult::Taken(meta)))
+            }
+            x => Ok(x),
+        };
+
+        Ok(output)
     }
 
     /// Returns current status flags.
@@ -597,7 +654,7 @@ impl Conn {
 
     /// Returns `true` for ProgressReport packet.
     fn handle_packet(&mut self, packet: &PooledBuf) -> Result<bool> {
-        let ok_packet = if self.get_pending_result().is_some() {
+        let ok_packet = if self.has_pending_result() {
             ParseBuf(&*packet)
                 .parse::<OkPacketDeserializer<ResultSetTerminator>>(self.capabilities())
                 .map(|x| x.into_inner())
@@ -868,23 +925,37 @@ impl Conn {
 
     /// The purpose of this function is to cleanup a pending result set
     /// for prematurely dropeed connection or query result.
+    ///
+    /// Requires that there are no other references to the pending result.
     pub(crate) async fn drop_result(&mut self) -> Result<()> {
-        match self.inner.pending_result {
-            Some(ResultSetMeta::Text(_)) => {
+        // Map everything into `PendingResult::Pending`
+        let meta = match self.set_pending_result(None)? {
+            Some(PendingResult::Pending(meta)) => Some(meta),
+            Some(PendingResult::Taken(meta)) => {
+                // This also asserts that there is only one reference left to the taken ResultSetMeta,
+                // therefore this result set must be dropped here since it won't be dropped anywhere else.
+                Some(Arc::try_unwrap(meta).expect("Conn::drop_result call on a pending result that may still be droped by someone else"))
+            }
+            None => None,
+        };
+
+        let _ = self.set_pending_result(meta);
+
+        match self.use_pending_result() {
+            Ok(Some(PendingResult::Pending(ResultSetMeta::Text(_)))) => {
                 QueryResult::<'_, '_, TextProtocol>::new(self)
                     .drop_result()
                     .await
             }
-            Some(ResultSetMeta::Binary(_)) => {
+            Ok(Some(PendingResult::Pending(ResultSetMeta::Binary(_)))) => {
                 QueryResult::<'_, '_, BinaryProtocol>::new(self)
                     .drop_result()
                     .await
             }
-            Some(ResultSetMeta::Error(_)) => match self.set_pending_result(None) {
-                Some(ResultSetMeta::Error(err)) => Err(err.into()),
-                _ => unreachable!(),
-            },
-            None => Ok(()),
+            Ok(None) => Ok((/* this case does not require an action */)),
+            Ok(Some(PendingResult::Taken(_))) | Err(_) => {
+                unreachable!("this case must be handled earlier in this function")
+            }
         }
     }
 
@@ -893,7 +964,7 @@ impl Conn {
     /// The purpose of this function, is to cleanup the connection while returning it to a [`Pool`].
     async fn cleanup_for_pool(mut self) -> Result<Self> {
         loop {
-            let result = if self.inner.pending_result.is_some() {
+            let result = if self.has_pending_result() {
                 self.drop_result().await
             } else if self.inner.tx_status != TxStatus::None {
                 self.rollback_transaction().await
@@ -953,7 +1024,7 @@ mod test {
 
     use crate::{
         from_row, params, prelude::*, test_misc::get_opts, BinlogDumpFlags, BinlogRequest, Conn,
-        Error, OptsBuilder, Pool, TxOpts, WhiteListFsLocalInfileHandler,
+        Error, OptsBuilder, Pool, WhiteListFsLocalInfileHandler,
     };
 
     async fn gen_dummy_data() -> super::Result<()> {
@@ -1314,212 +1385,6 @@ mod test {
         let result: Option<u8> = conn.query_first("SELECT COUNT(*) FROM tmp").await?;
         conn.disconnect().await?;
         assert_eq!(result, Some(1_u8));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn dropped_query_result_should_emit_errors_on_cleanup() -> super::Result<()> {
-        use crate::{Error::Server, ServerError};
-        let mut conn = Conn::new(get_opts()).await?;
-        conn.query_iter("SELECT '1'; BLABLA;").await?;
-        assert!(matches!(
-            conn.query_drop("DO 42;").await.unwrap_err(),
-            Server(ServerError { code: 1064, .. })
-        ));
-        conn.disconnect().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn should_try_collect() -> super::Result<()> {
-        let mut conn = Conn::new(get_opts()).await?;
-        let mut result = conn
-            .query_iter(
-                r"SELECT 'hello', 123
-                    UNION ALL
-                    SELECT 'world', 'bar'
-                    UNION ALL
-                    SELECT 'hello', 123
-                ",
-            )
-            .await?;
-        let mut rows = result.try_collect::<(String, u8)>().await?;
-        assert!(rows.pop().unwrap().is_ok());
-        assert!(rows.pop().unwrap().is_err());
-        assert!(rows.pop().unwrap().is_ok());
-        result.drop_result().await?;
-        conn.disconnect().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn should_try_collect_and_drop() -> super::Result<()> {
-        let mut conn = Conn::new(get_opts()).await?;
-        let mut rows = conn
-            .query_iter(
-                r"SELECT 'hello', 123
-                    UNION ALL
-                    SELECT 'world', 'bar'
-                    UNION ALL
-                    SELECT 'hello', 123;
-                    SELECT 'foo', 255;
-                ",
-            )
-            .await?
-            .try_collect_and_drop::<(String, u8)>()
-            .await?;
-        assert!(rows.pop().unwrap().is_ok());
-        assert!(rows.pop().unwrap().is_err());
-        assert!(rows.pop().unwrap().is_ok());
-        conn.disconnect().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn should_handle_mutliresult_set() -> super::Result<()> {
-        let mut conn = Conn::new(get_opts()).await?;
-        let mut result = conn
-            .query_iter(
-                r"SELECT 'hello', 123
-                    UNION ALL
-                    SELECT 'world', 231;
-                    SELECT 'foo', 255;
-                ",
-            )
-            .await?;
-        let rows_1 = result.collect::<(String, u8)>().await?;
-        let rows_2 = result.collect_and_drop().await?;
-        conn.disconnect().await?;
-
-        assert_eq!((String::from("hello"), 123), rows_1[0]);
-        assert_eq!((String::from("world"), 231), rows_1[1]);
-        assert_eq!((String::from("foo"), 255), rows_2[0]);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn should_map_resultset() -> super::Result<()> {
-        let mut conn = Conn::new(get_opts()).await?;
-        let mut result = conn
-            .query_iter(
-                r"
-                    SELECT 'hello', 123
-                    UNION ALL
-                    SELECT 'world', 231;
-                    SELECT 'foo', 255;
-                ",
-            )
-            .await?;
-
-        let rows_1 = result.map(|row| from_row::<(String, u8)>(row)).await?;
-        let rows_2 = result.map_and_drop(from_row).await?;
-        conn.disconnect().await?;
-
-        assert_eq!((String::from("hello"), 123), rows_1[0]);
-        assert_eq!((String::from("world"), 231), rows_1[1]);
-        assert_eq!((String::from("foo"), 255), rows_2[0]);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn should_reduce_resultset() -> super::Result<()> {
-        let mut conn = Conn::new(get_opts()).await?;
-        let mut result = conn
-            .query_iter(
-                r"SELECT 5
-                    UNION ALL
-                    SELECT 6;
-                    SELECT 7;",
-            )
-            .await?;
-        let reduced = result
-            .reduce(0, |mut acc, row| {
-                acc += from_row::<i32>(row);
-                acc
-            })
-            .await?;
-        let rows_2 = result.collect_and_drop::<i32>().await?;
-        conn.disconnect().await?;
-        assert_eq!(11, reduced);
-        assert_eq!(7, rows_2[0]);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn should_handle_multi_result_sets_where_some_results_have_no_output() -> super::Result<()>
-    {
-        const QUERY: &str = r"SELECT 1;
-            UPDATE time_zone SET Time_zone_id = 1 WHERE Time_zone_id = 1;
-            SELECT 2;
-            SELECT 3;
-            UPDATE time_zone SET Time_zone_id = 1 WHERE Time_zone_id = 1;
-            UPDATE time_zone SET Time_zone_id = 1 WHERE Time_zone_id = 1;
-            SELECT 4;";
-
-        let mut c = Conn::new(get_opts()).await?;
-        c.query_drop("CREATE TEMPORARY TABLE time_zone (Time_zone_id INT)")
-            .await
-            .unwrap();
-        let mut t = c.start_transaction(TxOpts::new()).await?;
-        t.query_drop(QUERY).await?;
-        let r = t.query_iter(QUERY).await?;
-        let out = r.collect_and_drop::<u8>().await?;
-        assert_eq!(vec![1], out);
-        let r = t.query_iter(QUERY).await?;
-        r.for_each_and_drop(|x| assert_eq!(from_row::<u8>(x), 1))
-            .await?;
-        let r = t.query_iter(QUERY).await?;
-        let out = r.map_and_drop(|row| from_row::<u8>(row)).await?;
-        assert_eq!(vec![1], out);
-        let r = t.query_iter(QUERY).await?;
-        let out = r
-            .reduce_and_drop(0u8, |acc, x| acc + from_row::<u8>(x))
-            .await?;
-        assert_eq!(1, out);
-        t.query_drop(QUERY).await?;
-        t.commit().await?;
-        let result = c.exec_first("SELECT 1", ()).await?;
-        c.disconnect().await?;
-        assert_eq!(result, Some(1_u8));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn should_iterate_over_resultset() -> super::Result<()> {
-        use std::sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc,
-        };
-
-        let acc = Arc::new(AtomicUsize::new(0));
-
-        let mut conn = Conn::new(get_opts()).await?;
-        let mut result = conn
-            .query_iter(
-                r"SELECT 2
-                    UNION ALL
-                    SELECT 3;
-                    SELECT 5;",
-            )
-            .await?;
-        result
-            .for_each({
-                let acc = acc.clone();
-                move |row| {
-                    acc.fetch_add(from_row::<usize>(row), Ordering::SeqCst);
-                }
-            })
-            .await?;
-        result
-            .for_each_and_drop({
-                let acc = acc.clone();
-                move |row| {
-                    acc.fetch_add(from_row::<usize>(row), Ordering::SeqCst);
-                }
-            })
-            .await?;
-        conn.disconnect().await?;
-        assert_eq!(acc.load(Ordering::SeqCst), 10);
         Ok(())
     }
 

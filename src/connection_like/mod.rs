@@ -79,6 +79,17 @@ impl<'a, 't: 'a, T: Into<Connection<'a, 't>> + Send> ToConnection<'a, 't> for T 
     }
 }
 
+impl ToConnection<'static, 'static> for Pool {
+    fn to_connection(self) -> ToConnectionResult<'static, 'static> {
+        let fut = async move {
+            let conn = self.get_conn().await?;
+            Ok(conn.into())
+        }
+        .boxed();
+        ToConnectionResult::Mediate(fut)
+    }
+}
+
 impl<'a> ToConnection<'a, 'static> for &'a Pool {
     fn to_connection(self) -> ToConnectionResult<'a, 'static> {
         let fut = async move {

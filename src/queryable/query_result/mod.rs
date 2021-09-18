@@ -8,15 +8,18 @@
 
 use mysql_common::row::convert::FromRowError;
 
-use std::{borrow::Cow, marker::PhantomData, result::Result as StdResult, sync::Arc};
+use std::{borrow::Cow, fmt, marker::PhantomData, result::Result as StdResult, sync::Arc};
 
 use crate::{
-    conn::routines::NextSetRoutine,
+    conn::{routines::NextSetRoutine, PendingResult},
     connection_like::Connection,
     error::*,
     prelude::{FromRow, Protocol},
     Column, Row,
 };
+
+pub mod result_set_stream;
+mod tests;
 
 /// Result set metadata.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -25,15 +28,12 @@ pub enum ResultSetMeta {
     Text(Arc<[Column]>),
     /// Binary result set, that may contain rows.
     Binary(Arc<[Column]>),
-    /// Error result set.
-    Error(ServerError),
 }
 
 impl ResultSetMeta {
-    fn columns(&self) -> StdResult<&Arc<[Column]>, &ServerError> {
+    fn columns(&self) -> &Arc<[Column]> {
         match self {
-            ResultSetMeta::Text(cols) | ResultSetMeta::Binary(cols) => Ok(cols),
-            ResultSetMeta::Error(err) => Err(err),
+            ResultSetMeta::Text(cols) | ResultSetMeta::Binary(cols) => cols,
         }
     }
 }
@@ -68,10 +68,18 @@ impl ResultSetMeta {
 ///
 /// # conn.disconnect().await }
 /// ```
-#[derive(Debug)]
 pub struct QueryResult<'a, 't: 'a, P> {
     conn: Connection<'a, 't>,
     __phantom: PhantomData<P>,
+}
+
+impl<'a, 't: 'a, P> fmt::Debug for QueryResult<'a, 't, P> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueryResult")
+            .field("conn", &self.conn)
+            .field("__phantom", &"PhantomData<P>")
+            .finish()
+    }
 }
 
 impl<'a, 't: 'a, P> QueryResult<'a, 't, P>
@@ -91,66 +99,101 @@ where
     fn has_rows(&self) -> bool {
         self.conn
             .get_pending_result()
-            .and_then(|meta| meta.columns().map(|columns| columns.len() > 0).ok())
+            .map(|pending_result| match pending_result {
+                Some(PendingResult::Pending(meta)) => meta.columns().len() > 0,
+                Some(PendingResult::Taken(meta)) => meta.columns().len() > 0,
+                None => false,
+            })
             .unwrap_or(false)
     }
 
     /// `true` if there are no more rows nor result sets in this query.
+    ///
+    /// This function will return `false` if the last result set was taken
+    /// by the [`QueryResult::stream`] that was dropped before being fully consumed
+    /// (i.e. caller will get `false` even if QueryResult data is reachable only for library internals).
     pub fn is_empty(&self) -> bool {
         !self.has_rows() && !self.conn.more_results_exists()
     }
 
-    pub async fn next(&mut self) -> Result<Option<Row>> {
-        loop {
-            let columns = match self.conn.get_pending_result() {
-                Some(ResultSetMeta::Text(cols)) | Some(ResultSetMeta::Binary(cols)) => {
-                    Ok(Some(cols.clone()))
-                }
-                Some(ResultSetMeta::Error(err)) => Err(Error::from(err.clone())),
-                None => Ok(None),
-            };
+    /// Low-level function that reads a result set row.
+    ///
+    /// Returns `None` if there are no more rows in the current set.
+    async fn next_row(&mut self, columns: Arc<[Column]>) -> crate::Result<Option<Row>> {
+        let mut row = None;
 
-            match columns {
-                Ok(Some(columns)) => {
-                    if columns.is_empty() {
-                        // Empty, but not yet consumed result set.
-                        self.conn.set_pending_result(None);
-                    } else {
-                        // Not yet consumed non-empty result set.
-                        let packet = match self.conn.read_packet().await {
-                            Ok(packet) => packet,
-                            Err(err) => {
-                                // Next row contained an error. No more data will follow.
-                                self.conn.set_pending_result(None);
-                                return Err(err);
-                            }
-                        };
-
-                        if P::is_last_result_set_packet(self.conn.capabilities(), &packet) {
-                            // `packet` is a result set terminator.
-                            self.conn.set_pending_result(None);
-                        } else {
-                            // `packet` is a result set row.
-                            return Ok(Some(P::read_result_set_row(&packet, columns)?));
-                        }
-                    }
-                }
-                Ok(None) => {
-                    // Consumed result set.
-                    if self.conn.more_results_exists() {
-                        // More data will follow.
-                        self.conn.routine(NextSetRoutine::<P>::new()).await?;
-                        return Ok(None);
-                    } else {
-                        // The end of a query result.
-                        return Ok(None);
-                    }
-                }
+        if columns.is_empty() {
+            // Empty, but not yet consumed result set.
+            self.conn.set_pending_result(None)?;
+        } else {
+            // Not yet consumed non-empty result set.
+            let packet = match self.conn.read_packet().await {
+                Ok(packet) => packet,
                 Err(err) => {
-                    // Error result set. No more data will follow.
-                    self.conn.set_pending_result(None);
+                    // Next row contained an error. No more data will follow.
+                    self.conn.set_pending_result(None)?;
                     return Err(err);
                 }
+            };
+
+            if P::is_last_result_set_packet(self.conn.capabilities(), &packet) {
+                // `packet` is a result set terminator.
+                self.conn.set_pending_result(None)?;
+            } else {
+                // `packet` is a result set row.
+                row = Some(P::read_result_set_row(&packet, columns)?);
+            }
+        }
+
+        Ok(row)
+    }
+
+    /// Low-level function that jumps to the next result set.
+    ///
+    /// Returns `false` if there are no more result sets.
+    async fn next_set(&mut self) -> crate::Result<bool> {
+        if self.conn.more_results_exists() {
+            // More data will follow.
+            self.conn.routine(NextSetRoutine::<P>::new()).await?;
+        }
+        Ok(self.conn.has_pending_result())
+    }
+
+    /// Low-level function that reads a next row and tries to jump
+    /// to the next result set if the current one is exhausted.
+    async fn next_row_or_next_set(&mut self, meta: ResultSetMeta) -> crate::Result<Option<Row>> {
+        let columns = meta.columns().clone();
+
+        self.next_row_or_next_set2(columns).await
+    }
+
+    /// Low-level function that reads a next row and tries to jump
+    /// to the next result set if the current one is exhausted.
+    async fn next_row_or_next_set2(
+        &mut self,
+        columns: Arc<[Column]>,
+    ) -> crate::Result<Option<Row>> {
+        if let Some(row) = self.next_row(columns).await? {
+            return Ok(Some(row));
+        } else {
+            self.next_set().await?;
+            return Ok(None);
+        }
+    }
+
+    /// Skips the taken result set.
+    async fn skip_taken(&mut self, meta: Arc<ResultSetMeta>) -> crate::Result<()> {
+        while let Some(_) = self.next_row_or_next_set((*meta).clone()).await? {}
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub async fn next(&mut self) -> Result<Option<Row>> {
+        loop {
+            match self.conn.use_pending_result()?.cloned() {
+                Some(PendingResult::Pending(meta)) => return self.next_row_or_next_set(meta).await,
+                Some(PendingResult::Taken(meta)) => self.skip_taken(meta).await?,
+                None => return Ok(None),
             }
         }
     }
@@ -324,7 +367,7 @@ where
     pub async fn drop_result(mut self) -> Result<()> {
         loop {
             while self.next().await?.is_some() {}
-            if self.conn.get_pending_result().is_none() {
+            if !self.conn.has_pending_result() {
                 break Ok(());
             }
         }
@@ -336,7 +379,12 @@ where
     pub fn columns_ref(&self) -> &[Column] {
         self.conn
             .get_pending_result()
-            .and_then(|meta| meta.columns().map(|cols| &cols[..]).ok())
+            .ok()
+            .flatten()
+            .map(|meta| match meta {
+                PendingResult::Pending(meta) => &meta.columns()[..],
+                PendingResult::Taken(meta) => &meta.columns()[..],
+            })
             .unwrap_or_default()
     }
 
@@ -344,6 +392,12 @@ where
     pub fn columns(&self) -> Option<Arc<[Column]>> {
         self.conn
             .get_pending_result()
-            .and_then(|meta| meta.columns().map(|columns| columns.clone()).ok())
+            .ok()
+            .flatten()
+            .map(|meta| match meta {
+                PendingResult::Pending(meta) => meta.columns(),
+                PendingResult::Taken(meta) => meta.columns(),
+            })
+            .cloned()
     }
 }
