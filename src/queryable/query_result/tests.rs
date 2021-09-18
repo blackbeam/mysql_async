@@ -46,6 +46,29 @@ async fn should_stream_text_result_sets() -> crate::Result<()> {
 }
 
 #[tokio::test]
+async fn should_stream_binary_result_sets() -> crate::Result<()> {
+    let mut conn = Conn::new(get_opts()).await?;
+    let mut result = "SELECT ?".with((1_u8,)).run(&mut conn).await?;
+    assert_eq!(vec![1], result.collect::<u8>().await?);
+    assert!(result.stream::<Row>().await?.is_none());
+
+    let mut result = "SELECT ?".with((1_u8,)).run(&mut conn).await?;
+    assert_eq!(
+        vec![1],
+        result
+            .stream::<u8>()
+            .await?
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await?,
+    );
+    assert_eq!(result.collect::<u8>().await?, Vec::<u8>::new());
+
+    conn.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn dropped_query_result_should_emit_errors_on_cleanup() -> super::Result<()> {
     use crate::{Error::Server, ServerError};
     let mut conn = Conn::new(get_opts()).await?;
