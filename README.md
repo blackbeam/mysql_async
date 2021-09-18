@@ -1,6 +1,6 @@
 ## mysql-async
 
-Tokio based asynchronous MySql client library for rust programming language.
+Tokio based asynchronous MySql client library for The Rust Programming Language.
 
 [![Gitter](https://badges.gitter.im/rust-mysql/community.svg)](https://gitter.im/rust-mysql/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
 
