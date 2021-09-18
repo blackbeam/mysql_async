@@ -207,7 +207,8 @@ where
     /// ## Conversion
     ///
     /// This stream will convert each row into `T` using [`FromRow`] implementation.
-    /// Please use the [`Row`] type for `T` to make this conversion infallible.
+    /// If the row type is unknown please use the [`Row`] type for `T`
+    /// to make this conversion infallible.
     ///
     /// ## Consumption
     ///

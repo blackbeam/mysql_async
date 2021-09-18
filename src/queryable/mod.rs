@@ -157,6 +157,12 @@ pub trait Queryable: Send {
         P: Into<Params>;
 
     /// Performs the given query and collects the first result set.
+    ///
+    /// ## Conversion
+    ///
+    /// This stream will convert each row into `T` using [`FromRow`] implementation.
+    /// If the row type is unknown please use the [`Row`] type for `T`
+    /// to make this conversion infallible.
     fn query<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Vec<T>>
     where
         Q: AsRef<str> + Send + Sync + 'a,
@@ -166,6 +172,12 @@ pub trait Queryable: Send {
     }
 
     /// Performs the given query and returns the first row of the first result set.
+    ///
+    /// ## Conversion
+    ///
+    /// This stream will convert each row into `T` using [`FromRow`] implementation.
+    /// If the row type is unknown please use the [`Row`] type for `T`
+    /// to make this conversion infallible.
     fn query_first<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Option<T>>
     where
         Q: AsRef<str> + Send + Sync + 'a,
@@ -185,6 +197,12 @@ pub trait Queryable: Send {
     }
 
     /// Performs the given query and maps each row of the first result set.
+    ///
+    /// ## Conversion
+    ///
+    /// This stream will convert each row into `T` using [`FromRow`] implementation.
+    /// If the row type is unknown please use the [`Row`] type for `T`
+    /// to make this conversion infallible.
     fn query_map<'a, T, F, Q, U>(&'a mut self, query: Q, mut f: F) -> BoxFuture<'a, Vec<U>>
     where
         Q: AsRef<str> + Send + Sync + 'a,
@@ -203,6 +221,12 @@ pub trait Queryable: Send {
     }
 
     /// Performs the given query and folds the first result set to a single value.
+    ///
+    /// ## Conversion
+    ///
+    /// This stream will convert each row into `T` using [`FromRow`] implementation.
+    /// If the row type is unknown please use the [`Row`] type for `T`
+    /// to make this conversion infallible.
     fn query_fold<'a, T, F, Q, U>(&'a mut self, query: Q, init: U, mut f: F) -> BoxFuture<'a, U>
     where
         Q: AsRef<str> + Send + Sync + 'a,
@@ -240,6 +264,12 @@ pub trait Queryable: Send {
     /// Exectues the given statement and collects the first result set.
     ///
     /// It'll prepare `stmt`, if necessary.
+    ///
+    /// ## Conversion
+    ///
+    /// This stream will convert each row into `T` using [`FromRow`] implementation.
+    /// If the row type is unknown please use the [`Row`] type for `T`
+    /// to make this conversion infallible.
     fn exec<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, Vec<T>>
     where
         S: StatementLike + 'b,
@@ -258,6 +288,12 @@ pub trait Queryable: Send {
     /// Exectues the given statement and returns the first row of the first result set.
     ///
     /// It'll prepare `stmt`, if necessary.
+    ///
+    /// ## Conversion
+    ///
+    /// This stream will convert each row into `T` using [`FromRow`] implementation.
+    /// If the row type is unknown please use the [`Row`] type for `T`
+    /// to make this conversion infallible.
     fn exec_first<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, Option<T>>
     where
         S: StatementLike + 'b,
@@ -280,6 +316,12 @@ pub trait Queryable: Send {
     /// Exectues the given stmt and maps each row of the first result set.
     ///
     /// It'll prepare `stmt`, if necessary.
+    ///
+    /// ## Conversion
+    ///
+    /// This stream will convert each row into `T` using [`FromRow`] implementation.
+    /// If the row type is unknown please use the [`Row`] type for `T`
+    /// to make this conversion infallible.
     fn exec_map<'a: 'b, 'b, T, S, P, U, F>(
         &'a mut self,
         stmt: S,
@@ -306,6 +348,12 @@ pub trait Queryable: Send {
     /// Exectues the given stmt and folds the first result set to a signel value.
     ///
     /// It'll prepare `stmt`, if necessary.
+    ///
+    /// ## Conversion
+    ///
+    /// This stream will convert each row into `T` using [`FromRow`] implementation.
+    /// If the row type is unknown please use the [`Row`] type for `T`
+    /// to make this conversion infallible.
     fn exec_fold<'a: 'b, 'b, T, S, P, U, F>(
         &'a mut self,
         stmt: S,
@@ -340,7 +388,7 @@ pub trait Queryable: Send {
 
     /// Returns a stream over the first result set.
     ///
-    /// This method corresponds to [`QueryResult::stream_and_drop`][stream_and_drop].
+    /// Please see [`QueryResult::stream_and_drop`][stream_and_drop].
     ///
     /// [stream_and_drop]: crate::QueryResult::stream_and_drop
     fn query_stream<'a, T, Q>(
@@ -364,7 +412,7 @@ pub trait Queryable: Send {
 
     /// Returns a stream over the first result set.
     ///
-    /// This method corresponds to [`QueryResult::stream_and_drop`][stream_and_drop].
+    /// Please see [`QueryResult::stream_and_drop`][stream_and_drop].
     ///
     /// [stream_and_drop]: crate::QueryResult::stream_and_drop
     fn exec_stream<'a: 's, 's, T, Q, P>(
