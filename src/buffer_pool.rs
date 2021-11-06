@@ -6,17 +6,13 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use std::{
-    mem::replace,
-    ops::Deref,
-    sync::{Arc, Mutex},
-};
+use crossbeam::queue::ArrayQueue;
+use std::{mem::replace, ops::Deref, sync::Arc};
 
 #[derive(Debug)]
 pub struct BufferPool {
-    pool_cap: usize,
     buffer_cap: usize,
-    pool: Mutex<Vec<Vec<u8>>>,
+    pool: ArrayQueue<Vec<u8>>,
 }
 
 impl BufferPool {
@@ -32,14 +28,13 @@ impl BufferPool {
             .unwrap_or(4 * 1024 * 1024);
 
         Self {
-            pool: Default::default(),
-            pool_cap,
+            pool: ArrayQueue::new(pool_cap),
             buffer_cap,
         }
     }
 
     pub fn get(self: &Arc<Self>) -> PooledBuf {
-        let mut buf = self.pool.lock().unwrap().pop().unwrap_or_default();
+        let mut buf = self.pool.pop().unwrap_or_default();
 
         // SAFETY:
         // 1. OK – 0 is always within capacity
@@ -66,10 +61,8 @@ impl BufferPool {
             buf.shrink_to_fit();
         }
 
-        let mut pool = self.pool.lock().unwrap();
-        if pool.len() < self.pool_cap {
-            pool.push(buf);
-        }
+        // ArrayQueue will make sure to drop the buffer if capacity is exceeded
+        let _ = self.pool.push(buf);
     }
 }
 
