@@ -11,10 +11,10 @@ pub use self::{read_packet::ReadPacket, write_packet::WritePacket};
 use bytes::BytesMut;
 use futures_core::{ready, stream};
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use mio::net::{TcpKeepalive, TcpSocket};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::pin_project;
+use socket2::{Domain, Protocol, Socket as Socket2Socket, TcpKeepalive, Type};
 #[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 use tokio::{
@@ -208,6 +208,7 @@ impl Endpoint {
                 .map(|x| vec![x])
                 .or_else(|_| {
                     pem::parse_many(&*root_cert_data)
+                        .unwrap_or_default()
                         .iter()
                         .map(pem::encode)
                         .map(|s| Certificate::from_pem(s.as_bytes()))
@@ -364,19 +365,37 @@ impl Stream {
             keepalive_opts: Option<TcpKeepalive>,
         ) -> io::Result<TcpStream> {
             let socket = if addr.is_ipv6() {
-                TcpSocket::new_v6()?
+                Socket2Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?
             } else {
-                TcpSocket::new_v4()?
+                Socket2Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?
             };
 
             if let Some(keepalive_opts) = keepalive_opts {
-                socket.set_keepalive_params(keepalive_opts)?;
+                socket.set_tcp_keepalive(&keepalive_opts)?;
             }
 
             let stream = tokio::task::spawn_blocking(move || {
-                let mut stream = socket.connect(addr)?;
+                let addr = addr.into();
+                socket.connect(&addr)?;
                 let mut poll = mio::Poll::new()?;
                 let mut events = mio::Events::with_capacity(1024);
+
+                socket.set_nonblocking(true)?;
+
+                #[cfg(unix)]
+                let mut stream = unsafe {
+                    use std::os::unix::io::{FromRawFd, IntoRawFd};
+
+                    let fd = socket.into_raw_fd();
+                    mio::net::TcpStream::from_raw_fd(fd)
+                };
+                #[cfg(windows)]
+                let mut stream = unsafe {
+                    use std::os::windows::io::{FromRawSocket, IntoRawSocket};
+
+                    let sock = socket.into_raw_socket();
+                    mio::net::TcpStream::from_raw_socket(sock)
+                };
 
                 poll.registry()
                     .register(&mut stream, mio::Token(0), mio::Interest::WRITABLE)?;
