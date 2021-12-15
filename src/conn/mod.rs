@@ -513,6 +513,7 @@ impl Conn {
     ) -> Result<()> {
         if !self.inner.auth_switched {
             self.inner.auth_switched = true;
+            self.inner.nonce = auth_switch_request.plugin_data().to_vec();
 
             if matches!(
                 auth_switch_request.auth_plugin(),
