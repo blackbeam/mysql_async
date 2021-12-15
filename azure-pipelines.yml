@@ -156,6 +156,8 @@ jobs:
         displayName: Install docker
       - bash: |
           git clone https://github.com/blackbeam/rust-mysql-simple.git
+          cd rust-mysql-simple
+          git checkout 8d745ee
         displayName: Clone rust-mysql-simple (for ssl certs)
       - bash: |
           docker run --rm -d \
