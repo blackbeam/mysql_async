@@ -12,8 +12,7 @@ use url::{Host, Url};
 use std::{
     borrow::Cow,
     convert::TryFrom,
-    io,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
+    net::{Ipv4Addr, Ipv6Addr},
     path::Path,
     str::FromStr,
     sync::Arc,
@@ -40,7 +39,7 @@ const_assert!(
 pub const DEFAULT_STMT_CACHE_SIZE: usize = 32;
 
 /// Default server port.
-const DEFAULT_PORT: u16 = 3306;
+pub const DEFAULT_PORT: u16 = 3306;
 
 /// Default `inactive_connection_ttl` of a pool.
 ///
@@ -64,19 +63,6 @@ pub(crate) enum HostPortOrUrl {
 impl Default for HostPortOrUrl {
     fn default() -> Self {
         HostPortOrUrl::HostPort("127.0.0.1".to_string(), DEFAULT_PORT)
-    }
-}
-
-impl ToSocketAddrs for HostPortOrUrl {
-    type Iter = vec::IntoIter<SocketAddr>;
-
-    fn to_socket_addrs(&self) -> io::Result<vec::IntoIter<SocketAddr>> {
-        let res = match self {
-            Self::Url(url) => url.socket_addrs(|| Some(DEFAULT_PORT))?.into_iter(),
-            Self::HostPort(host, port) => (host.as_ref(), *port).to_socket_addrs()?,
-        };
-
-        Ok(res)
     }
 }
 
