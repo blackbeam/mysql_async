@@ -136,6 +136,10 @@ jobs:
     strategy:
       maxParallel: 10
       matrix:
+        v107:
+          DB_VERSION: "10.7"
+        v106:
+          DB_VERSION: "10.6"
         v105:
           DB_VERSION: "10.5"
         v104:
@@ -164,7 +168,7 @@ jobs:
               --name container \
               -v `pwd`:/root \
               -p 3307:3306 \
-              -e MYSQL_ROOT_PASSWORD=password \
+              -e MARIADB_ROOT_PASSWORD=password \
               mariadb:$(DB_VERSION) \
                   --max-allowed-packet=36700160 \
                   --local-infile \
