@@ -10,11 +10,10 @@ pub use self::{read_packet::ReadPacket, write_packet::WritePacket};
 
 use bytes::BytesMut;
 use futures_core::{ready, stream};
-use futures_util::stream::{FuturesUnordered, StreamExt};
-use mio::net::{TcpKeepalive, TcpSocket};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use native_tls::{Certificate, Identity, TlsConnector};
 use pin_project::pin_project;
+use socket2::{Socket as Socket2Socket, TcpKeepalive};
 #[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 use tokio::{
@@ -35,14 +34,17 @@ use std::{
         Read,
     },
     mem::replace,
-    net::{SocketAddr, ToSocketAddrs},
     ops::{Deref, DerefMut},
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
 };
 
-use crate::{buffer_pool::PooledBuf, error::IoError, opts::SslOpts};
+use crate::{
+    buffer_pool::PooledBuf,
+    error::IoError,
+    opts::{HostPortOrUrl, SslOpts, DEFAULT_PORT},
+};
 
 #[cfg(unix)]
 use crate::io::socket::Socket;
@@ -208,6 +210,7 @@ impl Endpoint {
                 .map(|x| vec![x])
                 .or_else(|_| {
                     pem::parse_many(&*root_cert_data)
+                        .unwrap_or_default()
                         .iter()
                         .map(pem::encode)
                         .map(|s| Certificate::from_pem(s.as_bytes()))
@@ -354,108 +357,41 @@ impl Stream {
         }
     }
 
-    pub(crate) async fn connect_tcp<S>(addr: S, keepalive: Option<Duration>) -> io::Result<Stream>
-    where
-        S: ToSocketAddrs,
-    {
-        // TODO: Use tokio to setup keepalive (see tokio-rs/tokio#3082)
-        async fn connect_stream(
-            addr: SocketAddr,
-            keepalive_opts: Option<TcpKeepalive>,
-        ) -> io::Result<TcpStream> {
-            let socket = if addr.is_ipv6() {
-                TcpSocket::new_v6()?
-            } else {
-                TcpSocket::new_v4()?
-            };
-
-            if let Some(keepalive_opts) = keepalive_opts {
-                socket.set_keepalive_params(keepalive_opts)?;
+    pub(crate) async fn connect_tcp(
+        addr: &HostPortOrUrl,
+        keepalive: Option<Duration>,
+    ) -> io::Result<Stream> {
+        let tcp_stream = match addr {
+            HostPortOrUrl::HostPort(host, port) => {
+                TcpStream::connect((host.as_str(), *port)).await?
             }
+            HostPortOrUrl::Url(url) => {
+                let addrs = url.socket_addrs(|| Some(DEFAULT_PORT))?;
+                TcpStream::connect(&*addrs).await?
+            }
+        };
 
-            let stream = tokio::task::spawn_blocking(move || {
-                let mut stream = socket.connect(addr)?;
-                let mut poll = mio::Poll::new()?;
-                let mut events = mio::Events::with_capacity(1024);
-
-                poll.registry()
-                    .register(&mut stream, mio::Token(0), mio::Interest::WRITABLE)?;
-
-                loop {
-                    poll.poll(&mut events, None)?;
-
-                    for event in &events {
-                        if event.token() == mio::Token(0) && event.is_error() {
-                            return Err(io::Error::new(
-                                io::ErrorKind::ConnectionRefused,
-                                "Connection refused",
-                            ));
-                        }
-
-                        if event.token() == mio::Token(0) && event.is_writable() {
-                            // The socket connected (probably, it could still be a spurious
-                            // wakeup)
-                            return Ok::<_, io::Error>(stream);
-                        }
-                    }
-                }
-            })
-            .await??;
-
+        if let Some(duration) = keepalive {
             #[cfg(unix)]
-            let std_stream = unsafe {
+            let socket = unsafe {
                 use std::os::unix::prelude::*;
-                let fd = stream.into_raw_fd();
-                std::net::TcpStream::from_raw_fd(fd)
+                let fd = tcp_stream.as_raw_fd();
+                Socket2Socket::from_raw_fd(fd)
             };
-
             #[cfg(windows)]
-            let std_stream = unsafe {
+            let socket = unsafe {
                 use std::os::windows::prelude::*;
-                let fd = stream.into_raw_socket();
-                std::net::TcpStream::from_raw_socket(fd)
+                let sock = tcp_stream.as_raw_socket();
+                Socket2Socket::from_raw_socket(sock)
             };
-
-            Ok(TcpStream::from_std(std_stream)?)
+            socket.set_tcp_keepalive(&TcpKeepalive::new().with_time(duration))?;
+            std::mem::forget(socket);
         }
 
-        let keepalive_opts = keepalive.map(|time| TcpKeepalive::new().with_time(time));
-
-        match addr.to_socket_addrs() {
-            Ok(addresses) => {
-                let mut streams = FuturesUnordered::new();
-
-                for address in addresses {
-                    streams.push(connect_stream(address, keepalive_opts.clone()));
-                }
-
-                let mut err = None;
-                while let Some(stream) = streams.next().await {
-                    match stream {
-                        Err(e) => {
-                            err = Some(e);
-                        }
-                        Ok(stream) => {
-                            return Ok(Stream {
-                                closed: false,
-                                codec: Box::new(Framed::new(stream.into(), PacketCodec::default()))
-                                    .into(),
-                            });
-                        }
-                    }
-                }
-
-                if let Some(e) = err {
-                    Err(e)
-                } else {
-                    Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "could not resolve to any address",
-                    ))
-                }
-            }
-            Err(err) => Err(err),
-        }
+        Ok(Stream {
+            closed: false,
+            codec: Box::new(Framed::new(tcp_stream.into(), PacketCodec::default())).into(),
+        })
     }
 
     #[cfg(unix)]

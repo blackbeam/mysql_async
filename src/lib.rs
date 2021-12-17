@@ -91,7 +91,7 @@
 #[cfg(feature = "nightly")]
 extern crate test;
 
-pub use mysql_common::{chrono, constants as consts, params, time, uuid};
+pub use mysql_common::{constants as consts, params};
 
 use std::sync::Arc;
 
