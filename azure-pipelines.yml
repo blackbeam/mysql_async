@@ -169,6 +169,7 @@ jobs:
               -v `pwd`:/root \
               -p 3307:3306 \
               -e MARIADB_ROOT_PASSWORD=password \
+              -e MYSQL_ROOT_PASSWORD=password \
               mariadb:$(DB_VERSION) \
                   --max-allowed-packet=36700160 \
                   --local-infile \
