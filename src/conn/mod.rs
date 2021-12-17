@@ -429,9 +429,14 @@ impl Conn {
     async fn handle_handshake(&mut self) -> Result<()> {
         let packet = self.read_packet().await?;
         let handshake = ParseBuf(&*packet).parse::<HandshakePacket>(())?;
+
+        // Handshake scramble is always 21 bytes length (20 + zero terminator)
         self.inner.nonce = {
             let mut nonce = Vec::from(handshake.scramble_1_ref());
             nonce.extend_from_slice(handshake.scramble_2_ref().unwrap_or(&[][..]));
+            // Trim zero terminator. Fill with zeroes if nonce
+            // is somehow smaller than 20 bytes (this matches the server behavior).
+            nonce.resize(20, 0);
             nonce
         };
 
