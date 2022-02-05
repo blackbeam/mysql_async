@@ -423,6 +423,27 @@ mod test {
     }
 
     #[tokio::test]
+    async fn should_reuse_connections() -> super::Result<()> {
+        let constraints = PoolConstraints::new(1, 1).unwrap();
+        let opts = get_opts().pool_opts(PoolOpts::default().with_constraints(constraints));
+
+        let pool = Pool::new(opts);
+        let mut conn = pool.get_conn().await?;
+
+        let server_version = conn.server_version();
+        let connection_id = conn.id();
+
+        for _ in 0..16 {
+            drop(conn);
+            conn = pool.get_conn().await?;
+            println!("CONN connection_id={}", conn.id());
+            assert!(conn.id() == connection_id || server_version < (5, 7, 2));
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
     #[ignore]
     async fn can_handle_the_pressure() {
         let pool = Pool::new(get_opts());

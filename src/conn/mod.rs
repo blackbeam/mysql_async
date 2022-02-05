@@ -880,7 +880,7 @@ impl Conn {
             .opts
             .conn_ttl()
             .unwrap_or(self.inner.wait_timeout);
-        self.idling() > ttl
+        !ttl.is_zero() && self.idling() > ttl
     }
 
     /// Returns duration since last IO.
