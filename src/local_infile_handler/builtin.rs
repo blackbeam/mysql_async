@@ -6,32 +6,40 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use futures_util::FutureExt;
 use tokio::fs::File;
+use tokio_util::io::ReaderStream;
 
-use std::{collections::HashSet, path::PathBuf, str::from_utf8};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
-use crate::local_infile_handler::LocalInfileHandler;
+use crate::{
+    error::LocalInfileError,
+    local_infile_handler::{BoxFuture, GlobalHandler},
+};
 
-/// Handles local infile requests from filesystem using explicit whitelist of paths.
+/// Handles `LOCAL INFILE` requests from filesystem using an explicit whitelist of paths.
 ///
 /// Example usage:
 ///
 /// ```rust
-/// use mysql_async::{OptsBuilder, WhiteListFsLocalInfileHandler};
+/// use mysql_async::{OptsBuilder, WhiteListFsHandler};
 ///
 /// # let database_url = "mysql://root:password@127.0.0.1:3307/mysql";
 /// let mut opts = OptsBuilder::from_opts(database_url);
-/// opts.local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(
+/// opts.local_infile_handler(Some(WhiteListFsHandler::new(
 ///     &["path/to/local_infile.txt"][..],
 /// )));
 /// ```
 #[derive(Clone, Debug)]
-pub struct WhiteListFsLocalInfileHandler {
+pub struct WhiteListFsHandler {
     white_list: HashSet<PathBuf>,
 }
 
-impl WhiteListFsLocalInfileHandler {
-    pub fn new<A, B>(white_list: B) -> WhiteListFsLocalInfileHandler
+impl WhiteListFsHandler {
+    pub fn new<A, B>(white_list: B) -> WhiteListFsHandler
     where
         A: Into<PathBuf>,
         B: IntoIterator<Item = A>,
@@ -40,24 +48,24 @@ impl WhiteListFsLocalInfileHandler {
         for path in white_list.into_iter() {
             white_list_set.insert(Into::<PathBuf>::into(path));
         }
-        WhiteListFsLocalInfileHandler {
+        WhiteListFsHandler {
             white_list: white_list_set,
         }
     }
 }
 
-impl LocalInfileHandler for WhiteListFsLocalInfileHandler {
-    fn handle(&self, file_name: &[u8]) -> super::InfileHandlerFuture {
-        let path: PathBuf = match from_utf8(file_name) {
-            Ok(path_str) => path_str.into(),
-            Err(_) => return Box::pin(futures_util::future::err("Invalid file name".into())),
-        };
-
-        if !self.white_list.contains(&path) {
-            let err_msg = format!("Path `{}' is not in white list", path.display());
-            return Box::pin(futures_util::future::err(err_msg.into()));
+impl GlobalHandler for WhiteListFsHandler {
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<'static, super::InfileData> {
+        let path = String::from_utf8_lossy(file_name);
+        let path = self
+            .white_list
+            .get(Path::new(&*path))
+            .cloned()
+            .ok_or_else(|| LocalInfileError::PathIsNotInTheWhiteList(path.into_owned()));
+        async move {
+            let file = File::open(path?).await?;
+            Ok(Box::pin(ReaderStream::new(file)) as super::InfileData)
         }
-
-        Box::pin(async move { Ok(Box::new(File::open(path.to_owned()).await?) as Box<_>) })
+        .boxed()
     }
 }

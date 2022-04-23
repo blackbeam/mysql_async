@@ -1,4 +1,4 @@
-// Copyright (c) 2017 Anatoly Ikorsky
+// Copyright (c) 2017-2022 mysql_async Contributors.
 //
 // Licensed under the Apache License, Version 2.0
 // <LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0> or the MIT
@@ -6,110 +6,85 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use crate::error;
-use mysql_common::uuid::Uuid;
+use bytes::Bytes;
+use futures_core::stream::BoxStream;
 
-use std::{fmt, future::Future, marker::Unpin, pin::Pin, sync::Arc};
-use tokio::io::AsyncRead;
+use std::{
+    fmt,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
+
+use crate::error::LocalInfileError;
 
 pub mod builtin;
 
-/// Trait used to handle local infile requests.
+type BoxFuture<'a, T> = futures_core::future::BoxFuture<'a, Result<T, LocalInfileError>>;
+
+/// LOCAL INFILE data is a stream of `std::io::Result<Bytes>`.
 ///
-/// Be aware of security issues with [LOAD DATA LOCAL][1].
-/// Using [`crate::WhiteListFsLocalInfileHandler`] is advised.
+/// The driver will send this data to the server in response to a LOCAL INFILE request.
+pub type InfileData = BoxStream<'static, std::io::Result<Bytes>>;
+
+/// Global, `Opts`-level `LOCAL INFILE` handler (see ["LOCAL INFILE Handlers"][2] section
+/// of the `README.md`).
 ///
-/// Simple handler example:
+/// **Warning:** You should be aware of [Security Considerations for LOAD DATA LOCAL][1].
 ///
-/// ```rust
-/// # use mysql_async::{prelude::*, test_misc::get_opts, OptsBuilder, Result, Error};
-/// # use std::env;
-/// # #[tokio::main]
-/// # async fn main() -> Result<()> {
-/// #
-/// /// This example hanlder will return contained bytes in response to a local infile request.
-/// struct ExampleHandler(&'static [u8]);
+/// The purpose of the handler is to emit infile data in response to a file name.
+/// This handler will be called if there is no [`LocalHandler`] installed for the connection.
 ///
-/// impl LocalInfileHandler for ExampleHandler {
-///     fn handle(&self, _: &[u8]) -> mysql_async::InfileHandlerFuture {
-///         let handler = Box::new(self.0) as Box<_>;
-///         Box::pin(async move { Ok(handler) })
-///     }
-/// }
+/// The library will call this handler in response to a LOCAL INFILE request from the server.
+/// The server, in its turn, will emit LOCAL INFILE requests in response to a `LOAD DATA LOCAL`
+/// queries:
 ///
-/// # let database_url = get_opts();
-///
-/// let opts = OptsBuilder::from_opts(database_url)
-///     .local_infile_handler(Some(ExampleHandler(b"foobar")));
-///
-/// let pool = mysql_async::Pool::new(opts);
-///
-/// let mut conn = pool.get_conn().await?;
-/// conn.query_drop("CREATE TEMPORARY TABLE tmp (a TEXT);").await?;
-/// match conn.query_drop("LOAD DATA LOCAL INFILE 'baz' INTO TABLE tmp;").await {
-///     Ok(()) => (),
-///     Err(Error::Server(ref err)) if err.code == 1148 => {
-///         // The used command is not allowed with this MySQL version
-///         return Ok(());
-///     },
-///     Err(Error::Server(ref err)) if err.code == 3948 => {
-///         // Loading local data is disabled;
-///         // this must be enabled on both the client and server sides
-///         return Ok(());
-///     }
-///     e @ Err(_) => e.unwrap(),
-/// };
-/// let result: Vec<String> = conn.exec("SELECT * FROM tmp", ()).await?;
-///
-/// assert_eq!(result.len(), 1);
-/// assert_eq!(result[0], "foobar");
-///
-/// drop(conn); // dropped connection will go to the pool
-///
-/// pool.disconnect().await?;
-/// # Ok(())
-/// # }
+/// ```sql
+/// LOAD DATA LOCAL INFILE '<file name>' INTO TABLE <table>;
 /// ```
 ///
-/// [1]: https://dev.mysql.com/doc/refman/8.0/en/load-data-local.html
-pub trait LocalInfileHandler: Sync + Send {
-    /// `file_name` is the file name in `LOAD DATA LOCAL INFILE '<file name>' INTO TABLE ...;`
-    /// query.
-    fn handle(&self, file_name: &[u8]) -> InfileHandlerFuture;
+/// [1]: https://dev.mysql.com/doc/refman/8.0/en/load-data-local-security.html
+/// [2]: ../#local-infile-handlers
+pub trait GlobalHandler: Send + Sync + 'static {
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<'static, InfileData>;
 }
 
-pub type InfileHandlerFuture = Pin<
-    Box<
-        dyn Future<Output = Result<Box<dyn AsyncRead + Send + Unpin + 'static>, error::Error>>
-            + Send
-            + 'static,
-    >,
->;
+impl<T> GlobalHandler for T
+where
+    T: for<'a> Fn(&'a [u8]) -> BoxFuture<'static, InfileData>,
+    T: Send + Sync + 'static,
+{
+    fn handle(&self, file_name: &[u8]) -> BoxFuture<'static, InfileData> {
+        (self)(file_name)
+    }
+}
 
-/// Object used to wrap `T: LocalInfileHandler` inside of Opts.
+static HANDLER_ID: AtomicUsize = AtomicUsize::new(0);
+
 #[derive(Clone)]
-pub struct LocalInfileHandlerObject(Uuid, Arc<dyn LocalInfileHandler>);
+pub struct GlobalHandlerObject(usize, Arc<dyn GlobalHandler>);
 
-impl LocalInfileHandlerObject {
-    pub fn new<T: LocalInfileHandler + 'static>(handler: T) -> Self {
-        LocalInfileHandlerObject(Uuid::new_v4(), Arc::new(handler))
+impl GlobalHandlerObject {
+    pub(crate) fn new<T: GlobalHandler>(handler: T) -> Self {
+        Self(HANDLER_ID.fetch_add(1, Ordering::SeqCst), Arc::new(handler))
     }
 
-    pub fn clone_inner(&self) -> Arc<dyn LocalInfileHandler> {
+    pub(crate) fn clone_inner(&self) -> Arc<dyn GlobalHandler> {
         self.1.clone()
     }
 }
 
-impl PartialEq for LocalInfileHandlerObject {
-    fn eq(&self, other: &LocalInfileHandlerObject) -> bool {
-        self.0.eq(&other.0)
+impl PartialEq for GlobalHandlerObject {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
     }
 }
 
-impl Eq for LocalInfileHandlerObject {}
+impl Eq for GlobalHandlerObject {}
 
-impl fmt::Debug for LocalInfileHandlerObject {
+impl fmt::Debug for GlobalHandlerObject {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Local infile handler object")
+        f.debug_tuple("GlobalHandlerObject").field(&"..").finish()
     }
 }

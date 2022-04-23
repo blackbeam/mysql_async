@@ -14,7 +14,7 @@ use mysql_common::{
 };
 use thiserror::Error;
 
-use std::{borrow::Cow, io, result};
+use std::{io, result};
 
 /// Result type alias for this library.
 pub type Result<T> = result::Result<T, Error>;
@@ -29,7 +29,7 @@ pub enum Error {
     Io(#[source] IoError),
 
     #[error("Other error: {}", _0)]
-    Other(Cow<'static, str>),
+    Other(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 
     #[error("Server error: `{}'", _0)]
     Server(#[source] ServerError),
@@ -93,7 +93,7 @@ pub enum UrlError {
 }
 
 /// This type enumerates driver errors.
-#[derive(Debug, Error, Clone, PartialEq)]
+#[derive(Debug, Error)]
 pub enum DriverError {
     #[error("Can't parse server version from string `{}'.", version_string)]
     CantParseServerVersion { version_string: String },
@@ -118,9 +118,6 @@ pub enum DriverError {
 
     #[error("Transactions couldn't be nested.")]
     NestedTransaction,
-
-    #[error("Can't handle local infile request. Handler not specified.")]
-    NoLocalInfileHandler,
 
     #[error("Packet out of order.")]
     PacketOutOfOrder,
@@ -155,6 +152,36 @@ pub enum DriverError {
 
     #[error("`mysql_old_password` plugin is insecure and disabled by default")]
     MysqlOldPasswordDisabled,
+
+    #[error("LOCAL INFILE error: {}", _0)]
+    LocalInfile(#[from] LocalInfileError),
+}
+
+#[derive(Debug, Error)]
+pub enum LocalInfileError {
+    #[error("The given path is not in the while list: {}", _0)]
+    PathIsNotInTheWhiteList(String),
+    #[error("Error reading `INFILE` data: {}", _0)]
+    ReadError(#[from] io::Error),
+    #[error("Can't handle local infile request. Handler is not specified.")]
+    NoHandler,
+    #[error(transparent)]
+    OtherError(Box<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+impl LocalInfileError {
+    pub fn other<T>(err: T) -> Self
+    where
+        T: std::error::Error + Send + Sync + 'static,
+    {
+        Self::OtherError(Box::new(err))
+    }
+}
+
+impl From<LocalInfileError> for Error {
+    fn from(err: LocalInfileError) -> Self {
+        Self::Driver(err.into())
+    }
 }
 
 impl From<DriverError> for Error {
@@ -243,18 +270,6 @@ impl From<MixedParamsError> for DriverError {
 impl From<MixedParamsError> for Error {
     fn from(err: MixedParamsError) -> Self {
         Error::Driver(err.into())
-    }
-}
-
-impl From<String> for Error {
-    fn from(err: String) -> Self {
-        Error::Other(Cow::from(err))
-    }
-}
-
-impl From<&'static str> for Error {
-    fn from(err: &'static str) -> Self {
-        Error::Other(Cow::from(err))
     }
 }
 

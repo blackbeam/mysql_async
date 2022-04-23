@@ -2,15 +2,15 @@
 
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use mysql_common::{
     constants::MAX_PAYLOAD_LEN,
     io::{ParseBuf, ReadMysqlExt},
     packets::{ComStmtSendLongData, LocalInfilePacket},
     value::Value,
 };
-use tokio::io::AsyncReadExt;
 
-use crate::{queryable::Protocol, Conn, DriverError, Error};
+use crate::{error::LocalInfileError, queryable::Protocol, Conn, Error};
 
 impl Conn {
     /// Helper, that sends all `Value::Bytes` in the given list of paramenters as long data.
@@ -84,27 +84,39 @@ impl Conn {
         P: Protocol,
     {
         let local_infile = ParseBuf(packet).parse::<LocalInfilePacket>(())?;
-        let (local_infile, handler) = match self.opts().local_infile_handler() {
-            Some(handler) => ((local_infile.into_owned(), handler)),
-            None => return Err(DriverError::NoLocalInfileHandler.into()),
+
+        let mut infile_data = if let Some(handler) = self.inner.infile_handler.take() {
+            handler.await?
+        } else if let Some(handler) = self.opts().local_infile_handler() {
+            handler.handle(local_infile.file_name_ref()).await?
+        } else {
+            return Err(LocalInfileError::NoHandler.into());
         };
-        let mut reader = handler.handle(local_infile.file_name_ref()).await?;
 
-        let mut buf = [0; 4096];
-        loop {
-            let read = reader.read(&mut buf[..]).await?;
-            self.write_bytes(&buf[..read]).await?;
-
-            if read == 0 {
-                break;
+        let mut result = Ok(());
+        while let Some(bytes) = infile_data.next().await {
+            match bytes {
+                Ok(bytes) => {
+                    // We'll skip empty chunks to stay compliant with the protocol.
+                    if bytes.len() > 0 {
+                        self.write_bytes(&bytes).await?;
+                    }
+                }
+                Err(err) => {
+                    // Abort the stream in case of an error.
+                    result = Err(LocalInfileError::from(err));
+                    break;
+                }
             }
         }
+        self.write_bytes(&[]).await?;
 
         self.read_packet().await?;
         self.set_pending_result(Some(P::result_set_meta(Arc::from(
             Vec::new().into_boxed_slice(),
         ))))?;
-        Ok(())
+
+        result.map_err(Into::into)
     }
 
     /// Helper that handles result set packet.
