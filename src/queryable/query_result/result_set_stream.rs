@@ -213,7 +213,7 @@ where
     /// ## Consumption
     ///
     /// The call to [`QueryResult::stream`] entails the consumption of the current result set,
-    /// practicly this means that the second call to [`QueryResult::stream`] will return
+    /// practically this means that the second call to [`QueryResult::stream`] will return
     /// the next result set stream even if the stream returned from the first call wasn't
     /// explicitly consumed:
     ///

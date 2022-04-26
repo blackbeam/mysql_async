@@ -124,7 +124,7 @@ impl fmt::Display for IsolationLevel {
 /// `Transaction` is just a sugar for `START TRANSACTION`, `ROLLBACK` and `COMMIT` queries,
 /// so please note, that it is easy to mess things up calling this queries manually.
 ///
-/// You should alwasy call either `commit` or `rollback`, otherwise transaction will be rolled
+/// You should always call either `commit` or `rollback`, otherwise transaction will be rolled
 /// back implicitly when corresponding connection is dropped or queried.
 #[derive(Debug)]
 pub struct Transaction<'a>(pub(crate) Connection<'a, 'static>);

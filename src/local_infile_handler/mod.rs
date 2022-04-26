@@ -27,7 +27,7 @@ pub mod builtin;
 /// # #[tokio::main]
 /// # async fn main() -> Result<()> {
 /// #
-/// /// This example hanlder will return contained bytes in response to a local infile request.
+/// /// This example handler will return contained bytes in response to a local infile request.
 /// struct ExampleHandler(&'static [u8]);
 ///
 /// impl LocalInfileHandler for ExampleHandler {
