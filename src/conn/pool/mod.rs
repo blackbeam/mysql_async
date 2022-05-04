@@ -284,6 +284,8 @@ impl Pool {
 
 impl Drop for Conn {
     fn drop(&mut self) {
+        self.inner.infile_handler = None;
+
         if std::thread::panicking() {
             // Try to decrease the number of existing connections.
             if let Some(pool) = self.inner.pool.take() {

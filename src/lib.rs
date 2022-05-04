@@ -6,10 +6,10 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-//! ## mysql-async
 //! Tokio based asynchronous MySql client library for The Rust Programming Language.
 //!
-//! ### Installation
+//! # Installation
+//!
 //! The library is hosted on [crates.io](https://crates.io/crates/mysql_async/).
 //!
 //! ```toml
@@ -17,7 +17,7 @@
 //! mysql_async = "<desired version>"
 //! ```
 //!
-//! ### Example
+//! # Example
 //!
 //! ```rust
 //! # use mysql_async::{Result, test_misc::get_opts};
@@ -84,6 +84,107 @@
 //!     Ok(())
 //! }
 //! ```
+//!
+//! # LOCAL INFILE Handlers
+//!
+//! **Warning:** You should be aware of [Security Considerations for LOAD DATA LOCAL][1].
+//!
+//! There are two flavors of LOCAL INFILE handlers – _global_ and _local_.
+//!
+//! I case of a LOCAL INFILE request from the server the driver will try to find a handler for it:
+//!
+//! 1.  It'll try to use _local_ handler installed on the connection, if any;
+//! 2.  It'll try to use _global_ handler, specified via [`OptsBuilder::local_infile_handler`],
+//!     if any;
+//! 3.  It will emit [`LocalInfileError::NoHandler`] if no handlers found.
+//!
+//! The purpose of a handler (_local_ or _global_) is to return [`InfileData`].
+//!
+//! ## _Global_ LOCAL INFILE handler
+//!
+//! See [`prelude::GlobalHandler`].
+//!
+//! Simply speaking the _global_ handler is an async function that takes a file name (as `&[u8]`)
+//! and returns `Result<InfileData>`.
+//!
+//! You can set it up using [`OptsBuilder::local_infile_handler`]. Server will use it if there is no
+//! _local_ handler installed for the connection. This handler might be called multiple times.
+//!
+//! Examles:
+//!
+//! 1.  [`WhiteListFsHandler`] is a _global_ handler.
+//! 2.  Every `T: Fn(&[u8]) -> BoxFuture<'static, Result<InfileData, LocalInfileError>>`
+//!     is a _global_ handler.
+//!
+//! ## _Local_ LOCAL INFILE handler.
+//!
+//! Simply speaking the _local_ handler is a future, that returns `Result<InfileData>`.
+//!
+//! This is a one-time handler – it's consumed after use. You can set it up using
+//! [`Conn::set_infile_handler`]. This handler have priority over _global_ handler.
+//!
+//! Worth noting:
+//!
+//! 1.  `impl Drop for Conn` will clear _local_ handler, i.e. handler will be removed when
+//!     connection is returned to a `Pool`.
+//! 2.  [`Conn::reset`] will clear _local_ handler.
+//!
+//! Example:
+//!
+//! ```rust
+//! # use mysql_async::{prelude::*, test_misc::get_opts, OptsBuilder, Result, Error};
+//! # use futures_util::future::FutureExt;
+//! # use futures_util::stream::{self, StreamExt};
+//! # use bytes::Bytes;
+//! # use std::env;
+//! # #[tokio::main]
+//! # async fn main() -> Result<()> {
+//! #
+//! # let database_url = get_opts();
+//! let pool = mysql_async::Pool::new(database_url);
+//!
+//! let mut conn = pool.get_conn().await?;
+//! "CREATE TEMPORARY TABLE tmp (id INT, val TEXT)".ignore(&mut conn).await?;
+//!
+//! // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
+//! conn.set_infile_handler(async move {
+//!     // We need to return a stream of `io::Result<Bytes>`
+//!     Ok(stream::iter([Bytes::from("1,a\r\n"), Bytes::from("2,b\r\n3,c")]).map(Ok).boxed())
+//! });
+//!
+//! let result = r#"LOAD DATA LOCAL INFILE 'whatever'
+//!     INTO TABLE `tmp`
+//!     FIELDS TERMINATED BY ',' ENCLOSED BY '\"'
+//!     LINES TERMINATED BY '\r\n'"#.ignore(&mut conn).await;
+//!
+//! match result {
+//!     Ok(()) => (),
+//!     Err(Error::Server(ref err)) if err.code == 1148 => {
+//!         // The used command is not allowed with this MySQL version
+//!         return Ok(());
+//!     },
+//!     Err(Error::Server(ref err)) if err.code == 3948 => {
+//!         // Loading local data is disabled;
+//!         // this must be enabled on both the client and the server
+//!         return Ok(());
+//!     }
+//!     e @ Err(_) => e.unwrap(),
+//! }
+//!
+//! // Now let's verify the result
+//! let result: Vec<(u32, String)> = conn.query("SELECT * FROM tmp ORDER BY id ASC").await?;
+//! assert_eq!(
+//!     result,
+//!     vec![(1, "a".into()), (2, "b".into()), (3, "c".into())]
+//! );
+//!
+//! drop(conn);
+//! pool.disconnect().await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! [1]: https://dev.mysql.com/doc/refman/8.0/en/load-data-local-security.html
 
 #![recursion_limit = "1024"]
 #![cfg_attr(feature = "nightly", feature(test))]
@@ -121,7 +222,9 @@ pub use self::conn::{binlog_stream::BinlogStream, Conn};
 pub use self::conn::pool::Pool;
 
 #[doc(inline)]
-pub use self::error::{DriverError, Error, IoError, ParseError, Result, ServerError, UrlError};
+pub use self::error::{
+    DriverError, Error, IoError, LocalInfileError, ParseError, Result, ServerError, UrlError,
+};
 
 #[doc(inline)]
 pub use self::query::QueryWithParams;
@@ -136,7 +239,7 @@ pub use self::opts::{
 };
 
 #[doc(inline)]
-pub use self::local_infile_handler::{builtin::WhiteListFsLocalInfileHandler, InfileHandlerFuture};
+pub use self::local_infile_handler::{builtin::WhiteListFsHandler, InfileData};
 
 #[doc(inline)]
 pub use mysql_common::packets::{
@@ -197,7 +300,7 @@ pub mod futures {
 /// Traits used in this crate
 pub mod prelude {
     #[doc(inline)]
-    pub use crate::local_infile_handler::LocalInfileHandler;
+    pub use crate::local_infile_handler::GlobalHandler;
     #[doc(inline)]
     pub use crate::query::{BatchQuery, Query, WithParams};
     #[doc(inline)]
@@ -256,9 +359,10 @@ pub mod test_misc {
     use crate::opts::{Opts, OptsBuilder, SslOpts};
 
     #[allow(dead_code)]
+    #[allow(unreachable_code)]
     fn error_should_implement_send_and_sync() {
-        fn _dummy<T: Send + Sync>(_: T) {}
-        _dummy(crate::error::Error::from("foo"));
+        fn _dummy<T: Send + Sync + Unpin>(_: T) {}
+        _dummy(panic!());
     }
 
     lazy_static! {

@@ -44,7 +44,7 @@ use crate::{
         transaction::TxStatus,
         BinaryProtocol, Queryable, TextProtocol,
     },
-    BinlogStream, OptsBuilder,
+    BinlogStream, InfileData, OptsBuilder,
 };
 
 use self::routines::Routine;
@@ -111,6 +111,9 @@ struct ConnInner {
     auth_switched: bool,
     /// Connection is already disconnected.
     pub(crate) disconnected: bool,
+    /// One-time connection-level infile handler.
+    infile_handler:
+        Option<Pin<Box<dyn Future<Output = crate::Result<InfileData>> + Send + Sync + 'static>>>,
 }
 
 impl fmt::Debug for ConnInner {
@@ -151,6 +154,7 @@ impl ConnInner {
             auth_plugin: AuthPlugin::MysqlNativePassword,
             auth_switched: false,
             disconnected: false,
+            infile_handler: None,
         }
     }
 
@@ -372,6 +376,20 @@ impl Conn {
     /// Returns connection options.
     pub fn opts(&self) -> &Opts {
         &self.inner.opts
+    }
+
+    /// Setup _local_ `LOCAL INFILE` handler (see ["LOCAL INFILE Handlers"][2] section
+    /// of the crate-level docs).
+    ///
+    /// It'll overwrite existing _local_ handler, if any.
+    ///
+    /// [2]: ../mysql_async/#local-infile-handlers
+    pub fn set_infile_handler<T>(&mut self, handler: T)
+    where
+        T: Future<Output = crate::Result<InfileData>>,
+        T: Send + Sync + 'static,
+    {
+        self.inner.infile_handler = Some(Box::pin(handler));
     }
 
     fn take_stream(&mut self) -> Stream {
@@ -911,6 +929,7 @@ impl Conn {
         };
 
         self.inner.stmt_cache.clear();
+        self.inner.infile_handler = None;
         self.inner.pool = pool;
         Ok(())
     }
@@ -1022,7 +1041,8 @@ impl Conn {
 
 #[cfg(test)]
 mod test {
-    use futures_util::stream::StreamExt;
+    use bytes::Bytes;
+    use futures_util::stream::{self, StreamExt};
     use mysql_common::binlog::events::EventData;
     use tokio::time::timeout;
 
@@ -1030,7 +1050,7 @@ mod test {
 
     use crate::{
         from_row, params, prelude::*, test_misc::get_opts, BinlogDumpFlags, BinlogRequest, Conn,
-        Error, OptsBuilder, Pool, WhiteListFsLocalInfileHandler,
+        Error, OptsBuilder, Pool, WhiteListFsHandler,
     };
 
     async fn gen_dummy_data() -> super::Result<()> {
@@ -1676,8 +1696,7 @@ mod test {
 
         write(file_name, b"AAAAAA\nBBBBBB\nCCCCCC\n")?;
 
-        let opts = get_opts()
-            .local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[file_name][..])));
+        let opts = get_opts().local_infile_handler(Some(WhiteListFsHandler::new(&[file_name][..])));
 
         // LOCAL INFILE in the middle of a multi-result set should not break anything.
         let mut conn = Conn::new(opts).await.unwrap();
@@ -1802,7 +1821,48 @@ mod test {
     }
 
     #[tokio::test]
-    async fn should_handle_local_infile() -> super::Result<()> {
+    async fn should_handle_local_infile_locally() -> super::Result<()> {
+        let mut conn = Conn::new(get_opts()).await.unwrap();
+        conn.query_drop("CREATE TEMPORARY TABLE tmp (a TEXT);")
+            .await
+            .unwrap();
+
+        conn.set_infile_handler(async move {
+            Ok(
+                stream::iter([Bytes::from("AAAAAA\n"), Bytes::from("BBBBBB\nCCCCCC\n")])
+                    .map(Ok)
+                    .boxed(),
+            )
+        });
+
+        match conn
+            .query_drop(r#"LOAD DATA LOCAL INFILE "dummy" INTO TABLE tmp;"#)
+            .await
+        {
+            Ok(_) => (),
+            Err(super::Error::Server(ref err)) if err.code == 1148 => {
+                // The used command is not allowed with this MySQL version
+                return Ok(());
+            }
+            Err(super::Error::Server(ref err)) if err.code == 3948 => {
+                // Loading local data is disabled;
+                // this must be enabled on both the client and server sides
+                return Ok(());
+            }
+            e @ Err(_) => e.unwrap(),
+        };
+
+        let result: Vec<String> = conn.query("SELECT * FROM tmp").await?;
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], "AAAAAA");
+        assert_eq!(result[1], "BBBBBB");
+        assert_eq!(result[2], "CCCCCC");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_handle_local_infile_globally() -> super::Result<()> {
         use std::fs::write;
 
         let file_path = tempfile::Builder::new().tempfile_in("").unwrap();
@@ -1811,8 +1871,7 @@ mod test {
 
         write(file_name, b"AAAAAA\nBBBBBB\nCCCCCC\n")?;
 
-        let opts = get_opts()
-            .local_infile_handler(Some(WhiteListFsLocalInfileHandler::new(&[file_name][..])));
+        let opts = get_opts().local_infile_handler(Some(WhiteListFsHandler::new(&[file_name][..])));
 
         let mut conn = Conn::new(opts).await.unwrap();
         conn.query_drop("CREATE TEMPORARY TABLE tmp (a TEXT);")

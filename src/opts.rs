@@ -23,7 +23,7 @@ use std::{
 use crate::{
     consts::CapabilityFlags,
     error::*,
-    local_infile_handler::{LocalInfileHandler, LocalInfileHandlerObject},
+    local_infile_handler::{GlobalHandler, GlobalHandlerObject},
 };
 
 /// Default pool constraints.
@@ -329,7 +329,7 @@ pub(crate) struct MysqlOpts {
     tcp_nodelay: bool,
 
     /// Local infile handler
-    local_infile_handler: Option<LocalInfileHandlerObject>,
+    local_infile_handler: Option<GlobalHandlerObject>,
 
     /// Connection pool options (defaults to [`PoolOpts::default`]).
     pool_opts: PoolOpts,
@@ -538,7 +538,7 @@ impl Opts {
     }
 
     /// Handler for local infile requests (defaults to `None`).
-    pub fn local_infile_handler(&self) -> Option<Arc<dyn LocalInfileHandler>> {
+    pub fn local_infile_handler(&self) -> Option<Arc<dyn GlobalHandler>> {
         self.inner
             .mysql_opts
             .local_infile_handler
@@ -897,12 +897,12 @@ impl OptsBuilder {
         self
     }
 
-    /// Defines local infile handler. See [`Opts::local_infile_handler`].
+    /// Defines _global_ LOCAL INFILE handler (see crate-level docs).
     pub fn local_infile_handler<T>(mut self, handler: Option<T>) -> Self
     where
-        T: LocalInfileHandler + 'static,
+        T: GlobalHandler,
     {
-        self.opts.local_infile_handler = handler.map(LocalInfileHandlerObject::new);
+        self.opts.local_infile_handler = handler.map(GlobalHandlerObject::new);
         self
     }
 
