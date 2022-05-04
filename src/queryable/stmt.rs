@@ -208,7 +208,7 @@ impl Statement {
         self.inner.columns()
     }
 
-    /// Requred parameters.
+    /// Required parameters.
     pub fn params(&self) -> &[Column] {
         self.inner.params()
     }

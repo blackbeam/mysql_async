@@ -373,16 +373,16 @@ impl Stream {
 
         if let Some(duration) = keepalive {
             #[cfg(unix)]
-            let socket = unsafe {
+            let socket = {
                 use std::os::unix::prelude::*;
                 let fd = tcp_stream.as_raw_fd();
-                Socket2Socket::from_raw_fd(fd)
+                unsafe { Socket2Socket::from_raw_fd(fd) }
             };
             #[cfg(windows)]
-            let socket = unsafe {
+            let socket = {
                 use std::os::windows::prelude::*;
                 let sock = tcp_stream.as_raw_socket();
-                Socket2Socket::from_raw_socket(sock)
+                unsafe { Socket2Socket::from_raw_socket(sock) }
             };
             socket.set_tcp_keepalive(&TcpKeepalive::new().with_time(duration))?;
             std::mem::forget(socket);
