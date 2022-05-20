@@ -221,7 +221,7 @@ impl Pool {
     ///
     /// Decreases the exist counter since a broken or dropped connection should not count towards
     /// the total.
-    fn cancel_connection(&self) {
+    pub(super) fn cancel_connection(&self) {
         let mut exchange = self.inner.exchange.lock().unwrap();
         exchange.exist -= 1;
         // we just enabled the creation of a new connection!

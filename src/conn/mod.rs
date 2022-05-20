@@ -1032,7 +1032,7 @@ impl Conn {
 
     pub async fn get_binlog_stream(mut self, request: BinlogRequest<'_>) -> Result<BinlogStream> {
         // We'll disconnect this connection from a pool before requesting the binlog.
-        self.inner.pool = None;
+        self.inner.pool.take().map(|pool|pool.cancel_connection());
         self.request_binlog(request).await?;
 
         Ok(BinlogStream::new(self))
