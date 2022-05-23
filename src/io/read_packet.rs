@@ -20,7 +20,7 @@ use crate::{buffer_pool::PooledBuf, connection_like::Connection, error::IoError,
 /// Reads a packet.
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct ReadPacket<'a, 't>(Connection<'a, 't>);
+pub struct ReadPacket<'a, 't>(pub(crate) Connection<'a, 't>);
 
 impl<'a, 't> ReadPacket<'a, 't> {
     pub(crate) fn new<T: Into<Connection<'a, 't>>>(conn: T) -> Self {

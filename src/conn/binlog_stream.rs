@@ -19,11 +19,13 @@ use mysql_common::{
 
 use std::{
     future::Future,
+    io::ErrorKind,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use crate::{error::DriverError, io::ReadPacket, Conn, Result};
+use crate::connection_like::Connection;
+use crate::{error::DriverError, io::ReadPacket, Conn, Error, IoError, Result};
 
 /// Binlog event stream.
 ///
@@ -45,6 +47,28 @@ impl BinlogStream {
     /// Returns a table map event for the given table id.
     pub fn get_tme(&self, table_id: u64) -> Option<&TableMapEvent<'static>> {
         self.esr.get_tme(table_id)
+    }
+
+    /// Closes the stream's `Conn`. Additionally, the connection is dropped, so its associated
+    /// pool (if any) will regain a connection slot.
+    pub async fn close(self) -> Result<()> {
+        match self.read_packet.0 {
+            // `close_conn` requires ownership of `Conn`. That's okay, because
+            // `BinLogStream`'s connection is always owned.
+            Connection::Conn(conn) => {
+                if let Err(Error::Io(IoError::Io(ref error))) = conn.close_conn().await {
+                    // If the binlog was requested with the flag BINLOG_DUMP_NON_BLOCK,
+                    // the connection's file handler will already have been closed (EOF).
+                    if error.kind() == ErrorKind::BrokenPipe {
+                        return Ok(());
+                    }
+                }
+            }
+            Connection::ConnMut(_) => {}
+            Connection::Tx(_) => {}
+        }
+
+        Ok(())
     }
 }
 
