@@ -19,16 +19,16 @@ use std::{
 use crate::queryable::stmt::StmtInner;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct QueryString(pub Arc<str>);
+pub struct QueryString(pub Arc<[u8]>);
 
-impl Borrow<str> for QueryString {
-    fn borrow(&self) -> &str {
+impl Borrow<[u8]> for QueryString {
+    fn borrow(&self) -> &[u8] {
         &*self.0.as_ref()
     }
 }
 
-impl PartialEq<str> for QueryString {
-    fn eq(&self, other: &str) -> bool {
+impl PartialEq<[u8]> for QueryString {
+    fn eq(&self, other: &[u8]) -> bool {
         &*self.0.as_ref() == other
     }
 }
@@ -68,7 +68,7 @@ impl StmtCache {
         }
     }
 
-    pub fn put(&mut self, query: Arc<str>, stmt: Arc<StmtInner>) -> Option<Arc<StmtInner>> {
+    pub fn put(&mut self, query: Arc<[u8]>, stmt: Arc<StmtInner>) -> Option<Arc<StmtInner>> {
         if self.cap == 0 {
             return None;
         }
@@ -95,7 +95,7 @@ impl StmtCache {
 
     pub fn remove(&mut self, id: u32) {
         if let Some(entry) = self.cache.pop(&id) {
-            self.query_map.remove::<str>(entry.query.borrow());
+            self.query_map.remove::<[u8]>(entry.query.borrow());
         }
     }
 
@@ -135,7 +135,7 @@ impl super::Conn {
     /// Returns statement, if cached.
     ///
     /// `raw_query` is the query with `?` placeholders (not with `:<name>` placeholders).
-    pub(crate) fn get_cached_stmt(&mut self, raw_query: &str) -> Option<Arc<StmtInner>> {
+    pub(crate) fn get_cached_stmt(&mut self, raw_query: &[u8]) -> Option<Arc<StmtInner>> {
         self.stmt_cache_mut()
             .by_query(raw_query)
             .map(|entry| entry.stmt.clone())

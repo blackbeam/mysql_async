@@ -15,6 +15,54 @@ use crate::{
     BinaryProtocol, BoxFuture, Params, QueryResult, ResultSetStream, TextProtocol,
 };
 
+/// Types that can be treated as a MySQL query.
+///
+/// This trait is implemented by all "string-ish" standard library types, like `String`, `&str`,
+/// `Cow<str>`, but also all types that can be treated as a slice of bytes (such as `Vec<u8>` and
+/// `&[u8]`), since MySQL does not require queries to be valid UTF-8.
+pub trait AsQuery: Send + Sync {
+    fn as_query(&self) -> &[u8];
+}
+
+impl AsQuery for &'_ [u8] {
+    fn as_query(&self) -> &[u8] {
+        self
+    }
+}
+
+macro_rules! impl_as_query_as_ref {
+    ($type: ty) => {
+        impl AsQuery for $type {
+            fn as_query(&self) -> &[u8] {
+                self.as_ref()
+            }
+        }
+    };
+}
+
+impl_as_query_as_ref!(Vec<u8>);
+impl_as_query_as_ref!(&Vec<u8>);
+impl_as_query_as_ref!(Box<[u8]>);
+impl_as_query_as_ref!(std::borrow::Cow<'_, [u8]>);
+impl_as_query_as_ref!(std::sync::Arc<[u8]>);
+
+macro_rules! impl_as_query_as_bytes {
+    ($type: ty) => {
+        impl AsQuery for $type {
+            fn as_query(&self) -> &[u8] {
+                self.as_bytes()
+            }
+        }
+    };
+}
+
+impl_as_query_as_bytes!(String);
+impl_as_query_as_bytes!(&String);
+impl_as_query_as_bytes!(&str);
+impl_as_query_as_bytes!(Box<str>);
+impl_as_query_as_bytes!(std::borrow::Cow<'_, str>);
+impl_as_query_as_bytes!(std::sync::Arc<str>);
+
 /// MySql text query.
 ///
 /// This trait covers the set of `query*` methods on the `Queryable` trait.
@@ -157,7 +205,7 @@ pub trait Query: Send + Sized {
     }
 }
 
-impl<Q: AsRef<str> + Send + Sync> Query for Q {
+impl<Q: AsQuery> Query for Q {
     type Protocol = TextProtocol;
 
     fn run<'a, 't: 'a, C>(self, conn: C) -> BoxFuture<'a, QueryResult<'a, 't, TextProtocol>>

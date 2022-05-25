@@ -28,6 +28,7 @@ use crate::{
     consts::CapabilityFlags,
     error::*,
     prelude::{FromRow, StatementLike},
+    query::AsQuery,
     queryable::query_result::ResultSetMeta,
     BoxFuture, Column, Conn, Params, ResultSetStream, Row,
 };
@@ -102,10 +103,9 @@ impl Conn {
     /// Low level function that performs a text query.
     pub(crate) async fn raw_query<'a, Q>(&'a mut self, query: Q) -> Result<()>
     where
-        Q: AsRef<str> + Send + Sync + 'a,
+        Q: AsQuery + 'a,
     {
-        self.routine(QueryRoutine::new(query.as_ref().as_bytes()))
-            .await
+        self.routine(QueryRoutine::new(query.as_query())).await
     }
 }
 
@@ -122,7 +122,7 @@ pub trait Queryable: Send {
         query: Q,
     ) -> BoxFuture<'a, QueryResult<'a, 'static, TextProtocol>>
     where
-        Q: AsRef<str> + Send + Sync + 'a;
+        Q: AsQuery + 'a;
 
     /// Prepares the given statement.
     ///
@@ -165,7 +165,7 @@ pub trait Queryable: Send {
     /// to make this conversion infallible.
     fn query<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Vec<T>>
     where
-        Q: AsRef<str> + Send + Sync + 'a,
+        Q: AsQuery + 'a,
         T: FromRow + Send + 'static,
     {
         async move { self.query_iter(query).await?.collect_and_drop::<T>().await }.boxed()
@@ -180,7 +180,7 @@ pub trait Queryable: Send {
     /// to make this conversion infallible.
     fn query_first<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Option<T>>
     where
-        Q: AsRef<str> + Send + Sync + 'a,
+        Q: AsQuery + 'a,
         T: FromRow + Send + 'static,
     {
         async move {
@@ -205,7 +205,7 @@ pub trait Queryable: Send {
     /// to make this conversion infallible.
     fn query_map<'a, T, F, Q, U>(&'a mut self, query: Q, mut f: F) -> BoxFuture<'a, Vec<U>>
     where
-        Q: AsRef<str> + Send + Sync + 'a,
+        Q: AsQuery + 'a,
         T: FromRow + Send + 'static,
         F: FnMut(T) -> U + Send + 'a,
         U: Send,
@@ -229,7 +229,7 @@ pub trait Queryable: Send {
     /// to make this conversion infallible.
     fn query_fold<'a, T, F, Q, U>(&'a mut self, query: Q, init: U, mut f: F) -> BoxFuture<'a, U>
     where
-        Q: AsRef<str> + Send + Sync + 'a,
+        Q: AsQuery + 'a,
         T: FromRow + Send + 'static,
         F: FnMut(U, T) -> U + Send + 'a,
         U: Send + 'a,
@@ -246,7 +246,7 @@ pub trait Queryable: Send {
     /// Performs the given query and drops the query result.
     fn query_drop<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, ()>
     where
-        Q: AsRef<str> + Send + Sync + 'a,
+        Q: AsQuery + 'a,
     {
         async move { self.query_iter(query).await?.drop_result().await }.boxed()
     }
@@ -397,7 +397,7 @@ pub trait Queryable: Send {
     ) -> BoxFuture<'a, ResultSetStream<'a, 'a, 'static, T, TextProtocol>>
     where
         T: Unpin + FromRow + Send + 'static,
-        Q: AsRef<str> + Send + Sync + 'a,
+        Q: AsQuery + 'a,
     {
         async move {
             self.query_iter(query)
@@ -451,11 +451,10 @@ impl Queryable for Conn {
         query: Q,
     ) -> BoxFuture<'a, QueryResult<'a, 'static, TextProtocol>>
     where
-        Q: AsRef<str> + Send + Sync + 'a,
+        Q: AsQuery + 'a,
     {
         async move {
-            self.routine(QueryRoutine::new(query.as_ref().as_bytes()))
-                .await?;
+            self.routine(QueryRoutine::new(query.as_query())).await?;
             Ok(QueryResult::new(self))
         }
         .boxed()
@@ -525,7 +524,7 @@ impl Queryable for Transaction<'_> {
         query: Q,
     ) -> BoxFuture<'a, QueryResult<'a, 'static, TextProtocol>>
     where
-        Q: AsRef<str> + Send + Sync + 'a,
+        Q: AsQuery + 'a,
     {
         self.0.query_iter(query)
     }
