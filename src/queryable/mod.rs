@@ -135,7 +135,7 @@ pub trait Queryable: Send {
     /// [stmt_cache_size]: crate::Opts::stmt_cache_size
     fn prep<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Statement>
     where
-        Q: AsRef<str> + Sync + Send + 'a;
+        Q: AsQuery + 'a;
 
     /// Closes the given statement.
     ///
@@ -464,9 +464,9 @@ impl Queryable for Conn {
 
     fn prep<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Statement>
     where
-        Q: AsRef<str> + Sync + Send + 'a,
+        Q: AsQuery + 'a,
     {
-        async move { self.get_statement(query.as_ref()).await }.boxed()
+        async move { self.get_statement(query.as_query()).await }.boxed()
     }
 
     fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()> {
@@ -533,7 +533,7 @@ impl Queryable for Transaction<'_> {
 
     fn prep<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Statement>
     where
-        Q: AsRef<str> + Sync + Send + 'a,
+        Q: AsQuery + 'a,
     {
         self.0.prep(query)
     }
