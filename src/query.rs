@@ -6,6 +6,8 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use std::borrow::Cow;
+
 use futures_util::FutureExt;
 
 use crate::{
@@ -14,6 +16,54 @@ use crate::{
     prelude::{FromRow, StatementLike, ToConnection},
     BinaryProtocol, BoxFuture, Params, QueryResult, ResultSetStream, TextProtocol,
 };
+
+/// Types that can be treated as a MySQL query.
+///
+/// This trait is implemented by all "string-ish" standard library types, like `String`, `&str`,
+/// `Cow<str>`, but also all types that can be treated as a slice of bytes (such as `Vec<u8>` and
+/// `&[u8]`), since MySQL does not require queries to be valid UTF-8.
+pub trait AsQuery: Send + Sync {
+    fn as_query(&self) -> Cow<'_, [u8]>;
+}
+
+impl AsQuery for &'_ [u8] {
+    fn as_query(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(self)
+    }
+}
+
+macro_rules! impl_as_query_as_ref {
+    ($type: ty) => {
+        impl AsQuery for $type {
+            fn as_query(&self) -> Cow<'_, [u8]> {
+                Cow::Borrowed(self.as_ref())
+            }
+        }
+    };
+}
+
+impl_as_query_as_ref!(Vec<u8>);
+impl_as_query_as_ref!(&Vec<u8>);
+impl_as_query_as_ref!(Box<[u8]>);
+impl_as_query_as_ref!(Cow<'_, [u8]>);
+impl_as_query_as_ref!(std::sync::Arc<[u8]>);
+
+macro_rules! impl_as_query_as_bytes {
+    ($type: ty) => {
+        impl AsQuery for $type {
+            fn as_query(&self) -> Cow<'_, [u8]> {
+                Cow::Borrowed(self.as_bytes())
+            }
+        }
+    };
+}
+
+impl_as_query_as_bytes!(String);
+impl_as_query_as_bytes!(&String);
+impl_as_query_as_bytes!(&str);
+impl_as_query_as_bytes!(Box<str>);
+impl_as_query_as_bytes!(Cow<'_, str>);
+impl_as_query_as_bytes!(std::sync::Arc<str>);
 
 /// MySql text query.
 ///
@@ -157,7 +207,7 @@ pub trait Query: Send + Sized {
     }
 }
 
-impl<Q: AsRef<str> + Send + Sync> Query for Q {
+impl<Q: AsQuery> Query for Q {
     type Protocol = TextProtocol;
 
     fn run<'a, 't: 'a, C>(self, conn: C) -> BoxFuture<'a, QueryResult<'a, 't, TextProtocol>>

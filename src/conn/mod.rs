@@ -1422,8 +1422,8 @@ mod test {
             .stmt_cache_ref()
             .iter()
             .map(|item| item.1.query.0.as_ref())
-            .collect::<Vec<&str>>();
-        assert_eq!(order, &["DO 6", "DO 5", "DO 3"]);
+            .collect::<Vec<&[u8]>>();
+        assert_eq!(order, &[b"DO 6", b"DO 5", b"DO 3"]);
         conn.disconnect().await?;
         Ok(())
     }

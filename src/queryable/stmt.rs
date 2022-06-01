@@ -22,6 +22,8 @@ use crate::{
     Column, Params,
 };
 
+use super::AsQuery;
+
 /// Result of a `StatementLike::to_statement` call.
 pub enum ToStatementResult<'a> {
     /// Statement is immediately available.
@@ -37,12 +39,13 @@ pub trait StatementLike: Send + Sync {
         Self: 'a;
 }
 
-fn to_statement_move<'a, T: AsRef<str> + Send + Sync + 'a>(
+fn to_statement_move<'a, T: AsQuery + 'a>(
     stmt: T,
     conn: &'a mut crate::Conn,
 ) -> ToStatementResult<'a> {
     let fut = async move {
-        let (named_params, raw_query) = parse_named_params(stmt.as_ref())?;
+        let query = stmt.as_query();
+        let (named_params, raw_query) = parse_named_params(query.as_ref())?;
         let inner_stmt = match conn.get_cached_stmt(&*raw_query) {
             Some(inner_stmt) => inner_stmt,
             None => conn.prepare_statement(raw_query).await?,
@@ -119,7 +122,7 @@ impl<T: StatementLike + Clone> StatementLike for &'_ T {
 /// Statement data.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct StmtInner {
-    pub(crate) raw_query: Arc<str>,
+    pub(crate) raw_query: Arc<[u8]>,
     columns: Option<Box<[Column]>>,
     params: Option<Box<[Column]>>,
     stmt_packet: StmtPacket,
@@ -130,7 +133,7 @@ impl StmtInner {
     pub(crate) fn from_payload(
         pld: &[u8],
         connection_id: u32,
-        raw_query: Arc<str>,
+        raw_query: Arc<[u8]>,
     ) -> std::io::Result<Self> {
         let stmt_packet = ParseBuf(pld).parse(())?;
 
@@ -192,11 +195,11 @@ impl StmtInner {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Statement {
     pub(crate) inner: Arc<StmtInner>,
-    pub(crate) named_params: Option<Vec<String>>,
+    pub(crate) named_params: Option<Vec<Vec<u8>>>,
 }
 
 impl Statement {
-    pub(crate) fn new(inner: Arc<StmtInner>, named_params: Option<Vec<String>>) -> Self {
+    pub(crate) fn new(inner: Arc<StmtInner>, named_params: Option<Vec<Vec<u8>>>) -> Self {
         Self {
             inner,
             named_params,
@@ -275,7 +278,7 @@ impl crate::Conn {
     /// Low-level helper, that prepares the given statement.
     ///
     /// `raw_query` is a query with `?` placeholders (if any).
-    async fn prepare_statement(&mut self, raw_query: Cow<'_, str>) -> Result<Arc<StmtInner>> {
+    async fn prepare_statement(&mut self, raw_query: Cow<'_, [u8]>) -> Result<Arc<StmtInner>> {
         let inner_stmt = self.routine(PrepareRoutine::new(raw_query)).await?;
 
         if let Some(old_stmt) = self.cache_stmt(&inner_stmt) {
