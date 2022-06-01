@@ -84,6 +84,17 @@ async fn main() -> Result<()> {
 }
 ```
 
+## Pool
+
+The [`Pool`] structure is an asynchronous connection pool.
+
+Please note:
+
+* [`Pool`] is a smart pointer – each clone will point to the same pool instance.
+* [`Pool`] is `Send + Sync + 'static` – feel free to pass it around.
+* use [`Pool::disconnect`] to gracefuly close the pool.
+* [`Pool::new`] is lazy and won't assert server availability.
+
 ## LOCAL INFILE Handlers
 
 **Warning:** You should be aware of [Security Considerations for LOAD DATA LOCAL][1].
@@ -174,6 +185,33 @@ pool.disconnect().await?;
 ```
 
 [1]: https://dev.mysql.com/doc/refman/8.0/en/load-data-local-security.html
+
+## Testing
+
+Tests uses followin environment variables:
+* `DATABASE_URL` – defaults to `mysql://root:password@127.0.0.1:3307/mysql`
+* `COMPRESS` – set to `1` or `true` to enable compression for tests
+* `SSL` – set to `1` or `true` to enable TLS for tests
+
+You can run a test server using doker. Please note that params related
+to max allowed packet, local-infile and binary logging are required
+to properly run tests:
+
+```sh
+docker run -d --name container \
+    -v `pwd`:/root \
+    -p 3307:3306 \
+    -e MYSQL_ROOT_PASSWORD=password \
+    mysql:8.0 \
+    --max-allowed-packet=36700160 \
+    --local-infile \
+    --log-bin=mysql-bin \
+    --log-slave-updates \
+    --gtid_mode=ON \
+    --enforce_gtid_consistency=ON \
+    --server-id=1
+```
+
 
 ## Change log
 
