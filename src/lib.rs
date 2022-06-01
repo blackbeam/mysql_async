@@ -96,6 +96,70 @@
 //! * use [`Pool::disconnect`] to gracefuly close the pool.
 //! * [`Pool::new`] is lazy and won't assert server availability.
 //!
+//! # Transaction
+//!
+//! [`Conn::start_transaction`] is a wrapper, that starts with `START TRANSACTION`
+//! and ends with `COMMIT` or `ROLLBACK`.
+//!
+//! Dropped transaction will be implicitly rolled back if it wasn't explicitly
+//! committed or rolled back. This behaviour will be triggered by a pool
+//! or by the next query.
+//!
+//! API won't allow you to run nested transactions because some statements causes
+//! an implicit commit (`START TRANSACTION` is one of them), so this behavior
+//! is chosen as less error prone.
+//!
+//! # `Value`
+//!
+//! This enumeration represents the raw value of a MySql cell. Library offers conversion between
+//! `Value` and different rust types via `FromValue` trait described below.
+//!
+//! ## `FromValue` trait
+//!
+//! This trait is reexported from **mysql_common** create. Please refer to its
+//! [crate docs](https://docs.rs/mysql_common) for the list of supported conversions.
+//!
+//! Trait offers conversion in two flavours:
+//!
+//! *   `from_value(Value) -> T` - convenient, but panicking conversion.
+//!
+//!     Note, that for any variant of `Value` there exist a type, that fully covers its domain,
+//!     i.e. for any variant of `Value` there exist `T: FromValue` such that `from_value` will never
+//!     panic. This means, that if your database schema is known, than it's possible to write your
+//!     application using only `from_value` with no fear of runtime panic.
+//!
+//!     Also note, that some convertions may fail even though the type seem sufficient,
+//!     e.g. in case of invalid dates (see [sql mode](https://dev.mysql.com/doc/refman/8.0/en/sql-mode.html)).
+//!
+//! *   `from_value_opt(Value) -> Option<T>` - non-panicking, but less convenient conversion.
+//!
+//!     This function is useful to probe conversion in cases, where source database schema
+//!     is unknown.
+//!
+//! # MySql query protocols
+//!
+//! ## Text protocol
+//!
+//! MySql text protocol is implemented in the set of `Queryable::query*` methods
+//! and in the [`prelude::Query`] trait if query is [`prelude::AsQuery`].
+//! It's useful when your query doesn't have parameters.
+//!
+//! **Note:** All values of a text protocol result set will be encoded as strings by the server,
+//! so `from_value` conversion may lead to additional parsing costs.
+//!
+//! ## Binary protocol and prepared statements.
+//!
+//! MySql binary protocol is implemented in the set of `exec*` methods,
+//! defined on the [`prelude::Queryable`] trait and in the [`prelude::Query`]
+//! trait if query is [`QueryWithParams`]. Prepared statements is the only way to
+//! pass rust value to the MySql server. MySql uses `?` symbol as a parameter placeholder.
+//!
+//! **Note:** it's only possible to use parameters where a single MySql value
+//! is expected, i.e. you can't execute something like `SELECT ... WHERE id IN ?`
+//! with a vector as a parameter. You'll need to build a query that looks like
+//! `SELECT ... WHERE id IN (?, ?, ...)` and to pass each vector element as
+//! a parameter.
+//!
 //! # LOCAL INFILE Handlers
 //!
 //! **Warning:** You should be aware of [Security Considerations for LOAD DATA LOCAL][1].
@@ -206,7 +270,7 @@
 //!
 //! You can run a test server using doker. Please note that params related
 //! to max allowed packet, local-infile and binary logging are required
-//! to properly run tests:
+//! to properly run tests (please refer to `azure-pipelines.yml`):
 //!
 //! ```sh
 //! docker run -d --name container \
