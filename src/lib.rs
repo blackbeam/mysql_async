@@ -102,8 +102,8 @@
 //! and ends with `COMMIT` or `ROLLBACK`.
 //!
 //! Dropped transaction will be implicitly rolled back if it wasn't explicitly
-//! committed or rolled back. This behaviour will be triggered by a pool
-//! or by the next query.
+//! committed or rolled back. Note that this behaviour will be triggered by a pool
+//! (on conn drop) or by the next query, i.e. may be delayed.
 //!
 //! API won't allow you to run nested transactions because some statements causes
 //! an implicit commit (`START TRANSACTION` is one of them), so this behavior
