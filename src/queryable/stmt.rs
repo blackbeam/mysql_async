@@ -44,7 +44,8 @@ fn to_statement_move<'a, T: AsQuery + 'a>(
     conn: &'a mut crate::Conn,
 ) -> ToStatementResult<'a> {
     let fut = async move {
-        let (named_params, raw_query) = parse_named_params(stmt.as_query())?;
+        let query = stmt.as_query();
+        let (named_params, raw_query) = parse_named_params(query.as_ref())?;
         let inner_stmt = match conn.get_cached_stmt(&*raw_query) {
             Some(inner_stmt) => inner_stmt,
             None => conn.prepare_statement(raw_query).await?,

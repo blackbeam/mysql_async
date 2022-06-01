@@ -105,7 +105,8 @@ impl Conn {
     where
         Q: AsQuery + 'a,
     {
-        self.routine(QueryRoutine::new(query.as_query())).await
+        self.routine(QueryRoutine::new(query.as_query().as_ref()))
+            .await
     }
 }
 
@@ -454,7 +455,8 @@ impl Queryable for Conn {
         Q: AsQuery + 'a,
     {
         async move {
-            self.routine(QueryRoutine::new(query.as_query())).await?;
+            self.routine(QueryRoutine::new(query.as_query().as_ref()))
+                .await?;
             Ok(QueryResult::new(self))
         }
         .boxed()

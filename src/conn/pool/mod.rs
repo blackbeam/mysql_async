@@ -397,7 +397,7 @@ mod test {
 
             // now we'll kill connections..
             for id in ids {
-                master.query_drop(&format!("KILL {}", id)).await?;
+                master.query_drop(format!("KILL {}", id)).await?;
             }
 
             // now check, that they're still in the pool..
