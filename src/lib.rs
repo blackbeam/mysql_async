@@ -160,6 +160,26 @@
 //! `SELECT ... WHERE id IN (?, ?, ...)` and to pass each vector element as
 //! a parameter.
 //!
+//! # Named parameters
+//!
+//! MySql itself doesn't have named parameters support, so it's implemented on the client side.
+//! One should use `:name` as a placeholder syntax for a named parameter. Named parameters uses
+//! the following naming convention:
+//!
+//! * parameter name must start with either `_` or `a..z`
+//! * parameter name may continue with `_`, `a..z` and `0..9`
+//!
+//! **Note:** this rules mean that, say, the statment `SELECT :fooBar` will be translated
+//! to `SELECT ?Bar` so please be careful.
+//!
+//! Named parameters may be repeated within the statement, e.g `SELECT :foo, :foo` will require
+//! a single named parameter `foo` that will be repeated on the corresponding positions during
+//! statement execution.
+//!
+//! One should use the `params!` macro to build parameters for execution.
+//!
+//! **Note:** Positional and named parameters can't be mixed within the single statement.
+//!
 //! # LOCAL INFILE Handlers
 //!
 //! **Warning:** You should be aware of [Security Considerations for LOAD DATA LOCAL][1].
