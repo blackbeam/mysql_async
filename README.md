@@ -179,6 +179,13 @@ One should use the `params!` macro to build parameters for execution.
 
 **Note:** Positional and named parameters can't be mixed within the single statement.
 
+## Statements
+
+In MySql each prepared statement belongs to a particular connection and can't be executed
+on another connection. Trying to do so will lead to an error. The driver won't tie statement
+to its connection in any way, but one can look on to the connection id, contained
+in the [`Statement`] structure.
+
 ## LOCAL INFILE Handlers
 
 **Warning:** You should be aware of [Security Considerations for LOAD DATA LOCAL][1].
