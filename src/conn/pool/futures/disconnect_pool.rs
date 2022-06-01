@@ -12,9 +12,13 @@ use std::{
     task::{Context, Poll},
 };
 
+use futures_core::ready;
+use tokio::sync::mpsc::UnboundedSender;
+
 use crate::{
     conn::pool::{Inner, Pool},
     error::Error,
+    Conn,
 };
 
 use std::sync::{atomic, Arc};
@@ -27,12 +31,14 @@ use std::sync::{atomic, Arc};
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct DisconnectPool {
     pool_inner: Arc<Inner>,
+    drop: Option<UnboundedSender<Option<Conn>>>,
 }
 
 impl DisconnectPool {
     pub(crate) fn new(pool: Pool) -> Self {
         Self {
             pool_inner: pool.inner,
+            drop: Some(pool.drop),
         }
     }
 }
@@ -40,7 +46,8 @@ impl DisconnectPool {
 impl Future for DisconnectPool {
     type Output = Result<(), Error>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.pool_inner.close.store(true, atomic::Ordering::Release);
         let mut exchange = self.pool_inner.exchange.lock().unwrap();
         exchange.spawn_futures_if_needed(&self.pool_inner);
         exchange.waiting.push_back(cx.waker().clone());
@@ -49,7 +56,19 @@ impl Future for DisconnectPool {
         if self.pool_inner.closed.load(atomic::Ordering::Acquire) {
             Poll::Ready(Ok(()))
         } else {
-            Poll::Pending
+            match self.drop.take() {
+                Some(drop) => match drop.send(None) {
+                    Ok(_) => {
+                        // Recycler is alive. Waiting for it to finish.
+                        Poll::Ready(Ok(ready!(Box::pin(drop.closed()).as_mut().poll(cx))))
+                    }
+                    Err(_) => {
+                        // Recycler seem dead. No one will wake us.
+                        Poll::Ready(Ok(()))
+                    }
+                },
+                None => Poll::Pending,
+            }
         }
     }
 }
