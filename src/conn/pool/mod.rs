@@ -162,15 +162,6 @@ impl Pool {
     /// **Note:** This Future won't resolve until all active connections, taken from it,
     /// are dropped or disonnected. Also all pending and new `GetConn`'s will resolve to error.
     pub fn disconnect(self) -> DisconnectPool {
-        let was_closed = self.inner.close.swap(true, atomic::Ordering::AcqRel);
-        if !was_closed {
-            // make sure we wake up the Recycler.
-            //
-            // note the lack of an .expect() here, because the Recycler may decide that there are
-            // no connections to wait for and exit quickly!
-            let _ = self.drop.send(None).is_ok();
-        }
-
         DisconnectPool::new(self)
     }
 
