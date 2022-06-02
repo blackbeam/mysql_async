@@ -101,6 +101,51 @@ impl StatementLike for Arc<str> {
     }
 }
 
+impl StatementLike for Cow<'_, [u8]> {
+    fn to_statement<'a>(self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>
+    where
+        Self: 'a,
+    {
+        to_statement_move(self, conn)
+    }
+}
+
+impl StatementLike for &'_ [u8] {
+    fn to_statement<'a>(self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>
+    where
+        Self: 'a,
+    {
+        to_statement_move(self, conn)
+    }
+}
+
+impl StatementLike for Vec<u8> {
+    fn to_statement<'a>(self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>
+    where
+        Self: 'a,
+    {
+        to_statement_move(self, conn)
+    }
+}
+
+impl StatementLike for Box<[u8]> {
+    fn to_statement<'a>(self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>
+    where
+        Self: 'a,
+    {
+        to_statement_move(self, conn)
+    }
+}
+
+impl StatementLike for Arc<[u8]> {
+    fn to_statement<'a>(self, conn: &'a mut crate::Conn) -> ToStatementResult<'a>
+    where
+        Self: 'a,
+    {
+        to_statement_move(self, conn)
+    }
+}
+
 impl StatementLike for Statement {
     fn to_statement<'a>(self, _conn: &'a mut crate::Conn) -> ToStatementResult<'static>
     where
