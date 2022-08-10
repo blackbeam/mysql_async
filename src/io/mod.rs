@@ -154,6 +154,7 @@ impl Future for CheckTcpStream<'_> {
 }
 
 impl Endpoint {
+    #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     fn is_socket(&self) -> bool {
         match self {
             Self::Socket(_) => true,
@@ -191,12 +192,13 @@ impl Endpoint {
         }
     }
 
+    #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     pub fn is_secure(&self) -> bool {
         matches!(self, Endpoint::Secure(_))
     }
 
     #[cfg(all(not(feature = "native-tls"), not(feature = "rustls")))]
-    pub fn make_secure(self, _host: String, _ssl_opts: crate::SslOpts) -> MyResult<()> {
+    pub async fn make_secure(&mut self, _domain: String, _ssl_opts: crate::SslOpts) -> crate::error::Result<()> {
         panic!(
             "Client had asked for TLS connection but TLS support is disabled. \
             Please enable one of the following features: [\"native-tls-tls\", \"rustls-tls\"]"
@@ -412,6 +414,7 @@ impl Stream {
         Ok(())
     }
 
+    #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     pub(crate) fn is_secure(&self) -> bool {
         self.codec.as_ref().unwrap().get_ref().is_secure()
     }

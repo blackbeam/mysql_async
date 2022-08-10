@@ -415,11 +415,15 @@ impl Conn {
 
     /// Returns true if io stream is encrypted.
     fn is_secure(&self) -> bool {
+        #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
         if let Some(ref stream) = self.inner.stream {
             stream.is_secure()
         } else {
             false
         }
+
+        #[cfg(not(any(feature = "native-tls-tls", feature = "rustls-tls")))]
+        false
     }
 
     /// Hacky way to move connection through &mut. `self` becomes unusable.

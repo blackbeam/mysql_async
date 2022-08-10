@@ -55,7 +55,7 @@ impl Error {
 pub enum IoError {
     #[error("Input/output error: {}", _0)]
     Io(#[source] io::Error),
-
+    #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     #[error("TLS error: `{}'", _0)]
     Tls(#[source] tls::TlsError),
 }
