@@ -92,7 +92,6 @@ impl DerefMut for PacketCodec {
     }
 }
 
-
 impl Decoder for PacketCodec {
     type Item = PooledBuf;
     type Error = IoError;
@@ -174,7 +173,7 @@ impl Endpoint {
             Endpoint::Secure(tls_stream) => {
                 CheckTcpStream(tls_stream.get_mut().get_mut().get_mut()).await?;
                 Ok(())
-            },
+            }
             #[cfg(feature = "rustls-tls")]
             Endpoint::Secure(tls_stream) => {
                 let stream = tls_stream.get_mut().0;
@@ -198,7 +197,11 @@ impl Endpoint {
     }
 
     #[cfg(all(not(feature = "native-tls"), not(feature = "rustls")))]
-    pub async fn make_secure(&mut self, _domain: String, _ssl_opts: crate::SslOpts) -> crate::error::Result<()> {
+    pub async fn make_secure(
+        &mut self,
+        _domain: String,
+        _ssl_opts: crate::SslOpts,
+    ) -> crate::error::Result<()> {
         panic!(
             "Client had asked for TLS connection but TLS support is disabled. \
             Please enable one of the following features: [\"native-tls-tls\", \"rustls-tls\"]"
@@ -212,7 +215,7 @@ impl Endpoint {
             #[cfg(feature = "native-tls-tls")]
             Endpoint::Secure(ref stream) => {
                 stream.get_ref().get_ref().get_ref().set_nodelay(val)?
-            },
+            }
             #[cfg(feature = "rustls-tls")]
             Endpoint::Secure(ref stream) => {
                 let stream = stream.get_ref().0;
@@ -223,7 +226,6 @@ impl Endpoint {
         }
         Ok(())
     }
-
 }
 
 impl From<TcpStream> for Endpoint {

@@ -8,4 +8,3 @@ pub use native_tls_error::TlsError;
 
 #[cfg(feature = "rustls")]
 pub use rustls_error::TlsError;
-

@@ -11,8 +11,8 @@ pub struct ClientIdentity {
 impl ClientIdentity {
     /// Creates new identity with the given path to the pkcs12 archive.
     pub fn new<T>(pkcs12_path: T) -> Self
-        where
-            T: Into<Cow<'static, Path>>,
+    where
+        T: Into<Cow<'static, Path>>,
     {
         Self {
             pkcs12_path: pkcs12_path.into(),
@@ -22,8 +22,8 @@ impl ClientIdentity {
 
     /// Sets the archive password.
     pub fn with_password<T>(mut self, pass: T) -> Self
-        where
-            T: Into<Cow<'static, str>>,
+    where
+        T: Into<Cow<'static, str>>,
     {
         self.password = Some(pass.into());
         self

@@ -15,7 +15,6 @@ pub use native_tls_opts::ClientIdentity;
 #[cfg(feature = "rustls-tls")]
 pub use rustls_opts::ClientIdentity;
 
-
 use percent_encoding::percent_decode;
 use url::{Host, Url};
 
@@ -837,9 +836,9 @@ impl OptsBuilder {
     ///
     /// It'll panic if `Opts::try_from(opts)` returns error.
     pub fn from_opts<T>(opts: T) -> Self
-        where
-            Opts: TryFrom<T>,
-            <Opts as TryFrom<T>>::Error: std::error::Error,
+    where
+        Opts: TryFrom<T>,
+        <Opts as TryFrom<T>>::Error: std::error::Error,
     {
         let opts = Opts::try_from(opts).unwrap();
 
@@ -900,8 +899,8 @@ impl OptsBuilder {
 
     /// Defines _global_ LOCAL INFILE handler (see crate-level docs).
     pub fn local_infile_handler<T>(mut self, handler: Option<T>) -> Self
-        where
-            T: GlobalHandler,
+    where
+        T: GlobalHandler,
     {
         self.opts.local_infile_handler = handler.map(GlobalHandlerObject::new);
         self
@@ -921,8 +920,8 @@ impl OptsBuilder {
 
     /// Defines statement cache size. See [`Opts::stmt_cache_size`].
     pub fn stmt_cache_size<T>(mut self, cache_size: T) -> Self
-        where
-            T: Into<Option<usize>>,
+    where
+        T: Into<Option<usize>>,
     {
         self.opts.stmt_cache_size = cache_size.into().unwrap_or(DEFAULT_STMT_CACHE_SIZE);
         self
@@ -969,9 +968,9 @@ impl OptsBuilder {
     pub fn wait_timeout(mut self, wait_timeout: Option<usize>) -> Self {
         self.opts.wait_timeout = wait_timeout.map(|x| {
             #[cfg(windows)]
-                let val = std::cmp::min(2147483, x);
+            let val = std::cmp::min(2147483, x);
             #[cfg(not(windows))]
-                let val = std::cmp::min(31536000, x);
+            let val = std::cmp::min(31536000, x);
 
             val
         });

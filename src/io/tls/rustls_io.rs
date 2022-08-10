@@ -1,27 +1,18 @@
 #![cfg(feature = "rustls-tls")]
 
-use std::{
-    convert::TryInto,
-    sync::Arc,
-};
+use std::{convert::TryInto, sync::Arc};
 
 use rustls::{
     client::{ServerCertVerifier, WebPkiVerifier},
     Certificate, ClientConfig, OwnedTrustAnchor, RootCertStore,
 };
 
-use tokio::{
-    fs::File,
-    io::AsyncReadExt
-};
+use tokio::{fs::File, io::AsyncReadExt};
 
-use tokio_rustls::TlsConnector;
 use rustls_pemfile::certs;
+use tokio_rustls::TlsConnector;
 
-use crate::{
-    Result, SslOpts,
-    io::Endpoint,
-};
+use crate::{io::Endpoint, Result, SslOpts};
 
 impl Endpoint {
     pub async fn make_secure(&mut self, domain: String, ssl_opts: SslOpts) -> Result<()> {
@@ -91,7 +82,7 @@ impl Endpoint {
                 let connection = tls_connector.connect(server_name, stream).await?;
 
                 Endpoint::Secure(connection)
-            },
+            }
             Endpoint::Secure(_) => unreachable!(),
             #[cfg(unix)]
             Endpoint::Socket(_) => unreachable!(),
@@ -144,11 +135,11 @@ impl ServerCertVerifier for DangerousVerifier {
             ) {
                 Ok(assertion) => Ok(assertion),
                 Err(ref e)
-                if e.to_string().contains("CertNotValidForName")
-                    && self.skip_domain_validation =>
-                    {
-                        Ok(rustls::client::ServerCertVerified::assertion())
-                    }
+                    if e.to_string().contains("CertNotValidForName")
+                        && self.skip_domain_validation =>
+                {
+                    Ok(rustls::client::ServerCertVerified::assertion())
+                }
                 Err(e) => Err(e),
             }
         }

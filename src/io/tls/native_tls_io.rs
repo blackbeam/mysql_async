@@ -1,16 +1,11 @@
 #![cfg(feature = "native-tls")]
 
-use std::{
-    fs::File,
-    io::Read,
-};
+use std::{fs::File, io::Read};
 
 use native_tls::{Certificate, Identity, TlsConnector};
 
-use crate::{
-    Result, SslOpts,
-};
 use crate::io::Endpoint;
+use crate::{Result, SslOpts};
 
 impl Endpoint {
     pub async fn make_secure(&mut self, domain: String, ssl_opts: SslOpts) -> Result<()> {
