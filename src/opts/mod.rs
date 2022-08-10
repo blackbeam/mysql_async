@@ -6,6 +6,16 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+mod native_tls_opts;
+mod rustls_opts;
+
+#[cfg(feature = "native-tls")]
+pub use native_tls_opts::ClientIdentity;
+
+#[cfg(feature = "rustls-tls")]
+pub use rustls_opts::ClientIdentity;
+
+
 use percent_encoding::percent_decode;
 use url::{Host, Url};
 
@@ -115,23 +125,17 @@ impl HostPortOrUrl {
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub struct SslOpts {
-    pkcs12_path: Option<Cow<'static, Path>>,
-    password: Option<Cow<'static, str>>,
+    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+    client_identity: Option<ClientIdentity>,
     root_cert_path: Option<Cow<'static, Path>>,
     skip_domain_validation: bool,
     accept_invalid_certs: bool,
 }
 
 impl SslOpts {
-    /// Sets path to the pkcs12 archive (in `der` format).
-    pub fn with_pkcs12_path<T: Into<Cow<'static, Path>>>(mut self, pkcs12_path: Option<T>) -> Self {
-        self.pkcs12_path = pkcs12_path.map(Into::into);
-        self
-    }
-
-    /// Sets the password for a pkcs12 archive (defaults to `None`).
-    pub fn with_password<T: Into<Cow<'static, str>>>(mut self, password: Option<T>) -> Self {
-        self.password = password.map(Into::into);
+    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+    pub fn with_client_identity(mut self, identity: Option<ClientIdentity>) -> Self {
+        self.client_identity = identity;
         self
     }
 
@@ -160,12 +164,9 @@ impl SslOpts {
         self
     }
 
-    pub fn pkcs12_path(&self) -> Option<&Path> {
-        self.pkcs12_path.as_ref().map(|x| x.as_ref())
-    }
-
-    pub fn password(&self) -> Option<&str> {
-        self.password.as_ref().map(AsRef::as_ref)
+    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+    pub fn client_identity(&self) -> Option<&ClientIdentity> {
+        self.client_identity.as_ref()
     }
 
     pub fn root_cert_path(&self) -> Option<&Path> {
@@ -836,9 +837,9 @@ impl OptsBuilder {
     ///
     /// It'll panic if `Opts::try_from(opts)` returns error.
     pub fn from_opts<T>(opts: T) -> Self
-    where
-        Opts: TryFrom<T>,
-        <Opts as TryFrom<T>>::Error: std::error::Error,
+        where
+            Opts: TryFrom<T>,
+            <Opts as TryFrom<T>>::Error: std::error::Error,
     {
         let opts = Opts::try_from(opts).unwrap();
 
@@ -899,8 +900,8 @@ impl OptsBuilder {
 
     /// Defines _global_ LOCAL INFILE handler (see crate-level docs).
     pub fn local_infile_handler<T>(mut self, handler: Option<T>) -> Self
-    where
-        T: GlobalHandler,
+        where
+            T: GlobalHandler,
     {
         self.opts.local_infile_handler = handler.map(GlobalHandlerObject::new);
         self
@@ -920,8 +921,8 @@ impl OptsBuilder {
 
     /// Defines statement cache size. See [`Opts::stmt_cache_size`].
     pub fn stmt_cache_size<T>(mut self, cache_size: T) -> Self
-    where
-        T: Into<Option<usize>>,
+        where
+            T: Into<Option<usize>>,
     {
         self.opts.stmt_cache_size = cache_size.into().unwrap_or(DEFAULT_STMT_CACHE_SIZE);
         self
@@ -968,9 +969,9 @@ impl OptsBuilder {
     pub fn wait_timeout(mut self, wait_timeout: Option<usize>) -> Self {
         self.opts.wait_timeout = wait_timeout.map(|x| {
             #[cfg(windows)]
-            let val = std::cmp::min(2147483, x);
+                let val = std::cmp::min(2147483, x);
             #[cfg(not(windows))]
-            let val = std::cmp::min(31536000, x);
+                let val = std::cmp::min(31536000, x);
 
             val
         });

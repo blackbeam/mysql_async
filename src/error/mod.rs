@@ -8,6 +8,8 @@
 
 pub use url::ParseError;
 
+mod tls;
+
 use mysql_common::{
     named_params::MixedParamsError, params::MissingNamedParameterError,
     proto::codec::error::PacketCodecError, row::Row, value::Value,
@@ -55,7 +57,7 @@ pub enum IoError {
     Io(#[source] io::Error),
 
     #[error("TLS error: `{}'", _0)]
-    Tls(#[source] native_tls::Error),
+    Tls(#[source] tls::TlsError),
 }
 
 /// This type represents MySql server error.
@@ -129,9 +131,9 @@ pub enum DriverError {
     ReadOnlyTransNotSupported,
 
     #[error(
-        "Statement takes {} parameters but {} was supplied.",
-        required,
-        supplied
+    "Statement takes {} parameters but {} was supplied.",
+    required,
+    supplied
     )]
     StmtParamsMismatch { required: u16, supplied: u16 },
 
@@ -171,8 +173,8 @@ pub enum LocalInfileError {
 
 impl LocalInfileError {
     pub fn other<T>(err: T) -> Self
-    where
-        T: std::error::Error + Send + Sync + 'static,
+        where
+            T: std::error::Error + Send + Sync + 'static,
     {
         Self::OtherError(Box::new(err))
     }
@@ -220,9 +222,10 @@ impl From<UrlError> for Error {
     }
 }
 
+#[cfg(feature = "native-tls-tls")]
 impl From<native_tls::Error> for IoError {
     fn from(err: native_tls::Error) -> Self {
-        IoError::Tls(err)
+        IoError::Tls(tls::TlsError::TlsError(err))
     }
 }
 
