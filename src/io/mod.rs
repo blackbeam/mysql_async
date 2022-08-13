@@ -153,7 +153,7 @@ impl Future for CheckTcpStream<'_> {
 }
 
 impl Endpoint {
-    #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
+    #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls")), unix)]
     fn is_socket(&self) -> bool {
         match self {
             Self::Socket(_) => true,
