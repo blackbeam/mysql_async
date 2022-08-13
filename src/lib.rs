@@ -363,8 +363,9 @@ pub use self::queryable::transaction::IsolationLevel;
 
 #[doc(inline)]
 pub use self::opts::{
-    Opts, OptsBuilder, PoolConstraints, PoolOpts, SslOpts, DEFAULT_INACTIVE_CONNECTION_TTL,
-    DEFAULT_POOL_CONSTRAINTS, DEFAULT_STMT_CACHE_SIZE, DEFAULT_TTL_CHECK_INTERVAL,
+    ClientIdentity, Opts, OptsBuilder, PoolConstraints, PoolOpts, SslOpts,
+    DEFAULT_INACTIVE_CONNECTION_TTL, DEFAULT_POOL_CONSTRAINTS, DEFAULT_STMT_CACHE_SIZE,
+    DEFAULT_TTL_CHECK_INTERVAL,
 };
 
 #[doc(inline)]

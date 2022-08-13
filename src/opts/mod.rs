@@ -118,9 +118,21 @@ impl HostPortOrUrl {
 /// ```
 /// # use mysql_async::SslOpts;
 /// # use std::path::Path;
+/// # use mysql_async::ClientIdentity;
+/// // With native-tls
+/// # #[cfg(feature = "native-tls-tls")]
 /// let ssl_opts = SslOpts::default()
-///     .with_pkcs12_path(Some(Path::new("/path")))
-///     .with_password(Some("******"));
+///     .with_client_identity(Some(ClientIdentity::new(Path::new("/path"))
+///         .with_password("******")
+///     ));
+///
+/// // With rustls
+/// # #[cfg(feature = "rustls-tls")]
+/// let ssl_opts = SslOpts::default()
+///     .with_client_identity(Some(ClientIdentity::new(
+///         Path::new("/path/to/chain"),
+///         Path::new("/path/to/priv_key")
+/// )));
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub struct SslOpts {
