@@ -222,11 +222,19 @@ impl Pool {
     }
 
     /// Poll the pool for an available connection.
-    fn poll_new_conn(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<GetConn>> {
-        self.poll_new_conn_inner(cx)
+    fn poll_new_conn(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        queued: bool,
+    ) -> Poll<Result<GetConn>> {
+        self.poll_new_conn_inner(cx, queued)
     }
 
-    fn poll_new_conn_inner(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<GetConn>> {
+    fn poll_new_conn_inner(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        queued: bool,
+    ) -> Poll<Result<GetConn>> {
         let mut exchange = self.inner.exchange.lock().unwrap();
 
         // NOTE: this load must happen while we hold the lock,
@@ -237,6 +245,12 @@ impl Pool {
         }
 
         exchange.spawn_futures_if_needed(&self.inner);
+
+        // Check if others are waiting and we're not queued.
+        if !exchange.waiting.is_empty() && !queued {
+            exchange.waiting.push_back(cx.waker().clone());
+            return Poll::Pending;
+        }
 
         while let Some(IdlingConn { mut conn, .. }) = exchange.available.pop_back() {
             if !conn.expired() {
@@ -267,8 +281,8 @@ impl Pool {
             }));
         }
 
-        // no go -- we have to wait
-        exchange.waiting.push_back(cx.waker().clone());
+        // Polled, but no conn available? Back to the front of the queue.
+        exchange.waiting.push_front(cx.waker().clone());
         Poll::Pending
     }
 }

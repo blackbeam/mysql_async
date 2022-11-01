@@ -23,6 +23,7 @@ use crate::{
 /// States of the GetConn future.
 pub(crate) enum GetConnInner {
     New,
+    Queued,
     Done,
     // TODO: one day this should be an existential
     Connecting(crate::BoxFuture<'static, Conn>),
@@ -34,6 +35,7 @@ impl fmt::Debug for GetConnInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GetConnInner::New => f.debug_tuple("GetConnInner::New").finish(),
+            GetConnInner::Queued => f.debug_tuple("GetConnInner::Queued").finish(),
             GetConnInner::Done => f.debug_tuple("GetConnInner::Done").finish(),
             GetConnInner::Connecting(_) => f
                 .debug_tuple("GetConnInner::Connecting")
@@ -91,23 +93,51 @@ impl Future for GetConn {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
             match self.inner {
-                GetConnInner::New => match ready!(Pin::new(self.pool_mut()).poll_new_conn(cx))?
-                    .inner
-                    .take()
-                {
-                    GetConnInner::Connecting(conn_fut) => {
-                        self.inner = GetConnInner::Connecting(conn_fut);
+                GetConnInner::New => match Pin::new(self.pool_mut()).poll_new_conn(cx, false) {
+                    Poll::Pending => {
+                        self.inner = GetConnInner::Queued;
+                        return Poll::Pending;
                     }
-                    GetConnInner::Checking(conn_fut) => {
-                        self.inner = GetConnInner::Checking(conn_fut);
-                    }
-                    GetConnInner::Done => unreachable!(
-                        "Pool::poll_new_conn never gives out already-consumed GetConns"
-                    ),
-                    GetConnInner::New => {
-                        unreachable!("Pool::poll_new_conn never gives out GetConnInner::New")
-                    }
+                    Poll::Ready(res) => match res?.inner.take() {
+                        GetConnInner::Connecting(conn_fut) => {
+                            self.inner = GetConnInner::Connecting(conn_fut);
+                        }
+                        GetConnInner::Checking(conn_fut) => {
+                            self.inner = GetConnInner::Checking(conn_fut);
+                        }
+                        GetConnInner::Done => unreachable!(
+                            "Pool::poll_new_conn never gives out already-consumed GetConns"
+                        ),
+                        GetConnInner::New => {
+                            unreachable!("Pool::poll_new_conn never gives out GetConnInner::New")
+                        }
+                        GetConnInner::Queued => {
+                            unreachable!("Pool::poll_new_conn never gives out GetConnInner::Queued")
+                        }
+                    },
                 },
+                GetConnInner::Queued => {
+                    match ready!(Pin::new(self.pool_mut()).poll_new_conn(cx, true))?
+                        .inner
+                        .take()
+                    {
+                        GetConnInner::Connecting(conn_fut) => {
+                            self.inner = GetConnInner::Connecting(conn_fut);
+                        }
+                        GetConnInner::Checking(conn_fut) => {
+                            self.inner = GetConnInner::Checking(conn_fut);
+                        }
+                        GetConnInner::Done => unreachable!(
+                            "Pool::poll_new_conn never gives out already-consumed GetConns"
+                        ),
+                        GetConnInner::New => {
+                            unreachable!("Pool::poll_new_conn never gives out GetConnInner::New")
+                        }
+                        GetConnInner::Queued => {
+                            unreachable!("Pool::poll_new_conn never gives out GetConnInner::Queued")
+                        }
+                    }
+                }
                 GetConnInner::Done => {
                     unreachable!("GetConn::poll polled after returning Async::Ready");
                 }
