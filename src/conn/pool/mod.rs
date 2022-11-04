@@ -10,7 +10,8 @@ use futures_util::FutureExt;
 use tokio::sync::mpsc;
 
 use std::{
-    collections::VecDeque,
+    cmp::{Ordering, Reverse},
+    collections::{BinaryHeap, VecDeque},
     convert::TryFrom,
     pin::Pin,
     str::FromStr,
@@ -62,7 +63,7 @@ impl From<Conn> for IdlingConn {
 /// This is fine as long as we never do expensive work while holding the lock!
 #[derive(Debug)]
 struct Exchange {
-    waiting: VecDeque<Waker>,
+    waiting: BinaryHeap<QueuedWaker>,
     available: VecDeque<IdlingConn>,
     exist: usize,
     // only used to spawn the recycler the first time we're in async context
@@ -84,6 +85,51 @@ impl Exchange {
                 tokio::spawn(TtlCheckInterval::new(pool_opts, inner.clone()));
             }
         }
+    }
+}
+
+const QUEUE_END_ID: QueueId = QueueId(Reverse(u64::MAX));
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) struct QueueId(Reverse<u64>);
+
+impl QueueId {
+    fn next() -> Self {
+        static NEXT_QUEUE_ID: atomic::AtomicU64 = atomic::AtomicU64::new(0);
+        let id = NEXT_QUEUE_ID.fetch_add(1, atomic::Ordering::SeqCst);
+        QueueId(Reverse(id))
+    }
+}
+
+#[derive(Debug)]
+struct QueuedWaker {
+    queue_id: QueueId,
+    waker: Waker,
+}
+
+impl QueuedWaker {
+    fn new(queue_id: QueueId, waker: Waker) -> Self {
+        QueuedWaker { queue_id, waker }
+    }
+}
+
+impl Eq for QueuedWaker {}
+
+impl PartialEq for QueuedWaker {
+    fn eq(&self, other: &Self) -> bool {
+        self.queue_id == other.queue_id
+    }
+}
+
+impl Ord for QueuedWaker {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.queue_id.cmp(&other.queue_id)
+    }
+}
+
+impl PartialOrd for QueuedWaker {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -131,7 +177,7 @@ impl Pool {
                 closed: false.into(),
                 exchange: Mutex::new(Exchange {
                     available: VecDeque::with_capacity(pool_opts.constraints().max()),
-                    waiting: VecDeque::new(),
+                    waiting: BinaryHeap::new(),
                     exist: 0,
                     recycler: Some((rx, pool_opts)),
                 }),
@@ -181,8 +227,8 @@ impl Pool {
             let mut exchange = self.inner.exchange.lock().unwrap();
             if exchange.available.len() < self.opts.pool_opts().active_bound() {
                 exchange.available.push_back(conn.into());
-                if let Some(w) = exchange.waiting.pop_front() {
-                    w.wake();
+                if let Some(qw) = exchange.waiting.pop() {
+                    qw.waker.wake();
                 }
                 return;
             }
@@ -216,8 +262,8 @@ impl Pool {
         let mut exchange = self.inner.exchange.lock().unwrap();
         exchange.exist -= 1;
         // we just enabled the creation of a new connection!
-        if let Some(w) = exchange.waiting.pop_front() {
-            w.wake();
+        if let Some(qw) = exchange.waiting.pop() {
+            qw.waker.wake();
         }
     }
 
@@ -226,14 +272,16 @@ impl Pool {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         queued: bool,
+        queue_id: QueueId,
     ) -> Poll<Result<GetConn>> {
-        self.poll_new_conn_inner(cx, queued)
+        self.poll_new_conn_inner(cx, queued, queue_id)
     }
 
     fn poll_new_conn_inner(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         queued: bool,
+        queue_id: QueueId,
     ) -> Poll<Result<GetConn>> {
         let mut exchange = self.inner.exchange.lock().unwrap();
 
@@ -248,7 +296,9 @@ impl Pool {
 
         // Check if others are waiting and we're not queued.
         if !exchange.waiting.is_empty() && !queued {
-            exchange.waiting.push_back(cx.waker().clone());
+            exchange
+                .waiting
+                .push(QueuedWaker::new(queue_id, cx.waker().clone()));
             return Poll::Pending;
         }
 
@@ -281,8 +331,10 @@ impl Pool {
             }));
         }
 
-        // Polled, but no conn available? Back to the front of the queue.
-        exchange.waiting.push_front(cx.waker().clone());
+        // Polled, but no conn available? Back into the queue.
+        exchange
+            .waiting
+            .push(QueuedWaker::new(queue_id, cx.waker().clone()));
         Poll::Pending
     }
 }
