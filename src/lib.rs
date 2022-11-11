@@ -17,6 +17,70 @@
 //! mysql_async = "<desired version>"
 //! ```
 //!
+//! # Crate Features
+//!
+//! Default feature set is wide – it includes all default [`mysql_common` features][myslqcommonfeatures]
+//! as well as `native-tls`-based TLS support.
+//!
+//! ## List Of Features
+//!
+//! *   `minimal` – enables only necessary features (at the moment the only necessary feature
+//!     is `flate2` backend). Enables:
+//!
+//!     -   `flate2/zlib"
+//!
+//!     **Example:**
+//!
+//!     ```toml
+//!     [dependencies]
+//!     mysql_async = { version = "*", default-features = false, features = ["minimal"]}
+//!     ```
+//!
+//!     **Note:* it is possible to use another `flate2` backend by directly choosing it:
+//!
+//!     ```toml
+//!     [dependencies]
+//!     mysql_async = { version = "*", default-features = false }
+//!     flate2 = { version = "*", default-features = false, features = ["rust_backend"] }
+//!     ```
+//!
+//! *   `default` – enables the following set of crate's and dependencies' features:
+//!
+//!     -   `native-tls-tls`
+//!     -   `flate2/zlib"
+//!     -   `mysql_common/bigdecimal03`
+//!     -   `mysql_common/rust_decimal`
+//!     -   `mysql_common/time03`
+//!     -   `mysql_common/uuid`
+//!     -   `mysql_common/frunk`
+//!
+//! *   `default-rustls` – same as default but with `rustls-tls` instead of `native-tls-tls`.
+//!
+//!     **Example:**
+//!
+//!     ```toml
+//!     [dependencies]
+//!     mysql_async = { version = "*", default-features = false, features = ["default-rustls"] }
+//!     ```
+//!
+//! *   `native-tls-tls` – enables `native-tls`-based TLS support _(conflicts with `rustls-tls`)_
+//!
+//!     **Example:**
+//!
+//!     ```toml
+//!     [dependencies]
+//!     mysql_async = { version = "*", default-features = false, features = ["native-tls-tls"] }
+//!
+//! *   `rustls-tls` – enables `native-tls`-based TLS support _(conflicts with `native-tls-tls`)_
+//!
+//!     **Example:**
+//!
+//!     ```toml
+//!     [dependencies]
+//!     mysql_async = { version = "*", default-features = false, features = ["rustls-tls"] }
+//!
+//! [myslqcommonfeatures]: https://github.com/blackbeam/rust_mysql_common#crate-features
+//!
 //! # Example
 //!
 //! ```rust
