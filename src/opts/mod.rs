@@ -118,6 +118,7 @@ impl HostPortOrUrl {
 /// ```
 /// # use mysql_async::SslOpts;
 /// # use std::path::Path;
+/// # #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
 /// # use mysql_async::ClientIdentity;
 /// // With native-tls
 /// # #[cfg(feature = "native-tls-tls")]

@@ -497,6 +497,9 @@ mod test {
         let endpoint = stream.codec.as_mut().unwrap().get_ref();
         let stream = match endpoint {
             super::Endpoint::Plain(Some(stream)) => stream,
+            #[cfg(feature = "rustls-tls")]
+            super::Endpoint::Secure(tls_stream) => tls_stream.get_ref().0,
+            #[cfg(feature = "native-tls")]
             super::Endpoint::Secure(tls_stream) => tls_stream.get_ref().get_ref().get_ref(),
             _ => unreachable!(),
         };

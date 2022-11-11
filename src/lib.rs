@@ -426,10 +426,13 @@ pub use self::query::QueryWithParams;
 pub use self::queryable::transaction::IsolationLevel;
 
 #[doc(inline)]
+#[cfg(any(feature = "rustls", feature = "native-tls"))]
+pub use self::opts::ClientIdentity;
+
+#[doc(inline)]
 pub use self::opts::{
-    ClientIdentity, Opts, OptsBuilder, PoolConstraints, PoolOpts, SslOpts,
-    DEFAULT_INACTIVE_CONNECTION_TTL, DEFAULT_POOL_CONSTRAINTS, DEFAULT_STMT_CACHE_SIZE,
-    DEFAULT_TTL_CHECK_INTERVAL,
+    Opts, OptsBuilder, PoolConstraints, PoolOpts, SslOpts, DEFAULT_INACTIVE_CONNECTION_TTL,
+    DEFAULT_POOL_CONSTRAINTS, DEFAULT_STMT_CACHE_SIZE, DEFAULT_TTL_CHECK_INTERVAL,
 };
 
 #[doc(inline)]
@@ -574,7 +577,7 @@ pub mod test_misc {
                 }
                 url
             } else {
-                "mysql://root:password@127.0.0.1:3307/mysql".into()
+                "mysql://root:password@localhost:3307/mysql".into()
             }
         };
     }
@@ -585,6 +588,16 @@ pub mod test_misc {
             let ssl_opts = SslOpts::default()
                 .with_danger_skip_domain_validation(true)
                 .with_danger_accept_invalid_certs(true);
+            #[cfg(feature = "rustls")]
+            let ssl_opts = ssl_opts.with_client_identity(Some(crate::ClientIdentity::new(
+                std::path::Path::new("test/client.crt"),
+                std::path::Path::new("test/key.pem"),
+            )));
+            #[cfg(feature = "native-tls")]
+            let ssl_opts = ssl_opts.with_client_identity(Some(
+                crate::ClientIdentity::new(std::path::Path::new("test/client.p12"))
+                    .with_password("pass"),
+            ));
             builder = builder.prefer_socket(false).ssl_opts(ssl_opts);
         }
         if test_compression() {

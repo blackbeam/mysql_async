@@ -60,20 +60,28 @@ impl ClientIdentity {
         let key_data = std::fs::read(self.priv_key_path.as_ref())?;
 
         let mut cert_chain = Vec::new();
-        for cert in certs(&mut &*cert_data)? {
-            cert_chain.push(Certificate(cert));
-        }
-        if cert_chain.is_empty() && !cert_data.is_empty() {
+        if std::str::from_utf8(&cert_data).is_err() {
             cert_chain.push(Certificate(cert_data));
+        } else {
+            for cert in certs(&mut &*cert_data)? {
+                cert_chain.push(Certificate(cert));
+            }
         }
 
-        let mut priv_key = None;
-        for key in rsa_private_keys(&mut &*key_data)?.into_iter().take(1) {
-            priv_key = Some(PrivateKey(key));
+        let priv_key;
+        if std::str::from_utf8(&key_data).is_err() {
+            priv_key = Some(PrivateKey(key_data));
+        } else {
+            priv_key = rsa_private_keys(&mut &*key_data)?
+                .into_iter()
+                .take(1)
+                .map(PrivateKey)
+                .next();
         }
 
-        let priv_key = priv_key.unwrap_or_else(|| PrivateKey(key_data));
-
-        Ok((cert_chain, priv_key))
+        Ok((
+            cert_chain,
+            priv_key.ok_or_else(|| crate::Error::from(crate::DriverError::NoKeyFound))?,
+        ))
     }
 }

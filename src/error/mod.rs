@@ -157,6 +157,9 @@ pub enum DriverError {
 
     #[error("LOCAL INFILE error: {}", _0)]
     LocalInfile(#[from] LocalInfileError),
+
+    #[error("No private key found in the file specified")]
+    NoKeyFound,
 }
 
 #[derive(Debug, Error)]
