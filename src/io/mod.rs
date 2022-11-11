@@ -177,9 +177,7 @@ impl Endpoint {
             #[cfg(feature = "rustls-tls")]
             Endpoint::Secure(tls_stream) => {
                 let stream = tls_stream.get_mut().0;
-                // TODO does this make sense?
-                stream.writable().await?;
-                stream.readable().await?;
+                CheckTcpStream(stream).await?;
                 Ok(())
             }
             #[cfg(unix)]
