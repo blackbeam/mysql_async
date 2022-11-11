@@ -64,6 +64,7 @@ optional = true
 [dependencies.webpki-roots]
 version = "0.22.1"
 optional = true
+
 [dev-dependencies]
 tempfile = "3.1.0"
 socket2 = { version = "0.4.0", features = ["all"] }
@@ -78,21 +79,25 @@ default = [
     "mysql_common/time03",
     "mysql_common/uuid",
     "mysql_common/frunk",
-    "native-tls-tls"
+    "native-tls-tls",
 ]
-flate2-zlib = [
-    "flate2/zlib"
+default-rustls = [
+    "flate2/zlib",
+    "mysql_common/bigdecimal03",
+    "mysql_common/rust_decimal",
+    "mysql_common/time03",
+    "mysql_common/uuid",
+    "mysql_common/frunk",
+    "rustls-tls",
 ]
-native-tls-tls = [
-    "native-tls",
-    "tokio-native-tls"
-]
+minimal = ["flate2/zlib"]
+native-tls-tls = ["native-tls", "tokio-native-tls"]
 rustls-tls = [
     "rustls",
     "tokio-rustls",
     "webpki",
     "webpki-roots",
-    "rustls-pemfile"
+    "rustls-pemfile",
 ]
 nightly = []
 
