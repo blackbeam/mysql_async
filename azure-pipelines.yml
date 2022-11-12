@@ -44,6 +44,7 @@ jobs:
           SSL=true COMPRESS=false cargo test
           SSL=false COMPRESS=true cargo test
           SSL=true COMPRESS=true cargo test
+          SSL=true COMPRESS=false cargo test --no-default-features --features default-rustls
         env:
           RUST_BACKTRACE: 1
           DATABASE_URL: mysql://root:root@127.0.0.1:3306/mysql
@@ -93,9 +94,9 @@ jobs:
       maxParallel: 10
       matrix:
         v80:
-          DB_VERSION: "8.0"
+          DB_VERSION: "8-debian"
         v57:
-          DB_VERSION: "5.7"
+          DB_VERSION: "5-debian"
         v56:
           DB_VERSION: "5.6"
     steps:
@@ -116,7 +117,7 @@ jobs:
         condition: eq(variables['DB_VERSION'], '5.6')
       - bash: |
           docker exec container bash -l -c "apt-get update"
-          docker exec container bash -l -c "apt-get install -y curl clang libssl-dev pkg-config"
+          docker exec container bash -l -c "apt-get install -y curl clang libssl-dev pkg-config build-essential"
           docker exec container bash -l -c "curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable"
         displayName: Install Rust in docker
       - bash: |
@@ -125,6 +126,7 @@ jobs:
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL COMPRESS=true cargo test"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=$SSL cargo test"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=$SSL COMPRESS=true cargo test"
+          docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=$SSL COMPRESS=true cargo test --no-default-features --features default-rustls"
         env:
           RUST_BACKTRACE: 1
           DATABASE_URL: mysql://root:password@127.0.0.1/mysql
@@ -161,7 +163,7 @@ jobs:
       - bash: |
           git clone https://github.com/blackbeam/rust-mysql-simple.git
           cd rust-mysql-simple
-          git checkout 8d745ee
+          git checkout 901a7de
         displayName: Clone rust-mysql-simple (for ssl certs)
       - bash: |
           docker run --rm -d \
@@ -176,8 +178,8 @@ jobs:
                   --performance-schema=on \
                   --log-bin=mysql-bin --gtid-domain-id=1 --server-id=1 \
                   --ssl \
-                  --ssl-ca=/root/rust-mysql-simple/tests/ca-cert.pem \
-                  --ssl-cert=/root/rust-mysql-simple/tests/server-cert.pem \
+                  --ssl-ca=/root/rust-mysql-simple/tests/ca.crt \
+                  --ssl-cert=/root/rust-mysql-simple/tests/server.crt \
                   --ssl-key=/root/rust-mysql-simple/tests/server-key.pem &
           while ! nc -W 1 localhost 3307 | grep -q -P '.+'; do sleep 1; done
         displayName: Run MariaDb in Docker
@@ -191,6 +193,7 @@ jobs:
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL COMPRESS=true cargo test"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true cargo test"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true COMPRESS=true cargo test"
+          if [[ "10.1" != "$(DB_VERSION)" ]]; then docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true cargo test --no-default-features --features default-rustls"; fi
         env:
           RUST_BACKTRACE: 1
           DATABASE_URL: mysql://root:password@127.0.0.1/mysql

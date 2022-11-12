@@ -6,6 +6,15 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+mod native_tls_opts;
+mod rustls_opts;
+
+#[cfg(feature = "native-tls")]
+pub use native_tls_opts::ClientIdentity;
+
+#[cfg(feature = "rustls-tls")]
+pub use rustls_opts::ClientIdentity;
+
 use percent_encoding::percent_decode;
 use url::{Host, Url};
 
@@ -109,29 +118,36 @@ impl HostPortOrUrl {
 /// ```
 /// # use mysql_async::SslOpts;
 /// # use std::path::Path;
+/// # #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
+/// # use mysql_async::ClientIdentity;
+/// // With native-tls
+/// # #[cfg(feature = "native-tls-tls")]
 /// let ssl_opts = SslOpts::default()
-///     .with_pkcs12_path(Some(Path::new("/path")))
-///     .with_password(Some("******"));
+///     .with_client_identity(Some(ClientIdentity::new(Path::new("/path"))
+///         .with_password("******")
+///     ));
+///
+/// // With rustls
+/// # #[cfg(feature = "rustls-tls")]
+/// let ssl_opts = SslOpts::default()
+///     .with_client_identity(Some(ClientIdentity::new(
+///         Path::new("/path/to/chain"),
+///         Path::new("/path/to/priv_key")
+/// )));
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub struct SslOpts {
-    pkcs12_path: Option<Cow<'static, Path>>,
-    password: Option<Cow<'static, str>>,
+    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+    client_identity: Option<ClientIdentity>,
     root_cert_path: Option<Cow<'static, Path>>,
     skip_domain_validation: bool,
     accept_invalid_certs: bool,
 }
 
 impl SslOpts {
-    /// Sets path to the pkcs12 archive (in `der` format).
-    pub fn with_pkcs12_path<T: Into<Cow<'static, Path>>>(mut self, pkcs12_path: Option<T>) -> Self {
-        self.pkcs12_path = pkcs12_path.map(Into::into);
-        self
-    }
-
-    /// Sets the password for a pkcs12 archive (defaults to `None`).
-    pub fn with_password<T: Into<Cow<'static, str>>>(mut self, password: Option<T>) -> Self {
-        self.password = password.map(Into::into);
+    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+    pub fn with_client_identity(mut self, identity: Option<ClientIdentity>) -> Self {
+        self.client_identity = identity;
         self
     }
 
@@ -160,12 +176,9 @@ impl SslOpts {
         self
     }
 
-    pub fn pkcs12_path(&self) -> Option<&Path> {
-        self.pkcs12_path.as_ref().map(|x| x.as_ref())
-    }
-
-    pub fn password(&self) -> Option<&str> {
-        self.password.as_ref().map(AsRef::as_ref)
+    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+    pub fn client_identity(&self) -> Option<&ClientIdentity> {
+        self.client_identity.as_ref()
     }
 
     pub fn root_cert_path(&self) -> Option<&Path> {

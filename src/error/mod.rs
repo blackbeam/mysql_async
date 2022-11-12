@@ -8,6 +8,8 @@
 
 pub use url::ParseError;
 
+mod tls;
+
 use mysql_common::{
     named_params::MixedParamsError, params::MissingNamedParameterError,
     proto::codec::error::PacketCodecError, row::Row, value::Value,
@@ -53,9 +55,9 @@ impl Error {
 pub enum IoError {
     #[error("Input/output error: {}", _0)]
     Io(#[source] io::Error),
-
+    #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     #[error("TLS error: `{}'", _0)]
-    Tls(#[source] native_tls::Error),
+    Tls(#[source] tls::TlsError),
 }
 
 /// This type represents MySql server error.
@@ -155,6 +157,12 @@ pub enum DriverError {
 
     #[error("LOCAL INFILE error: {}", _0)]
     LocalInfile(#[from] LocalInfileError),
+
+    #[error("No private key found in the file specified")]
+    NoKeyFound,
+
+    #[error("Client asked for SSL but server does not have this capability")]
+    NoClientSslFlagFromServer,
 }
 
 #[derive(Debug, Error)]
@@ -220,9 +228,10 @@ impl From<UrlError> for Error {
     }
 }
 
+#[cfg(feature = "native-tls-tls")]
 impl From<native_tls::Error> for IoError {
     fn from(err: native_tls::Error) -> Self {
-        IoError::Tls(err)
+        IoError::Tls(tls::TlsError::TlsError(err))
     }
 }
 

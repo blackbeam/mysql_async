@@ -10,7 +10,7 @@ use futures_util::FutureExt;
 pub use mysql_common::named_params;
 
 use mysql_common::{
-    constants::{DEFAULT_MAX_ALLOWED_PACKET, UTF8_GENERAL_CI},
+    constants::{DEFAULT_MAX_ALLOWED_PACKET, UTF8MB4_GENERAL_CI, UTF8_GENERAL_CI},
     crypto,
     io::ParseBuf,
     packets::{
@@ -415,11 +415,15 @@ impl Conn {
 
     /// Returns true if io stream is encrypted.
     fn is_secure(&self) -> bool {
+        #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
         if let Some(ref stream) = self.inner.stream {
             stream.is_secure()
         } else {
             false
         }
+
+        #[cfg(not(any(feature = "native-tls-tls", feature = "rustls-tls")))]
+        false
     }
 
     /// Hacky way to move connection through &mut. `self` becomes unusable.
@@ -490,10 +494,24 @@ impl Conn {
             .get_capabilities()
             .contains(CapabilityFlags::CLIENT_SSL)
         {
+            if !self
+                .inner
+                .capabilities
+                .contains(CapabilityFlags::CLIENT_SSL)
+            {
+                return Err(DriverError::NoClientSslFlagFromServer.into());
+            }
+
+            let collation = if self.inner.version >= (5, 5, 3) {
+                UTF8MB4_GENERAL_CI
+            } else {
+                UTF8_GENERAL_CI
+            };
+
             let ssl_request = SslRequest::new(
                 self.inner.capabilities,
                 DEFAULT_MAX_ALLOWED_PACKET as u32,
-                UTF8_GENERAL_CI as u8,
+                collation as u8,
             );
             self.write_struct(&ssl_request).await?;
             let conn = self;
