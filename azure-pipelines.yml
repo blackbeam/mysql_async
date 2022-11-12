@@ -82,7 +82,6 @@ jobs:
           SSL=true COMPRESS=false cargo test
           SSL=false COMPRESS=true cargo test
           SSL=true COMPRESS=true cargo test
-          SSL=true COMPRESS=true cargo test --no-default-features --features default-rustls
         env:
           RUST_BACKTRACE: 1
           DATABASE_URL: mysql://root:password@127.0.0.1/mysql
