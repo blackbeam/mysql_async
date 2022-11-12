@@ -16,6 +16,7 @@ use crate::{io::Endpoint, Result, SslOpts};
 
 impl Endpoint {
     pub async fn make_secure(&mut self, domain: String, ssl_opts: SslOpts) -> Result<()> {
+        #[cfg(unix)]
         if self.is_socket() {
             // won't secure socket connection
             return Ok(());
