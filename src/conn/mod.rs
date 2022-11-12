@@ -494,11 +494,20 @@ impl Conn {
             .get_capabilities()
             .contains(CapabilityFlags::CLIENT_SSL)
         {
+            if !self
+                .inner
+                .capabilities
+                .contains(CapabilityFlags::CLIENT_SSL)
+            {
+                return Err(DriverError::NoClientSslFlagFromServer.into());
+            }
+
             let collation = if self.inner.version >= (5, 5, 3) {
                 UTF8MB4_GENERAL_CI
             } else {
                 UTF8_GENERAL_CI
             };
+
             let ssl_request = SslRequest::new(
                 self.inner.capabilities,
                 DEFAULT_MAX_ALLOWED_PACKET as u32,

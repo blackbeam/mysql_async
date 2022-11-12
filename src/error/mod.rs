@@ -160,6 +160,9 @@ pub enum DriverError {
 
     #[error("No private key found in the file specified")]
     NoKeyFound,
+
+    #[error("Client asked for SSL but server does not have this capability")]
+    NoClientSslFlagFromServer,
 }
 
 #[derive(Debug, Error)]
