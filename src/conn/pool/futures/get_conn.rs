@@ -26,7 +26,6 @@ use crate::{
 /// States of the GetConn future.
 pub(crate) enum GetConnInner {
     New,
-    Queued(QueueId),
     Done,
     // TODO: one day this should be an existential
     Connecting(crate::BoxFuture<'static, Conn>),
@@ -38,10 +37,6 @@ impl fmt::Debug for GetConnInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GetConnInner::New => f.debug_tuple("GetConnInner::New").finish(),
-            GetConnInner::Queued(queue_id) => f
-                .debug_tuple("GetConnInner::Queued")
-                .field(queue_id)
-                .finish(),
             GetConnInner::Done => f.debug_tuple("GetConnInner::Done").finish(),
             GetConnInner::Connecting(_) => f
                 .debug_tuple("GetConnInner::Connecting")
@@ -66,6 +61,7 @@ impl GetConnInner {
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct GetConn {
+    pub(crate) queue_id: Option<QueueId>,
     pub(crate) pool: Option<Pool>,
     pub(crate) inner: GetConnInner,
 }
@@ -73,6 +69,7 @@ pub struct GetConn {
 impl GetConn {
     pub(crate) fn new(pool: &Pool) -> GetConn {
         GetConn {
+            queue_id: None,
             pool: Some(pool.clone()),
             inner: GetConnInner::New,
         }
@@ -100,40 +97,11 @@ impl Future for GetConn {
         loop {
             match self.inner {
                 GetConnInner::New => {
-                    let queue_id = QueueId::next();
-                    match Pin::new(self.pool_mut()).poll_new_conn(cx, false, queue_id) {
-                        Poll::Pending => {
-                            self.inner = GetConnInner::Queued(queue_id);
-                            return Poll::Pending;
-                        }
-                        Poll::Ready(res) => match res?.inner.take() {
-                            GetConnInner::Connecting(conn_fut) => {
-                                self.inner = GetConnInner::Connecting(conn_fut);
-                            }
-                            GetConnInner::Checking(conn_fut) => {
-                                self.inner = GetConnInner::Checking(conn_fut);
-                            }
-                            GetConnInner::Done => unreachable!(
-                                "Pool::poll_new_conn never gives out already-consumed GetConns"
-                            ),
-                            GetConnInner::New => {
-                                unreachable!(
-                                    "Pool::poll_new_conn never gives out GetConnInner::New"
-                                )
-                            }
-                            GetConnInner::Queued(_) => {
-                                unreachable!(
-                                    "Pool::poll_new_conn never gives out GetConnInner::Queued"
-                                )
-                            }
-                        },
-                    }
-                }
-                GetConnInner::Queued(queue_id) => {
-                    match ready!(Pin::new(self.pool_mut()).poll_new_conn(cx, true, queue_id))?
-                        .inner
-                        .take()
-                    {
+                    let queued = self.queue_id.is_some();
+                    let queue_id = *self.queue_id.get_or_insert_with(|| QueueId::next());
+                    let next =
+                        ready!(Pin::new(self.pool_mut()).poll_new_conn(cx, queued, queue_id))?;
+                    match next {
                         GetConnInner::Connecting(conn_fut) => {
                             self.inner = GetConnInner::Connecting(conn_fut);
                         }
@@ -145,9 +113,6 @@ impl Future for GetConn {
                         ),
                         GetConnInner::New => {
                             unreachable!("Pool::poll_new_conn never gives out GetConnInner::New")
-                        }
-                        GetConnInner::Queued(_) => {
-                            unreachable!("Pool::poll_new_conn never gives out GetConnInner::Queued")
                         }
                     }
                 }

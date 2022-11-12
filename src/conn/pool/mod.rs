@@ -273,7 +273,7 @@ impl Pool {
         cx: &mut Context<'_>,
         queued: bool,
         queue_id: QueueId,
-    ) -> Poll<Result<GetConn>> {
+    ) -> Poll<Result<GetConnInner>> {
         self.poll_new_conn_inner(cx, queued, queue_id)
     }
 
@@ -282,7 +282,7 @@ impl Pool {
         cx: &mut Context<'_>,
         queued: bool,
         queue_id: QueueId,
-    ) -> Poll<Result<GetConn>> {
+    ) -> Poll<Result<GetConnInner>> {
         let mut exchange = self.inner.exchange.lock().unwrap();
 
         // NOTE: this load must happen while we hold the lock,
@@ -304,16 +304,13 @@ impl Pool {
 
         while let Some(IdlingConn { mut conn, .. }) = exchange.available.pop_back() {
             if !conn.expired() {
-                return Poll::Ready(Ok(GetConn {
-                    pool: Some(self.clone()),
-                    inner: GetConnInner::Checking(
-                        async move {
-                            conn.stream_mut()?.check().await?;
-                            Ok(conn)
-                        }
-                        .boxed(),
-                    ),
-                }));
+                return Poll::Ready(Ok(GetConnInner::Checking(
+                    async move {
+                        conn.stream_mut()?.check().await?;
+                        Ok(conn)
+                    }
+                    .boxed(),
+                )));
             } else {
                 self.send_to_recycler(conn);
             }
@@ -325,10 +322,9 @@ impl Pool {
             // we are allowed to make a new connection, so we will!
             exchange.exist += 1;
 
-            return Poll::Ready(Ok(GetConn {
-                pool: Some(self.clone()),
-                inner: GetConnInner::Connecting(Conn::new(self.opts.clone()).boxed()),
-            }));
+            return Poll::Ready(Ok(GetConnInner::Connecting(
+                Conn::new(self.opts.clone()).boxed(),
+            )));
         }
 
         // Polled, but no conn available? Back into the queue.
