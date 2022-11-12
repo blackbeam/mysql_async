@@ -588,16 +588,6 @@ pub mod test_misc {
             let ssl_opts = SslOpts::default()
                 .with_danger_skip_domain_validation(true)
                 .with_danger_accept_invalid_certs(true);
-            #[cfg(feature = "rustls")]
-            let ssl_opts = ssl_opts.with_client_identity(Some(crate::ClientIdentity::new(
-                std::path::Path::new("test/client.crt"),
-                std::path::Path::new("test/key.pem"),
-            )));
-            #[cfg(feature = "native-tls")]
-            let ssl_opts = ssl_opts.with_client_identity(Some(
-                crate::ClientIdentity::new(std::path::Path::new("test/client.p12"))
-                    .with_password("pass"),
-            ));
             builder = builder.prefer_socket(false).ssl_opts(ssl_opts);
         }
         if test_compression() {
