@@ -16,7 +16,7 @@ use futures_core::ready;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    conn::pool::{Inner, Pool, QueuedWaker, QUEUE_END_ID},
+    conn::pool::{Inner, Pool, QUEUE_END_ID},
     error::Error,
     Conn,
 };
@@ -50,9 +50,7 @@ impl Future for DisconnectPool {
         self.pool_inner.close.store(true, atomic::Ordering::Release);
         let mut exchange = self.pool_inner.exchange.lock().unwrap();
         exchange.spawn_futures_if_needed(&self.pool_inner);
-        exchange
-            .waiting
-            .push(QueuedWaker::new(QUEUE_END_ID, cx.waker().clone()));
+        exchange.waiting.push(cx.waker().clone(), QUEUE_END_ID);
         drop(exchange);
 
         if self.pool_inner.closed.load(atomic::Ordering::Acquire) {
