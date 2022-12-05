@@ -166,6 +166,11 @@ impl Drop for GetConn {
         // We drop a connection before it can be resolved, a.k.a. cancelling it.
         // Make sure we maintain the necessary invariants towards the pool.
         if let Some(pool) = self.pool.take() {
+            // Remove the waker from the pool's waitlist in case this task was
+            // woken by another waker, like from tokio::time::timeout.
+            if let Some(queue_id) = self.queue_id {
+                pool.unqueue(queue_id);
+            }
             if let GetConnInner::Connecting(..) = self.inner.take() {
                 pool.cancel_connection();
             }
