@@ -1059,7 +1059,7 @@ impl Conn {
 mod test {
     use bytes::Bytes;
     use futures_util::stream::{self, StreamExt};
-    use mysql_common::binlog::events::EventData;
+    use mysql_common::{binlog::events::EventData, constants::MAX_PAYLOAD_LEN};
     use tokio::time::timeout;
 
     use std::time::Duration;
@@ -1448,15 +1448,15 @@ mod test {
 
     #[tokio::test]
     async fn should_perform_queries() -> super::Result<()> {
-        let long_string = ::std::iter::repeat('A')
-            .take(18 * 1024 * 1024)
-            .collect::<String>();
         let mut conn = Conn::new(get_opts()).await?;
-        let result: Vec<(String, u8)> = conn
-            .query(format!(r"SELECT '{}', 231", long_string))
-            .await?;
+        for x in (MAX_PAYLOAD_LEN - 2)..=(MAX_PAYLOAD_LEN + 2) {
+            let long_string = ::std::iter::repeat('A').take(x).collect::<String>();
+            let result: Vec<(String, u8)> = conn
+                .query(format!(r"SELECT '{}', 231", long_string))
+                .await?;
+            assert_eq!((long_string, 231_u8), result[0]);
+        }
         conn.disconnect().await?;
-        assert_eq!((long_string, 231_u8), result[0]);
         Ok(())
     }
 

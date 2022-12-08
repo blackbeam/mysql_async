@@ -8,8 +8,8 @@
 
 use futures_util::FutureExt;
 use mysql_common::{
+    constants::MAX_PAYLOAD_LEN,
     io::ParseBuf,
-    packets::{OkPacketDeserializer, ResultSetTerminator},
     proto::{Binary, Text},
     row::RowDeserializer,
     value::ServerSide,
@@ -42,10 +42,11 @@ pub trait Protocol: fmt::Debug + Send + Sync + 'static {
     fn result_set_meta(columns: Arc<[Column]>) -> ResultSetMeta;
     fn read_result_set_row(packet: &[u8], columns: Arc<[Column]>) -> Result<Row>;
     fn is_last_result_set_packet(capabilities: CapabilityFlags, packet: &[u8]) -> bool {
-        packet.len() < 8
-            && ParseBuf(packet)
-                .parse::<OkPacketDeserializer<ResultSetTerminator>>(capabilities)
-                .is_ok()
+        if capabilities.contains(CapabilityFlags::CLIENT_DEPRECATE_EOF) {
+            packet[0] == 0xFE && packet.len() < MAX_PAYLOAD_LEN
+        } else {
+            packet[0] == 0xFE && packet.len() < 8
+        }
     }
 }
 
