@@ -16,7 +16,7 @@ use mysql_common::{
     packets::{
         binlog_request::BinlogRequest, AuthPlugin, AuthSwitchRequest, CommonOkPacket, ErrPacket,
         HandshakePacket, HandshakeResponse, OkPacket, OkPacketDeserializer, OldAuthSwitchRequest,
-        ResultSetTerminator, SslRequest,
+        OldEofPacket, ResultSetTerminator, SslRequest,
     },
     proto::MySerialize,
 };
@@ -697,9 +697,18 @@ impl Conn {
     /// Returns `true` for ProgressReport packet.
     fn handle_packet(&mut self, packet: &PooledBuf) -> Result<bool> {
         let ok_packet = if self.has_pending_result() {
-            ParseBuf(&*packet)
-                .parse::<OkPacketDeserializer<ResultSetTerminator>>(self.capabilities())
-                .map(|x| x.into_inner())
+            if self
+                .capabilities()
+                .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
+            {
+                ParseBuf(&*packet)
+                    .parse::<OkPacketDeserializer<ResultSetTerminator>>(self.capabilities())
+                    .map(|x| x.into_inner())
+            } else {
+                ParseBuf(&*packet)
+                    .parse::<OkPacketDeserializer<OldEofPacket>>(self.capabilities())
+                    .map(|x| x.into_inner())
+            }
         } else {
             ParseBuf(&*packet)
                 .parse::<OkPacketDeserializer<CommonOkPacket>>(self.capabilities())
