@@ -14,6 +14,11 @@ use std::{
 };
 
 use futures_core::ready;
+#[cfg(feature = "tracing")]
+use {
+    std::sync::Arc,
+    tracing::{debug_span, Span},
+};
 
 use crate::{
     conn::{
@@ -64,6 +69,8 @@ pub struct GetConn {
     pub(crate) queue_id: Option<QueueId>,
     pub(crate) pool: Option<Pool>,
     pub(crate) inner: GetConnInner,
+    #[cfg(feature = "tracing")]
+    span: Arc<Span>,
 }
 
 impl GetConn {
@@ -72,6 +79,8 @@ impl GetConn {
             queue_id: None,
             pool: Some(pool.clone()),
             inner: GetConnInner::New,
+            #[cfg(feature = "tracing")]
+            span: Arc::new(debug_span!("mysql_async::get_conn")),
         }
     }
 
@@ -94,6 +103,10 @@ impl Future for GetConn {
     type Output = Result<Conn>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        #[cfg(feature = "tracing")]
+        let span = self.span.clone();
+        #[cfg(feature = "tracing")]
+        let _span_guard = span.enter();
         loop {
             match self.inner {
                 GetConnInner::New => {
