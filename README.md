@@ -80,6 +80,19 @@ as well as `native-tls`-based TLS support.
     [dependencies]
     mysql_async = { version = "*", default-features = false, features = ["rustls-tls"] }
 
+*   `tracing` – enables instrumentation via `tracing` package.
+    Primary operations (`query`, `prepare`, `exec`) are instrumented at `INFO` level.
+    Remaining operations, incl. `get_conn`, are instrumented at `DEBUG` level.
+    Also at `DEBUG`, the SQL queries and parameters are added to the `query`, `prepare`
+    and `exec` spans.
+
+    **Example:**
+
+    ```toml
+    [dependencies]
+    mysql_async = { version = "*", features = ["tracing"] }
+    ```
+
 [myslqcommonfeatures]: https://github.com/blackbeam/rust_mysql_common#crate-features
 
 ## TLS/SSL Support

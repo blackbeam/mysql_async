@@ -34,6 +34,7 @@ socket2 = "0.4.2"
 thiserror = "1.0.4"
 tokio = { version = "1.0", features = ["io-util", "fs", "net", "time", "rt"] }
 tokio-util = { version = "0.7.2", features = ["codec", "io"] }
+tracing = { version = "0.1.37", default-features = false, features = ["attributes"], optional = true }
 twox-hash = "1"
 url = "2.1"
 
@@ -100,6 +101,7 @@ rustls-tls = [
     "webpki-roots",
     "rustls-pemfile",
 ]
+tracing = ["dep:tracing"]
 nightly = []
 
 [lib]

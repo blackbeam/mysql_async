@@ -2,6 +2,8 @@ use std::marker::PhantomData;
 
 use futures_core::future::BoxFuture;
 use futures_util::FutureExt;
+#[cfg(feature = "tracing")]
+use tracing::{debug_span, Instrument};
 
 use crate::{queryable::Protocol, Conn};
 
@@ -22,11 +24,20 @@ where
     P: Protocol,
 {
     fn call<'a>(&'a mut self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<()>> {
+        #[cfg(feature = "tracing")]
+        let span = debug_span!(
+            "mysql_async::next_set",
+            mysql_async.connection.id = conn.id()
+        );
         conn.sync_seq_id();
-        async move {
+        let fut = async move {
             conn.read_result_set::<P>(false).await?;
             Ok(())
-        }
-        .boxed()
+        };
+
+        #[cfg(feature = "tracing")]
+        let fut = fut.instrument(span);
+
+        fut.boxed()
     }
 }
