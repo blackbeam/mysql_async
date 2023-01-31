@@ -608,7 +608,27 @@ impl Opts {
         self.inner.mysql_opts.stmt_cache_size
     }
 
-    /// Driver will require SSL connection if this opts isn't `None` (default to `None`).
+    /// Driver will require SSL connection if this opts isn't `None` (defaults to `None`).
+    ///
+    /// # Connection URL parameters
+    ///
+    /// Note that for securty reasons:
+    ///
+    /// * CA and IDENTITY verifications are opt-out
+    /// * there is no way to give an idenity or root certs via query URL
+    ///
+    /// URL Parameters:
+    ///
+    /// *   `require_ssl: bool` (defaults to `false`) – requires SSL with default [`SslOpts`]
+    /// *   `verify_ca: bool` (defaults to `true`) – requires server Certificate Authority (CA)
+    ///     certificate validation against the configured CA certificates.
+    ///     Makes no sence if  `require_ssl` equals `false`.
+    /// *   `verify_identity: bool` (defaults to `true`) – perform host name identity verification
+    ///     by checking the host name the client uses for connecting to the server against
+    ///     the identity in the certificate that the server sends to the client.
+    ///     Makes no sence if  `require_ssl` equals `false`.
+    ///
+    ///
     pub fn ssl_opts(&self) -> Option<&SslOpts> {
         self.inner.mysql_opts.ssl_opts.as_ref()
     }
