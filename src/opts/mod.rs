@@ -1078,6 +1078,10 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
     let (mut opts, query_pairs): (MysqlOpts, _) = from_url_basic(url)?;
     let mut pool_min = DEFAULT_POOL_CONSTRAINTS.min;
     let mut pool_max = DEFAULT_POOL_CONSTRAINTS.max;
+
+    let mut skip_domain_validation = false;
+    let mut accept_invalid_certs = false;
+
     for (key, value) in query_pairs {
         if key == "pool_min" {
             match usize::from_str(&*value) {
@@ -1240,6 +1244,40 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                     value,
                 });
             }
+        } else if key == "require_ssl" {
+            match bool::from_str(&*value) {
+                Ok(x) => opts.ssl_opts = x.then(SslOpts::default),
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "require_ssl".into(),
+                        value,
+                    });
+                }
+            }
+        } else if key == "verify_ca" {
+            match bool::from_str(&*value) {
+                Ok(x) => {
+                    accept_invalid_certs = !x;
+                }
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "verify_ca".into(),
+                        value,
+                    });
+                }
+            }
+        } else if key == "verify_identity" {
+            match bool::from_str(&*value) {
+                Ok(x) => {
+                    skip_domain_validation = !x;
+                }
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "verify_identity".into(),
+                        value,
+                    });
+                }
+            }
         } else {
             return Err(UrlError::UnknownParameter { param: key });
         }
@@ -1252,6 +1290,11 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
             min: pool_min,
             max: pool_max,
         });
+    }
+
+    if let Some(ref mut ssl_opts) = opts.ssl_opts.as_mut() {
+        ssl_opts.accept_invalid_certs = accept_invalid_certs;
+        ssl_opts.skip_domain_validation = skip_domain_validation;
     }
 
     Ok(opts)
@@ -1276,7 +1319,7 @@ impl<'a> TryFrom<&'a str> for Opts {
 #[cfg(test)]
 mod test {
     use super::{HostPortOrUrl, MysqlOpts, Opts, Url};
-    use crate::error::UrlError::InvalidParamValue;
+    use crate::{error::UrlError::InvalidParamValue, SslOpts};
 
     use std::str::FromStr;
 
@@ -1343,6 +1386,41 @@ mod test {
         let opts = Opts::from_url(url).unwrap();
 
         assert_eq!(opts.ip_or_hostname(), "[::1]");
+    }
+
+    #[test]
+    fn should_parse_ssl_params() {
+        const URL1: &str = "mysql://localhost/foo?require_ssl=false";
+        let opts = Opts::from_url(URL1).unwrap();
+        assert_eq!(opts.ssl_opts(), None);
+
+        const URL2: &str = "mysql://localhost/foo?require_ssl=true";
+        let opts = Opts::from_url(URL2).unwrap();
+        assert_eq!(opts.ssl_opts(), Some(&SslOpts::default()));
+
+        const URL3: &str = "mysql://localhost/foo?require_ssl=true&verify_ca=false";
+        let opts = Opts::from_url(URL3).unwrap();
+        assert_eq!(
+            opts.ssl_opts(),
+            Some(&SslOpts::default().with_danger_accept_invalid_certs(true))
+        );
+
+        const URL4: &str =
+            "mysql://localhost/foo?require_ssl=true&verify_ca=false&verify_identity=false";
+        let opts = Opts::from_url(URL4).unwrap();
+        assert_eq!(
+            opts.ssl_opts(),
+            Some(
+                &SslOpts::default()
+                    .with_danger_accept_invalid_certs(true)
+                    .with_danger_skip_domain_validation(true)
+            )
+        );
+
+        const URL5: &str =
+            "mysql://localhost/foo?require_ssl=false&verify_ca=false&verify_identity=false";
+        let opts = Opts::from_url(URL5).unwrap();
+        assert_eq!(opts.ssl_opts(), None);
     }
 
     #[test]
