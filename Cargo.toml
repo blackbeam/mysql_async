@@ -35,7 +35,6 @@ thiserror = "1.0.4"
 tokio = { version = "1.0", features = ["io-util", "fs", "net", "time", "rt"] }
 tokio-util = { version = "0.7.2", features = ["codec", "io"] }
 tracing = { version = "0.1.37", default-features = false, features = ["attributes"], optional = true }
-tokio-native-tls = { git = "https://github.com/pimeys/tls", branch = "vendored-openssl" }
 twox-hash = "1"
 url = "2.1"
 
