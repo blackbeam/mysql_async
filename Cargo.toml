@@ -103,7 +103,7 @@ rustls-tls = [
 ]
 tracing = ["dep:tracing"]
 nightly = []
-vendored-openssl = ["tokio-native-tls/vendored-openssl", "native-tls/vendored"]
+vendored-openssl = ["native-tls/vendored"]
 
 [lib]
 name = "mysql_async"
