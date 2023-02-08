@@ -2,7 +2,7 @@ use futures_core::future::BoxFuture;
 use futures_util::FutureExt;
 use mysql_common::constants::Command;
 #[cfg(feature = "tracing")]
-use tracing::{field, info_span, Instrument, Level};
+use tracing::{field, info_span, span_enabled, trace_span, Instrument, Level};
 
 use crate::{Conn, TextProtocol};
 
@@ -12,24 +12,35 @@ use super::Routine;
 #[derive(Debug, Copy, Clone)]
 pub struct QueryRoutine<'a> {
     data: &'a [u8],
+    #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
+    internal: bool,
 }
 
 impl<'a> QueryRoutine<'a> {
-    pub fn new(data: &'a [u8]) -> Self {
-        Self { data }
+    pub fn new(data: &'a [u8], internal: bool) -> Self {
+        Self { data, internal }
     }
 }
 
 impl Routine<()> for QueryRoutine<'_> {
     fn call<'a>(&'a mut self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<()>> {
         #[cfg(feature = "tracing")]
-        let span = info_span!(
-            "mysql_async::query",
-            mysql_async.connection.id = conn.id(),
-            mysql_async.query.sql = field::Empty
-        );
+        let span = if self.internal {
+            trace_span!(
+                "mysql_async::query",
+                mysql_async.connection.id = conn.id(),
+                mysql_async.query.sql = field::Empty
+            )
+        } else {
+            info_span!(
+                "mysql_async::query",
+                mysql_async.connection.id = conn.id(),
+                mysql_async.query.sql = field::Empty
+            )
+        };
+
         #[cfg(feature = "tracing")]
-        if tracing::span_enabled!(Level::DEBUG) {
+        if span_enabled!(Level::DEBUG) {
             // The statement may contain sensitive data. Restrict to DEBUG.
             span.record(
                 "mysql_async.query.sql",

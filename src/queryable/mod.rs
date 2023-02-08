@@ -106,8 +106,32 @@ impl Conn {
     where
         Q: AsQuery + 'a,
     {
-        self.routine(QueryRoutine::new(query.as_query().as_ref()))
+        self.routine(QueryRoutine::new(query.as_query().as_ref(), false))
             .await
+    }
+
+    /// Used for internal querying of connection settings,
+    /// bypassing instrumentation meant for user queries.
+    // This is a merge of `Queryable::query_first` and `Conn::query_iter`.
+    // TODO: find a cleaner way without duplicating code.
+    pub(crate) fn query_internal<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Option<T>>
+    where
+        Q: AsQuery + 'a,
+        T: FromRow + Send + 'static,
+    {
+        async move {
+            self.routine(QueryRoutine::new(query.as_query().as_ref(), true))
+                .await?;
+            let mut result: QueryResult<'a, 'static, TextProtocol> = QueryResult::new(self);
+            let output = if result.is_empty() {
+                None
+            } else {
+                result.next().await?.map(crate::from_row)
+            };
+            result.drop_result().await?;
+            Ok(output)
+        }
+        .boxed()
     }
 }
 
@@ -456,7 +480,7 @@ impl Queryable for Conn {
         Q: AsQuery + 'a,
     {
         async move {
-            self.routine(QueryRoutine::new(query.as_query().as_ref()))
+            self.routine(QueryRoutine::new(query.as_query().as_ref(), false))
                 .await?;
             Ok(QueryResult::new(self))
         }

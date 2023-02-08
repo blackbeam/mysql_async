@@ -887,7 +887,7 @@ impl Conn {
     /// Do nothing if socket address is already in [`Opts`] or if `prefer_socket` is `false`.
     async fn read_socket(&mut self) -> Result<()> {
         if self.inner.opts.prefer_socket() && self.inner.socket.is_none() {
-            let row_opt = self.query_first("SELECT @@socket").await?;
+            let row_opt = self.query_internal("SELECT @@socket").await?;
             self.inner.socket = row_opt.unwrap_or((None,)).0;
         }
         Ok(())
@@ -898,7 +898,7 @@ impl Conn {
         let max_allowed_packet = if let Some(value) = self.opts().max_allowed_packet() {
             Some(value)
         } else {
-            self.query_first("SELECT @@max_allowed_packet").await?
+            self.query_internal("SELECT @@max_allowed_packet").await?
         };
         if let Some(stream) = self.inner.stream.as_mut() {
             stream.set_max_allowed_packet(max_allowed_packet.unwrap_or(DEFAULT_MAX_ALLOWED_PACKET));
@@ -911,7 +911,7 @@ impl Conn {
         let wait_timeout = if let Some(value) = self.opts().wait_timeout() {
             Some(value)
         } else {
-            self.query_first("SELECT @@wait_timeout").await?
+            self.query_internal("SELECT @@wait_timeout").await?
         };
         self.inner.wait_timeout = Duration::from_secs(wait_timeout.unwrap_or(28800) as u64);
         Ok(())
