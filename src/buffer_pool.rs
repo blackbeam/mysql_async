@@ -11,7 +11,8 @@ use std::{mem::replace, ops::Deref, sync::Arc};
 
 #[derive(Debug)]
 pub struct BufferPool {
-    buffer_cap: usize,
+    buffer_size_cap: usize,
+    buffer_init_cap: usize,
     pool: ArrayQueue<Vec<u8>>,
 }
 
@@ -22,25 +23,29 @@ impl BufferPool {
             .and_then(|x| x.parse().ok())
             .unwrap_or(128_usize);
 
-        let buffer_cap = std::env::var("MYSQL_ASYNC_BUFFER_SIZE_CAP")
+        let buffer_size_cap = std::env::var("MYSQL_ASYNC_BUFFER_SIZE_CAP")
             .ok()
             .and_then(|x| x.parse().ok())
             .unwrap_or(4 * 1024 * 1024);
 
+        let buffer_init_cap = std::env::var("MYSQL_ASYNC_BUFFER_INIT_CAP")
+            .ok()
+            .and_then(|x| x.parse().ok())
+            .unwrap_or(0);
+
         Self {
             pool: ArrayQueue::new(pool_cap),
-            buffer_cap,
+            buffer_size_cap,
+            buffer_init_cap,
         }
     }
 
     pub fn get(self: &Arc<Self>) -> PooledBuf {
-        let mut buf = self.pool.pop().unwrap_or_default();
-
-        // SAFETY:
-        // 1. OK – 0 is always within capacity
-        // 2. OK - nothing to initialize
-        unsafe { buf.set_len(0) }
-
+        let buf = self
+            .pool
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(self.buffer_init_cap));
+        debug_assert_eq!(buf.len(), 0);
         PooledBuf(buf, self.clone())
     }
 
@@ -51,15 +56,12 @@ impl BufferPool {
     }
 
     fn put(self: &Arc<Self>, mut buf: Vec<u8>) {
-        if buf.len() > self.buffer_cap {
-            // TODO: until `Vec::shrink_to` stabilization
+        // SAFETY:
+        // 1. OK – 0 is always within capacity
+        // 2. OK - nothing to initialize
+        unsafe { buf.set_len(0) }
 
-            // SAFETY:
-            // 1. OK – new_len <= capacity
-            // 2. OK - 0..new_len is initialized
-            unsafe { buf.set_len(self.buffer_cap) }
-            buf.shrink_to_fit();
-        }
+        buf.shrink_to(self.buffer_size_cap);
 
         // ArrayQueue will make sure to drop the buffer if capacity is exceeded
         let _ = self.pool.push(buf);
