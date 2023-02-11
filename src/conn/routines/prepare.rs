@@ -48,6 +48,7 @@ impl Routine<Arc<StmtInner>> for PrepareRoutine {
 
             let packet = conn.read_packet().await?;
             let mut inner_stmt = StmtInner::from_payload(&*packet, conn.id(), self.query.clone())?;
+
             #[cfg(feature = "tracing")]
             Span::current().record("mysql_async.statement.id", inner_stmt.id());
 
@@ -65,7 +66,13 @@ impl Routine<Arc<StmtInner>> for PrepareRoutine {
         };
 
         #[cfg(feature = "tracing")]
-        let fut = fut.instrument(span);
+        let fut = async {
+            fut.await.or_else(|e| {
+                tracing::error!(error = %e);
+                Err(e)
+            })
+        }
+        .instrument(span);
 
         fut.boxed()
     }

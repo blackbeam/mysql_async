@@ -54,7 +54,13 @@ impl<L: TracingLevel> Routine<()> for QueryRoutine<'_, L> {
         };
 
         #[cfg(feature = "tracing")]
-        let fut = fut.instrument(span);
+        let fut = async {
+            fut.await.or_else(|e| {
+                tracing::error!(error = %e);
+                Err(e)
+            })
+        }
+        .instrument(span);
 
         fut.boxed()
     }
