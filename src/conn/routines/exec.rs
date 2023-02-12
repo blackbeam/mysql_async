@@ -25,6 +25,8 @@ impl<'a> ExecRoutine<'a> {
 
 impl Routine<()> for ExecRoutine<'_> {
     fn call<'a>(&'a mut self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<()>> {
+        conn.metrics().routines.execs.incr();
+
         #[cfg(feature = "tracing")]
         let span = info_span!(
             "mysql_async::exec",

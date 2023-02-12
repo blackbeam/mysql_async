@@ -39,6 +39,7 @@ use crate::{
     consts::{CapabilityFlags, Command, StatusFlags},
     error::*,
     io::Stream,
+    metrics::ConnMetrics,
     opts::Opts,
     queryable::{
         query_result::{QueryResult, ResultSetMeta},
@@ -59,6 +60,8 @@ const DEFAULT_WAIT_TIMEOUT: usize = 28800;
 
 /// Helper that asynchronously disconnects the givent connection on the default tokio executor.
 fn disconnect(mut conn: Conn) {
+    conn.metrics().disconnects.incr();
+
     let disconnected = conn.inner.disconnected;
 
     // Mark conn as disconnected.
@@ -120,6 +123,7 @@ struct ConnInner {
     /// One-time connection-level infile handler.
     infile_handler:
         Option<Pin<Box<dyn Future<Output = crate::Result<InfileData>> + Send + Sync + 'static>>>,
+    conn_metrics: Arc<ConnMetrics>,
 }
 
 impl fmt::Debug for ConnInner {
@@ -142,6 +146,7 @@ impl ConnInner {
     /// Constructs an empty connection.
     fn empty(opts: Opts) -> ConnInner {
         let ttl_deadline = opts.pool_opts().new_connection_ttl_deadline();
+        let conn_metrics: Arc<ConnMetrics> = Default::default();
         ConnInner {
             capabilities: opts.get_capabilities(),
             status: StatusFlags::empty(),
@@ -156,7 +161,7 @@ impl ConnInner {
             tx_status: TxStatus::None,
             last_io: Instant::now(),
             wait_timeout: Duration::from_secs(0),
-            stmt_cache: StmtCache::new(opts.stmt_cache_size()),
+            stmt_cache: StmtCache::new(opts.stmt_cache_size(), conn_metrics.clone()),
             socket: opts.socket().map(Into::into),
             opts,
             ttl_deadline,
@@ -167,6 +172,7 @@ impl ConnInner {
             server_key: None,
             infile_handler: None,
             reset_upon_returning_to_a_pool: false,
+            conn_metrics,
         }
     }
 
@@ -177,6 +183,18 @@ impl ConnInner {
         self.stream
             .as_mut()
             .ok_or_else(|| DriverError::ConnectionClosed.into())
+    }
+
+    fn set_pool(&mut self, pool: Option<Pool>) {
+        let conn_metrics = if let Some(ref pool) = pool {
+            Arc::clone(&pool.inner.metrics.conn)
+        } else {
+            Default::default()
+        };
+        self.conn_metrics = Arc::clone(&conn_metrics);
+        self.stmt_cache.conn_metrics = conn_metrics;
+
+        self.pool = pool;
     }
 }
 
@@ -929,6 +947,8 @@ impl Conn {
             conn.run_init_commands().await?;
             conn.run_setup_commands().await?;
 
+            conn.metrics().connects.incr();
+
             Ok(conn)
         }
         .boxed()
@@ -1170,6 +1190,10 @@ impl Conn {
         self.inner.stmt_cache.clear();
         self.inner.infile_handler = None;
         self.run_setup_commands().await?;
+        // self.inner.set_pool(pool);
+
+        // TODO: clear some metrics?
+
         Ok(())
     }
 
@@ -1283,6 +1307,10 @@ impl Conn {
         self.request_binlog(request).await?;
 
         Ok(BinlogStream::new(self))
+    }
+
+    pub(crate) fn metrics(&self) -> &ConnMetrics {
+        &self.inner.conn_metrics
     }
 }
 

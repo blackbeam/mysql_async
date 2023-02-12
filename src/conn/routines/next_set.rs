@@ -24,6 +24,8 @@ where
     P: Protocol,
 {
     fn call<'a>(&'a mut self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<()>> {
+        conn.metrics().routines.next_sets.incr();
+
         #[cfg(feature = "tracing")]
         let span = debug_span!(
             "mysql_async::next_set",

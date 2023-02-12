@@ -16,7 +16,10 @@ use std::{
     sync::Arc,
 };
 
-use crate::queryable::stmt::StmtInner;
+use crate::{
+    metrics::{ConnMetrics, StmtCacheMetrics},
+    queryable::stmt::StmtInner,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct QueryString(pub Arc<[u8]>);
@@ -43,14 +46,17 @@ pub struct StmtCache {
     cap: usize,
     cache: LruCache<u32, Entry>,
     query_map: HashMap<QueryString, u32, BuildHasherDefault<XxHash>>,
+
+    pub(super) conn_metrics: Arc<ConnMetrics>,
 }
 
 impl StmtCache {
-    pub fn new(cap: usize) -> Self {
+    pub fn new(cap: usize, conn_metrics: Arc<ConnMetrics>) -> Self {
         Self {
             cap,
             cache: LruCache::unbounded(),
             query_map: Default::default(),
+            conn_metrics,
         }
     }
 
@@ -63,13 +69,21 @@ impl StmtCache {
     {
         let id = self.query_map.get(query).cloned();
         match id {
-            Some(id) => self.cache.get(&id),
-            None => None,
+            Some(id) => {
+                self.metrics().hits.incr();
+                self.cache.get(&id)
+            }
+            None => {
+                self.metrics().misses.incr();
+                None
+            }
         }
     }
 
     pub fn put(&mut self, query: Arc<[u8]>, stmt: Arc<StmtInner>) -> Option<Arc<StmtInner>> {
         if self.cap == 0 {
+            self.metrics().drops.incr();
+            // drops
             return None;
         }
 
@@ -77,9 +91,11 @@ impl StmtCache {
 
         self.query_map.insert(query.clone(), stmt.id());
         self.cache.put(stmt.id(), Entry { stmt, query });
+        self.metrics().additions.incr();
 
         if self.cache.len() > self.cap {
             if let Some((_, entry)) = self.cache.pop_lru() {
+                self.metrics().evictions.incr();
                 self.query_map.remove(&*entry.query.0.as_ref());
                 return Some(entry.stmt);
             }
@@ -91,12 +107,18 @@ impl StmtCache {
     pub fn clear(&mut self) {
         self.query_map.clear();
         self.cache.clear();
+        self.metrics().resets.incr();
     }
 
     pub fn remove(&mut self, id: u32) {
         if let Some(entry) = self.cache.pop(&id) {
             self.query_map.remove::<[u8]>(entry.query.borrow());
+            self.metrics().removals.incr();
         }
+    }
+
+    fn metrics(&self) -> &StmtCacheMetrics {
+        &self.conn_metrics.stmt_cache
     }
 
     #[cfg(test)]

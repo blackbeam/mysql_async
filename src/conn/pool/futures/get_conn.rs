@@ -142,9 +142,10 @@ impl Future for GetConn {
 
                     return match result {
                         Ok(mut c) => {
-                            c.inner.pool = Some(pool);
+                            c.inner.set_pool(Some(pool));
                             c.inner.reset_upon_returning_to_a_pool =
                                 self.reset_upon_returning_to_a_pool;
+                            c.metrics().connects.incr();
                             Poll::Ready(Ok(c))
                         }
                         Err(e) => {
@@ -160,7 +161,8 @@ impl Future for GetConn {
                             self.inner = GetConnInner::Done;
 
                             let pool = self.pool_take();
-                            c.inner.pool = Some(pool);
+                            pool.inner.metrics.reuses.incr();
+                            c.inner.set_pool(Some(pool));
                             c.inner.reset_upon_returning_to_a_pool =
                                 self.reset_upon_returning_to_a_pool;
                             return Poll::Ready(Ok(c));

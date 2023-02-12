@@ -6,6 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use crate::metrics::BufferPoolMetrics;
 use crossbeam::queue::ArrayQueue;
 use std::{mem::replace, ops::Deref, sync::Arc};
 
@@ -14,6 +15,7 @@ pub struct BufferPool {
     buffer_size_cap: usize,
     buffer_init_cap: usize,
     pool: ArrayQueue<Vec<u8>>,
+    metrics: BufferPoolMetrics,
 }
 
 impl BufferPool {
@@ -37,14 +39,21 @@ impl BufferPool {
             pool: ArrayQueue::new(pool_cap),
             buffer_size_cap,
             buffer_init_cap,
+            metrics: Default::default(),
         }
     }
 
     pub fn get(self: &Arc<Self>) -> PooledBuf {
-        let buf = self
-            .pool
-            .pop()
-            .unwrap_or_else(|| Vec::with_capacity(self.buffer_init_cap));
+        let buf = match self.pool.pop() {
+            Some(buf) => {
+                self.metrics.reuses.incr();
+                buf
+            }
+            None => {
+                self.metrics.creations.incr();
+                Vec::with_capacity(self.buffer_init_cap)
+            }
+        };
         debug_assert_eq!(buf.len(), 0);
         PooledBuf(buf, self.clone())
     }
@@ -64,7 +73,15 @@ impl BufferPool {
         buf.shrink_to(self.buffer_size_cap);
 
         // ArrayQueue will make sure to drop the buffer if capacity is exceeded
-        let _ = self.pool.push(buf);
+        match self.pool.push(buf) {
+            Ok(()) => self.metrics.returns.incr(),
+            Err(_buf) => self.metrics.discards.incr(),
+        };
+    }
+
+    #[cfg(feature = "metrics")]
+    pub(crate) fn snapshot_metrics(&self) -> BufferPoolMetrics {
+        self.metrics.clone()
     }
 }
 
