@@ -14,6 +14,7 @@ use crate::{
     connection_like::ToConnectionResult,
     from_row,
     prelude::{FromRow, StatementLike, ToConnection},
+    tracing_utils::LevelInfo,
     BinaryProtocol, BoxFuture, Params, QueryResult, ResultSetStream, TextProtocol,
 };
 
@@ -220,7 +221,7 @@ impl<Q: AsQuery> Query for Q {
                 ToConnectionResult::Immediate(conn) => conn,
                 ToConnectionResult::Mediate(fut) => fut.await?,
             };
-            conn.raw_query(self).await?;
+            conn.raw_query::<'_, _, LevelInfo>(self).await?;
             Ok(QueryResult::new(conn))
         }
         .boxed()

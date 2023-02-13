@@ -30,6 +30,7 @@ use crate::{
     prelude::{FromRow, StatementLike},
     query::AsQuery,
     queryable::query_result::ResultSetMeta,
+    tracing_utils::{LevelInfo, LevelTrace, TracingLevel},
     BoxFuture, Column, Conn, Params, ResultSetStream, Row,
 };
 
@@ -102,11 +103,11 @@ impl Conn {
     }
 
     /// Low level function that performs a text query.
-    pub(crate) async fn raw_query<'a, Q>(&'a mut self, query: Q) -> Result<()>
+    pub(crate) async fn raw_query<'a, Q, L: TracingLevel>(&'a mut self, query: Q) -> Result<()>
     where
         Q: AsQuery + 'a,
     {
-        self.routine(QueryRoutine::new(query.as_query().as_ref(), false))
+        self.routine(QueryRoutine::<'_, L>::new(query.as_query().as_ref()))
             .await
     }
 
@@ -120,16 +121,11 @@ impl Conn {
         T: FromRow + Send + 'static,
     {
         async move {
-            self.routine(QueryRoutine::new(query.as_query().as_ref(), true))
-                .await?;
-            let mut result: QueryResult<'a, 'static, TextProtocol> = QueryResult::new(self);
-            let output = if result.is_empty() {
-                None
-            } else {
-                result.next().await?.map(crate::from_row)
-            };
-            result.drop_result().await?;
-            Ok(output)
+            self.raw_query::<'_, _, LevelTrace>(query).await?;
+            Ok(QueryResult::<'_, '_, TextProtocol>::new(self)
+                .collect_and_drop::<T>()
+                .await?
+                .pop())
         }
         .boxed()
     }
@@ -480,8 +476,7 @@ impl Queryable for Conn {
         Q: AsQuery + 'a,
     {
         async move {
-            self.routine(QueryRoutine::new(query.as_query().as_ref(), false))
-                .await?;
+            self.raw_query::<'_, _, LevelInfo>(query).await?;
             Ok(QueryResult::new(self))
         }
         .boxed()

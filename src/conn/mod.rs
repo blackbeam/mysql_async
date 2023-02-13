@@ -888,7 +888,7 @@ impl Conn {
     async fn read_socket(&mut self) -> Result<()> {
         if self.inner.opts.prefer_socket() && self.inner.socket.is_none() {
             let row_opt = self.query_internal("SELECT @@socket").await?;
-            self.inner.socket = row_opt.unwrap_or((None,)).0;
+            self.inner.socket = row_opt.unwrap_or(None);
         }
         Ok(())
     }
