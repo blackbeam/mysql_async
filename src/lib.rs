@@ -425,6 +425,9 @@ use std::sync::Arc;
 mod buffer_pool;
 
 #[macro_use]
+mod tracing_utils;
+
+#[macro_use]
 mod macros;
 mod conn;
 mod connection_like;

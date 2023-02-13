@@ -30,6 +30,7 @@ use crate::{
     prelude::{FromRow, StatementLike},
     query::AsQuery,
     queryable::query_result::ResultSetMeta,
+    tracing_utils::{LevelInfo, LevelTrace, TracingLevel},
     BoxFuture, Column, Conn, Params, ResultSetStream, Row,
 };
 
@@ -102,12 +103,31 @@ impl Conn {
     }
 
     /// Low level function that performs a text query.
-    pub(crate) async fn raw_query<'a, Q>(&'a mut self, query: Q) -> Result<()>
+    pub(crate) async fn raw_query<'a, Q, L: TracingLevel>(&'a mut self, query: Q) -> Result<()>
     where
         Q: AsQuery + 'a,
     {
-        self.routine(QueryRoutine::new(query.as_query().as_ref()))
+        self.routine(QueryRoutine::<'_, L>::new(query.as_query().as_ref()))
             .await
+    }
+
+    /// Used for internal querying of connection settings,
+    /// bypassing instrumentation meant for user queries.
+    // This is a merge of `Queryable::query_first` and `Conn::query_iter`.
+    // TODO: find a cleaner way without duplicating code.
+    pub(crate) fn query_internal<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Option<T>>
+    where
+        Q: AsQuery + 'a,
+        T: FromRow + Send + 'static,
+    {
+        async move {
+            self.raw_query::<'_, _, LevelTrace>(query).await?;
+            Ok(QueryResult::<'_, '_, TextProtocol>::new(self)
+                .collect_and_drop::<T>()
+                .await?
+                .pop())
+        }
+        .boxed()
     }
 }
 
@@ -456,8 +476,7 @@ impl Queryable for Conn {
         Q: AsQuery + 'a,
     {
         async move {
-            self.routine(QueryRoutine::new(query.as_query().as_ref()))
-                .await?;
+            self.raw_query::<'_, _, LevelInfo>(query).await?;
             Ok(QueryResult::new(self))
         }
         .boxed()
