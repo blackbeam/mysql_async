@@ -2,7 +2,7 @@ use futures_core::future::BoxFuture;
 use futures_util::FutureExt;
 use mysql_common::constants::Command;
 #[cfg(feature = "tracing")]
-use tracing::{debug_span, Instrument};
+use tracing::debug_span;
 
 use crate::Conn;
 
@@ -25,13 +25,7 @@ impl Routine<()> for ResetRoutine {
         };
 
         #[cfg(feature = "tracing")]
-        let fut = async {
-            fut.await.or_else(|e| {
-                tracing::error!(error = %e);
-                Err(e)
-            })
-        }
-        .instrument(span);
+        let fut = instrument_result!(fut, span);
 
         fut.boxed()
     }

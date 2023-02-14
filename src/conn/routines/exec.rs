@@ -4,7 +4,7 @@ use futures_core::future::BoxFuture;
 use futures_util::FutureExt;
 use mysql_common::{packets::ComStmtExecuteRequestBuilder, params::Params};
 #[cfg(feature = "tracing")]
-use tracing::{field, info_span, Instrument, Level, Span};
+use tracing::{field, info_span, Level, Span};
 
 use crate::{BinaryProtocol, Conn, DriverError, Statement};
 
@@ -104,13 +104,7 @@ impl Routine<()> for ExecRoutine<'_> {
         };
 
         #[cfg(feature = "tracing")]
-        let fut = async {
-            fut.await.or_else(|e| {
-                tracing::error!(error = %e);
-                Err(e)
-            })
-        }
-        .instrument(span);
+        let fut = instrument_result!(fut, span);
 
         fut.boxed()
     }

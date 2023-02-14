@@ -38,3 +38,16 @@ macro_rules! create_span {
         }
     }
 }
+
+#[cfg(feature = "tracing")]
+macro_rules! instrument_result {
+    ($fut:expr, $span:expr) => {{
+        let fut = async {
+            $fut.await.or_else(|e| {
+                tracing::error!(error = %e);
+                Err(e)
+            })
+        };
+        <_ as tracing::Instrument>::instrument(fut, $span)
+    }};
+}
