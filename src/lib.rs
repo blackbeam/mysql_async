@@ -84,7 +84,7 @@
 //!     Primary operations (`query`, `prepare`, `exec`) are instrumented at `INFO` level.
 //!     Remaining operations, incl. `get_conn`, are instrumented at `DEBUG` level.
 //!     Also at `DEBUG`, the SQL queries and parameters are added to the `query`, `prepare`
-//!     and `exec` spans.
+//!     and `exec` spans. Also some internal queries are instrumented at `TRACE` level.
 //!
 //!     **Example:**
 //!
