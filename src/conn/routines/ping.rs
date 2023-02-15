@@ -2,7 +2,7 @@ use futures_core::future::BoxFuture;
 use futures_util::FutureExt;
 use mysql_common::constants::Command;
 #[cfg(feature = "tracing")]
-use tracing::{debug_span, Instrument};
+use tracing::debug_span;
 
 use crate::Conn;
 
@@ -24,7 +24,7 @@ impl Routine<()> for PingRoutine {
         };
 
         #[cfg(feature = "tracing")]
-        let fut = fut.instrument(span);
+        let fut = instrument_result!(fut, span);
 
         fut.boxed()
     }

@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use futures_core::future::BoxFuture;
 use futures_util::FutureExt;
 #[cfg(feature = "tracing")]
-use tracing::{debug_span, Instrument};
+use tracing::debug_span;
 
 use crate::{queryable::Protocol, Conn};
 
@@ -36,7 +36,7 @@ where
         };
 
         #[cfg(feature = "tracing")]
-        let fut = fut.instrument(span);
+        let fut = instrument_result!(fut, span);
 
         fut.boxed()
     }
