@@ -94,6 +94,11 @@ default-rustls = [
 ]
 minimal = ["flate2/zlib"]
 native-tls-tls = ["native-tls", "tokio-native-tls"]
+vendored-native-tls-tls = [
+    "native-tls-tls",
+    "tokio-native-tls/vendored",
+    "native-tls/vendored",
+]
 rustls-tls = [
     "rustls",
     "tokio-rustls",

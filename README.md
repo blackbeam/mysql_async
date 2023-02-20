@@ -71,6 +71,19 @@ as well as `native-tls`-based TLS support.
     ```toml
     [dependencies]
     mysql_async = { version = "*", default-features = false, features = ["native-tls-tls"] }
+    ```
+
+*   `vendored-native-tls-tls` – enables `native-tls`-based TLS support, statically linking
+    a vendored copy of OpenSSL on Linux systems. This feature has the same effect as using
+    `native-tls-tls` on Windows and macOS, where OpenSSL is not used.
+    _(conflicts with `rustls-tls`)_
+
+    **Example:**
+
+    ```toml
+    [dependencies]
+    mysql_async = { version = "*", default-features = false, features = ["vendored-native-tls-tls"] }
+    ```
 
 *   `rustls-tls` – enables `native-tls`-based TLS support _(conflicts with `native-tls-tls`)_
 
@@ -79,6 +92,7 @@ as well as `native-tls`-based TLS support.
     ```toml
     [dependencies]
     mysql_async = { version = "*", default-features = false, features = ["rustls-tls"] }
+    ```
 
 *   `tracing` – enables instrumentation via `tracing` package.
 
