@@ -404,6 +404,10 @@ pub(crate) struct MysqlOpts {
     ///
     /// Available via `secure_auth` connection url parameter.
     secure_auth: bool,
+
+    /// Changes the behavior of the affected count returned for writes (UPDATE/INSERT etc).
+    /// It makes MySQL return the FOUND rows instead of the AFFECTED rows.
+    client_found_rows: bool,
 }
 
 /// Mysql connection options.
@@ -721,6 +725,11 @@ impl Opts {
         self.inner.mysql_opts.secure_auth
     }
 
+    /// If true, write queries return found rows and if false, affected rows.
+    pub fn writes_return_found_rows(&self) -> bool {
+        self.inner.mysql_opts.client_found_rows
+    }
+
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
         let mut out = CapabilityFlags::CLIENT_PROTOCOL_41
             | CapabilityFlags::CLIENT_SECURE_CONNECTION
@@ -741,6 +750,9 @@ impl Opts {
         }
         if self.inner.mysql_opts.compression.is_some() {
             out |= CapabilityFlags::CLIENT_COMPRESS;
+        }
+        if self.writes_return_found_rows() {
+            out |= CapabilityFlags::CLIENT_FOUND_ROWS;
         }
 
         out
@@ -767,6 +779,7 @@ impl Default for MysqlOpts {
             max_allowed_packet: None,
             wait_timeout: None,
             secure_auth: true,
+            client_found_rows: false,
         }
     }
 }
@@ -1015,6 +1028,13 @@ impl OptsBuilder {
     /// Available via `secure_auth` connection url parameter.
     pub fn secure_auth(mut self, secure_auth: bool) -> Self {
         self.opts.secure_auth = secure_auth;
+        self
+    }
+
+    /// Changes the behavior of the affected count returned for writes.
+    /// See [`Opts::writes_return_found_rows`].
+    pub fn writes_return_found_rows(mut self, client_found_rows: bool) -> Self {
+        self.opts.client_found_rows = client_found_rows;
         self
     }
 }
