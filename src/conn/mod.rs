@@ -1146,7 +1146,7 @@ mod test {
 
     #[tokio::test]
     async fn should_return_found_rows_if_flag_is_set() -> super::Result<()> {
-        let opts = get_opts().writes_return_found_rows(true);
+        let opts = get_opts().client_found_rows(true);
         let mut conn = Conn::new(opts).await.unwrap();
 
         "CREATE TEMPORARY TABLE mysql.found_rows (id INT PRIMARY KEY AUTO_INCREMENT, val INT)"
