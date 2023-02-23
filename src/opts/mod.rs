@@ -404,6 +404,12 @@ pub(crate) struct MysqlOpts {
     ///
     /// Available via `secure_auth` connection url parameter.
     secure_auth: bool,
+
+    /// Enables `CLIENT_FOUND_ROWS` capability (defaults to `false`).
+    ///
+    /// Changes the behavior of the affected count returned for writes (UPDATE/INSERT etc).
+    /// It makes MySQL return the FOUND rows instead of the AFFECTED rows.
+    client_found_rows: bool,
 }
 
 /// Mysql connection options.
@@ -721,6 +727,26 @@ impl Opts {
         self.inner.mysql_opts.secure_auth
     }
 
+    /// Returns `true` if `CLIENT_FOUND_ROWS` capability is enabled (defaults to `false`).
+    ///
+    /// `CLIENT_FOUND_ROWS` changes the behavior of the affected count returned for writes
+    /// (UPDATE/INSERT etc). It makes MySQL return the FOUND rows instead of the AFFECTED rows.
+    ///
+    /// # Connection URL
+    ///
+    /// Use `client_found_rows` URL parameter to set this value. E.g.
+    ///
+    /// ```
+    /// # use mysql_async::*;
+    /// # fn main() -> Result<()> {
+    /// let opts = Opts::from_url("mysql://localhost/db?client_found_rows=true")?;
+    /// assert!(opts.client_found_rows());
+    /// # Ok(()) }
+    /// ```
+    pub fn client_found_rows(&self) -> bool {
+        self.inner.mysql_opts.client_found_rows
+    }
+
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
         let mut out = CapabilityFlags::CLIENT_PROTOCOL_41
             | CapabilityFlags::CLIENT_SECURE_CONNECTION
@@ -741,6 +767,9 @@ impl Opts {
         }
         if self.inner.mysql_opts.compression.is_some() {
             out |= CapabilityFlags::CLIENT_COMPRESS;
+        }
+        if self.client_found_rows() {
+            out |= CapabilityFlags::CLIENT_FOUND_ROWS;
         }
 
         out
@@ -767,6 +796,7 @@ impl Default for MysqlOpts {
             max_allowed_packet: None,
             wait_timeout: None,
             secure_auth: true,
+            client_found_rows: false,
         }
     }
 }
@@ -1017,6 +1047,12 @@ impl OptsBuilder {
         self.opts.secure_auth = secure_auth;
         self
     }
+
+    /// Enables or disables `CLIENT_FOUND_ROWS` capability. See [`Opts::client_found_rows`].
+    pub fn client_found_rows(mut self, client_found_rows: bool) -> Self {
+        self.opts.client_found_rows = client_found_rows;
+        self
+    }
 }
 
 impl From<OptsBuilder> for Opts {
@@ -1241,6 +1277,18 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                 _ => {
                     return Err(UrlError::InvalidParamValue {
                         param: "secure_auth".into(),
+                        value,
+                    });
+                }
+            }
+        } else if key == "client_found_rows" {
+            match bool::from_str(&*value) {
+                Ok(client_found_rows) => {
+                    opts.client_found_rows = client_found_rows;
+                }
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "client_found_rows".into(),
                         value,
                     });
                 }

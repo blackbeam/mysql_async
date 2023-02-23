@@ -1144,6 +1144,58 @@ mod test {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn should_return_found_rows_if_flag_is_set() -> super::Result<()> {
+        let opts = get_opts().client_found_rows(true);
+        let mut conn = Conn::new(opts).await.unwrap();
+
+        "CREATE TEMPORARY TABLE mysql.found_rows (id INT PRIMARY KEY AUTO_INCREMENT, val INT)"
+            .ignore(&mut conn)
+            .await?;
+
+        "INSERT INTO mysql.found_rows (val) VALUES (1)"
+            .ignore(&mut conn)
+            .await?;
+
+        // Inserted one row, affected should be one.
+        assert_eq!(conn.affected_rows(), 1);
+
+        "UPDATE mysql.found_rows SET val = 1 WHERE val = 1"
+            .ignore(&mut conn)
+            .await?;
+
+        // The query doesn't affect any rows, but due to us wanting FOUND rows,
+        // this has to return one.
+        assert_eq!(conn.affected_rows(), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_not_return_found_rows_if_flag_is_not_set() -> super::Result<()> {
+        let mut conn = Conn::new(get_opts()).await.unwrap();
+
+        "CREATE TEMPORARY TABLE mysql.found_rows (id INT PRIMARY KEY AUTO_INCREMENT, val INT)"
+            .ignore(&mut conn)
+            .await?;
+
+        "INSERT INTO mysql.found_rows (val) VALUES (1)"
+            .ignore(&mut conn)
+            .await?;
+
+        // Inserted one row, affected should be one.
+        assert_eq!(conn.affected_rows(), 1);
+
+        "UPDATE mysql.found_rows SET val = 1 WHERE val = 1"
+            .ignore(&mut conn)
+            .await?;
+
+        // The query doesn't affect any rows.
+        assert_eq!(conn.affected_rows(), 0);
+
+        Ok(())
+    }
+
     async fn read_binlog_streams_and_close_their_connections(
         pool: Option<&Pool>,
         binlog_server_ids: (u32, u32, u32),
