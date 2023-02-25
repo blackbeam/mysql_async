@@ -13,6 +13,7 @@ use mysql_common::{
     constants::{DEFAULT_MAX_ALLOWED_PACKET, UTF8MB4_GENERAL_CI, UTF8_GENERAL_CI},
     crypto,
     io::ParseBuf,
+    misc::raw::{bytes::NullBytes, RawBytes},
     packets::{
         binlog_request::BinlogRequest, AuthPlugin, AuthSwitchRequest, CommonOkPacket, ErrPacket,
         HandshakePacket, HandshakeResponse, OkPacket, OkPacketDeserializer, OldAuthSwitchRequest,
@@ -473,17 +474,18 @@ impl Conn {
             .unwrap_or((0, 0, 0));
         self.inner.id = handshake.connection_id();
         self.inner.status = handshake.status_flags();
+
+        // fall back to `MysqlNativePassword` in case of unexpected value
         self.inner.auth_plugin = match handshake.auth_plugin() {
-            Some(AuthPlugin::MysqlNativePassword | AuthPlugin::MysqlOldPassword) => {
+            Some(x @ AuthPlugin::MysqlNativePassword)
+            | Some(x @ AuthPlugin::CachingSha2Password) => x.into_owned(),
+            _ => {
+                // `sha256_password` is not supported due to its deprecation.
+                // Other plugins won't be there according to MySql docs.
                 AuthPlugin::MysqlNativePassword
             }
-            Some(AuthPlugin::CachingSha2Password) => AuthPlugin::CachingSha2Password,
-            Some(AuthPlugin::Other(ref name)) => {
-                let name = String::from_utf8_lossy(name).into();
-                return Err(DriverError::UnknownAuthPlugin { name }.into());
-            }
-            None => AuthPlugin::MysqlNativePassword,
         };
+
         Ok(())
     }
 
@@ -565,14 +567,30 @@ impl Conn {
                 }
             }
 
-            self.inner.auth_plugin = auth_switch_request.auth_plugin().clone().into_owned();
+            self.inner.auth_plugin = auth_switch_request.auth_plugin().into_owned();
 
             let plugin_data = self
                 .inner
                 .auth_plugin
                 .gen_data(self.inner.opts.pass(), &*self.inner.nonce);
 
-            if let Some(plugin_data) = plugin_data {
+            // TODO: Remove in favor of updated mysql_common
+            if plugin_data.is_none() && self.inner.auth_plugin.as_bytes() == b"mysql_clear_password"
+            {
+                if self.inner.opts.enable_cleartext_plugin() {
+                    let cleartext_password = RawBytes::<NullBytes>::new(
+                        self.inner.opts.pass().unwrap_or_default().as_bytes(),
+                    )
+                    .into_owned();
+                    self.write_struct(&cleartext_password).await?;
+                } else {
+                    // TODO: Introduce an error variant for disabled auth plugins
+                    return Err(DriverError::UnknownAuthPlugin {
+                        name: "mysql_clear_password".into(),
+                    }
+                    .into());
+                }
+            } else if let Some(plugin_data) = plugin_data {
                 self.write_struct(&plugin_data).await?;
             } else {
                 self.write_packet(crate::BUFFER_POOL.get()).await?;
@@ -599,10 +617,19 @@ impl Conn {
                     self.continue_caching_sha2_password_auth().await?;
                     Ok(())
                 }
-                AuthPlugin::Other(ref name) => Err(DriverError::UnknownAuthPlugin {
-                    name: String::from_utf8_lossy(name.as_ref()).to_string(),
+                AuthPlugin::Other(ref name) => {
+                    if name.as_ref() == b"mysql_clear_password"
+                        && self.opts().enable_cleartext_plugin()
+                    {
+                        self.continue_mysql_native_password_auth().await?;
+                        Ok(())
+                    } else {
+                        Err(DriverError::UnknownAuthPlugin {
+                            name: String::from_utf8_lossy(name).to_string(),
+                        }
+                        .into())
+                    }
                 }
-                .into()),
             }
         })
     }
@@ -1379,6 +1406,7 @@ mod test {
         .filter(|variant| plugins.iter().any(|p| p == variant.0));
 
         for (plug, val, pass) in variants {
+            dbg!((plug, val, pass));
             let _ = conn.query_drop("DROP USER 'test_user'@'%'").await;
 
             let query = format!("CREATE USER 'test_user'@'%' IDENTIFIED WITH {}", plug);
