@@ -461,7 +461,7 @@ mod test {
 
     #[tokio::test]
     async fn should_connect() -> super::Result<()> {
-        let pool = Pool::new(get_opts());
+        let pool = Pool::new(crate::Opts::from(get_opts()));
         pool.get_conn().await?.ping().await?;
         pool.disconnect().await?;
         Ok(())

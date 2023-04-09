@@ -418,6 +418,9 @@
 #[cfg(feature = "nightly")]
 extern crate test;
 
+#[cfg(feature = "derive")]
+extern crate mysql_common;
+
 pub use mysql_common::{constants as consts, params};
 
 use std::sync::Arc;
@@ -481,7 +484,7 @@ pub use mysql_common::packets::{
         Gtids, Schema, SessionStateChange, SystemVariable, TransactionCharacteristics,
         TransactionState, Unsupported,
     },
-    BinlogDumpFlags, Column, Interval, OkPacket, SessionStateInfo, Sid,
+    BinlogDumpFlags, Column, GnoInterval, OkPacket, SessionStateInfo, Sid,
 };
 
 pub mod binlog {
@@ -541,9 +544,9 @@ pub mod prelude {
     #[doc(inline)]
     pub use crate::queryable::Queryable;
     #[doc(inline)]
-    pub use mysql_common::row::convert::FromRow;
+    pub use mysql_common::prelude::FromRow;
     #[doc(inline)]
-    pub use mysql_common::value::convert::{ConvIr, FromValue, ToValue};
+    pub use mysql_common::prelude::{FromValue, ToValue};
 
     /// Everything that is a statement.
     ///

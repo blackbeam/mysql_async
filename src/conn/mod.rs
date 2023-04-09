@@ -473,17 +473,15 @@ impl Conn {
             .unwrap_or((0, 0, 0));
         self.inner.id = handshake.connection_id();
         self.inner.status = handshake.status_flags();
+
+        // Allow only CachingSha2Password and MysqlNativePassword here
+        // because sha256_password is deprecated and other plugins won't
+        // appear here.
         self.inner.auth_plugin = match handshake.auth_plugin() {
-            Some(AuthPlugin::MysqlNativePassword | AuthPlugin::MysqlOldPassword) => {
-                AuthPlugin::MysqlNativePassword
-            }
             Some(AuthPlugin::CachingSha2Password) => AuthPlugin::CachingSha2Password,
-            Some(AuthPlugin::Other(ref name)) => {
-                let name = String::from_utf8_lossy(name).into();
-                return Err(DriverError::UnknownAuthPlugin { name }.into());
-            }
-            None => AuthPlugin::MysqlNativePassword,
+            _ => AuthPlugin::MysqlNativePassword,
         };
+
         Ok(())
     }
 
@@ -567,13 +565,32 @@ impl Conn {
 
             self.inner.auth_plugin = auth_switch_request.auth_plugin().clone().into_owned();
 
-            let plugin_data = self
-                .inner
-                .auth_plugin
-                .gen_data(self.inner.opts.pass(), &*self.inner.nonce);
+            let plugin_data = match &self.inner.auth_plugin {
+                x @ AuthPlugin::CachingSha2Password => {
+                    x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
+                }
+                x @ AuthPlugin::MysqlNativePassword => {
+                    x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
+                }
+                x @ AuthPlugin::MysqlOldPassword => {
+                    if self.inner.opts.secure_auth() {
+                        return Err(DriverError::MysqlOldPasswordDisabled.into());
+                    } else {
+                        x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
+                    }
+                }
+                x @ AuthPlugin::MysqlClearPassword => {
+                    if self.inner.opts.enable_cleartext_plugin() {
+                        x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
+                    } else {
+                        return Err(DriverError::CleartextPluginDisabled.into());
+                    }
+                }
+                x @ AuthPlugin::Other(_) => x.gen_data(self.inner.opts.pass(), &self.inner.nonce),
+            };
 
             if let Some(plugin_data) = plugin_data {
-                self.write_struct(&plugin_data).await?;
+                self.write_struct(&plugin_data.into_owned()).await?;
             } else {
                 self.write_packet(crate::BUFFER_POOL.get()).await?;
             }
@@ -598,6 +615,14 @@ impl Conn {
                 AuthPlugin::CachingSha2Password => {
                     self.continue_caching_sha2_password_auth().await?;
                     Ok(())
+                }
+                AuthPlugin::MysqlClearPassword => {
+                    if self.inner.opts.enable_cleartext_plugin() {
+                        self.continue_mysql_native_password_auth().await?;
+                        Ok(())
+                    } else {
+                        Err(DriverError::CleartextPluginDisabled.into())
+                    }
                 }
                 AuthPlugin::Other(ref name) => Err(DriverError::UnknownAuthPlugin {
                     name: String::from_utf8_lossy(name.as_ref()).to_string(),
