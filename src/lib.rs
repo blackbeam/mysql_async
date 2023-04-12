@@ -191,7 +191,7 @@
 //! * [`Pool`] is a smart pointer – each clone will point to the same pool instance.
 //! * [`Pool`] is `Send + Sync + 'static` – feel free to pass it around.
 //! * use [`Pool::disconnect`] to gracefuly close the pool.
-//! * [`Pool::new`] is lazy and won't assert server availability.
+//! * ⚠️ [`Pool::new`] is lazy and won't assert server availability.
 //!
 //! # Transaction
 //!
@@ -418,6 +418,9 @@
 #[cfg(feature = "nightly")]
 extern crate test;
 
+#[cfg(feature = "derive")]
+extern crate mysql_common;
+
 pub use mysql_common::{constants as consts, params};
 
 use std::sync::Arc;
@@ -467,8 +470,9 @@ pub use self::opts::ClientIdentity;
 
 #[doc(inline)]
 pub use self::opts::{
-    Opts, OptsBuilder, PoolConstraints, PoolOpts, SslOpts, DEFAULT_INACTIVE_CONNECTION_TTL,
-    DEFAULT_POOL_CONSTRAINTS, DEFAULT_STMT_CACHE_SIZE, DEFAULT_TTL_CHECK_INTERVAL,
+    ChangeUserOpts, Opts, OptsBuilder, PoolConstraints, PoolOpts, SslOpts,
+    DEFAULT_INACTIVE_CONNECTION_TTL, DEFAULT_POOL_CONSTRAINTS, DEFAULT_STMT_CACHE_SIZE,
+    DEFAULT_TTL_CHECK_INTERVAL,
 };
 
 #[doc(inline)]
@@ -481,7 +485,7 @@ pub use mysql_common::packets::{
         Gtids, Schema, SessionStateChange, SystemVariable, TransactionCharacteristics,
         TransactionState, Unsupported,
     },
-    BinlogDumpFlags, Column, Interval, OkPacket, SessionStateInfo, Sid,
+    BinlogDumpFlags, Column, GnoInterval, OkPacket, SessionStateInfo, Sid,
 };
 
 pub mod binlog {
@@ -541,9 +545,9 @@ pub mod prelude {
     #[doc(inline)]
     pub use crate::queryable::Queryable;
     #[doc(inline)]
-    pub use mysql_common::row::convert::FromRow;
+    pub use mysql_common::prelude::FromRow;
     #[doc(inline)]
-    pub use mysql_common::value::convert::{ConvIr, FromValue, ToValue};
+    pub use mysql_common::prelude::{FromValue, ToValue};
 
     /// Everything that is a statement.
     ///

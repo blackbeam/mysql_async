@@ -21,6 +21,7 @@ use url::{Host, Url};
 use std::{
     borrow::Cow,
     convert::TryFrom,
+    fmt,
     net::{Ipv4Addr, Ipv6Addr},
     path::Path,
     str::FromStr,
@@ -410,6 +411,17 @@ pub(crate) struct MysqlOpts {
     /// Changes the behavior of the affected count returned for writes (UPDATE/INSERT etc).
     /// It makes MySQL return the FOUND rows instead of the AFFECTED rows.
     client_found_rows: bool,
+
+    /// Enables Client-Side Cleartext Pluggable Authentication (defaults to `false`).
+    ///
+    /// Enables client to send passwords to the server as cleartext, without hashing or encryption
+    /// (consult MySql documentation for more info).
+    ///
+    /// # Security Notes
+    ///
+    /// Sending passwords as cleartext may be a security problem in some configurations. Please
+    /// consider using TLS or encrypted tunnels for server connection.
+    enable_cleartext_plugin: bool,
 }
 
 /// Mysql connection options.
@@ -747,6 +759,31 @@ impl Opts {
         self.inner.mysql_opts.client_found_rows
     }
 
+    /// Returns `true` if `mysql_clear_password` plugin support is enabled (defaults to `false`).
+    ///
+    /// `mysql_clear_password` enables client to send passwords to the server as cleartext, without
+    /// hashing or encryption (consult MySql documentation for more info).
+    ///
+    /// # Security Notes
+    ///
+    /// Sending passwords as cleartext may be a security problem in some configurations. Please
+    /// consider using TLS or encrypted tunnels for server connection.
+    ///
+    /// # Connection URL
+    ///
+    /// Use `enable_cleartext_plugin` URL parameter to set this value. E.g.
+    ///
+    /// ```
+    /// # use mysql_async::*;
+    /// # fn main() -> Result<()> {
+    /// let opts = Opts::from_url("mysql://localhost/db?enable_cleartext_plugin=true")?;
+    /// assert!(opts.enable_cleartext_plugin());
+    /// # Ok(()) }
+    /// ```
+    pub fn enable_cleartext_plugin(&self) -> bool {
+        self.inner.mysql_opts.enable_cleartext_plugin
+    }
+
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
         let mut out = CapabilityFlags::CLIENT_PROTOCOL_41
             | CapabilityFlags::CLIENT_SECURE_CONNECTION
@@ -797,6 +834,7 @@ impl Default for MysqlOpts {
             wait_timeout: None,
             secure_auth: true,
             client_found_rows: false,
+            enable_cleartext_plugin: false,
         }
     }
 }
@@ -1053,6 +1091,32 @@ impl OptsBuilder {
         self.opts.client_found_rows = client_found_rows;
         self
     }
+
+    /// Enables Client-Side Cleartext Pluggable Authentication (defaults to `false`).
+    ///
+    /// Enables client to send passwords to the server as cleartext, without hashing or encryption
+    /// (consult MySql documentation for more info).
+    ///
+    /// # Security Notes
+    ///
+    /// Sending passwords as cleartext may be a security problem in some configurations. Please
+    /// consider using TLS or encrypted tunnels for server connection.
+    ///
+    /// # Connection URL
+    ///
+    /// Use `enable_cleartext_plugin` URL parameter to set this value. E.g.
+    ///
+    /// ```
+    /// # use mysql_async::*;
+    /// # fn main() -> Result<()> {
+    /// let opts = Opts::from_url("mysql://localhost/db?enable_cleartext_plugin=true")?;
+    /// assert!(opts.enable_cleartext_plugin());
+    /// # Ok(()) }
+    /// ```
+    pub fn enable_cleartext_plugin(mut self, enable_cleartext_plugin: bool) -> Self {
+        self.opts.enable_cleartext_plugin = enable_cleartext_plugin;
+        self
+    }
 }
 
 impl From<OptsBuilder> for Opts {
@@ -1066,6 +1130,118 @@ impl From<OptsBuilder> for Opts {
         Opts {
             inner: Arc::new(inner_opts),
         }
+    }
+}
+
+/// [`COM_CHANGE_USER`][1] options.
+///
+/// Connection [`Opts`] are going to be updated accordingly upon `COM_CHANGE_USER`.
+///
+/// [`Opts`] won't be updated by default, because default `ChangeUserOpts` will reuse
+/// connection's `user`, `pass` and `db_name`.
+///
+/// [1]: https://dev.mysql.com/doc/c-api/5.7/en/mysql-change-user.html
+#[derive(Clone, Eq, PartialEq)]
+pub struct ChangeUserOpts {
+    user: Option<Option<String>>,
+    pass: Option<Option<String>>,
+    db_name: Option<Option<String>>,
+}
+
+impl ChangeUserOpts {
+    pub(crate) fn update_opts(self, opts: &mut Opts) {
+        if self.user.is_none() && self.pass.is_none() && self.db_name.is_none() {
+            return;
+        }
+
+        let mut builder = OptsBuilder::from_opts(opts.clone());
+
+        if let Some(user) = self.user {
+            builder = builder.user(user);
+        }
+
+        if let Some(pass) = self.pass {
+            builder = builder.pass(pass);
+        }
+
+        if let Some(db_name) = self.db_name {
+            builder = builder.db_name(db_name);
+        }
+
+        *opts = Opts::from(builder);
+    }
+
+    /// Creates change user options that'll reuse connection options.
+    pub fn new() -> Self {
+        Self {
+            user: None,
+            pass: None,
+            db_name: None,
+        }
+    }
+
+    /// Set [`Opts::user`] to the given value.
+    pub fn with_user(mut self, user: Option<String>) -> Self {
+        self.user = Some(user);
+        self
+    }
+
+    /// Set [`Opts::pass`] to the given value.
+    pub fn with_pass(mut self, pass: Option<String>) -> Self {
+        self.pass = Some(pass);
+        self
+    }
+
+    /// Set [`Opts::db_name`] to the given value.
+    pub fn with_db_name(mut self, db_name: Option<String>) -> Self {
+        self.db_name = Some(db_name);
+        self
+    }
+
+    /// Returns user.
+    ///
+    /// * if `None` then `self` does not meant to change user
+    /// * if `Some(None)` then `self` will clear user
+    /// * if `Some(Some(_))` then `self` will change user
+    pub fn user(&self) -> Option<Option<&str>> {
+        self.user.as_ref().map(|x| x.as_deref())
+    }
+
+    /// Returns password.
+    ///
+    /// * if `None` then `self` does not meant to change password
+    /// * if `Some(None)` then `self` will clear password
+    /// * if `Some(Some(_))` then `self` will change password
+    pub fn pass(&self) -> Option<Option<&str>> {
+        self.pass.as_ref().map(|x| x.as_deref())
+    }
+
+    /// Returns database name.
+    ///
+    /// * if `None` then `self` does not meant to change database name
+    /// * if `Some(None)` then `self` will clear database name
+    /// * if `Some(Some(_))` then `self` will change database name
+    pub fn db_name(&self) -> Option<Option<&str>> {
+        self.db_name.as_ref().map(|x| x.as_deref())
+    }
+}
+
+impl Default for ChangeUserOpts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for ChangeUserOpts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChangeUserOpts")
+            .field("user", &self.user)
+            .field(
+                "pass",
+                &self.pass.as_ref().map(|x| x.as_ref().map(|_| "...")),
+            )
+            .field("db_name", &self.db_name)
+            .finish()
     }
 }
 
@@ -1231,6 +1407,16 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                 _ => {
                     return Err(UrlError::InvalidParamValue {
                         param: "wait_timeout".into(),
+                        value,
+                    });
+                }
+            }
+        } else if key == "enable_cleartext_plugin" {
+            match bool::from_str(&*value) {
+                Ok(parsed) => opts.enable_cleartext_plugin = parsed,
+                Err(_) => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: key.to_string(),
                         value,
                     });
                 }

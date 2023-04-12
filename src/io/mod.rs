@@ -153,7 +153,7 @@ impl Future for CheckTcpStream<'_> {
 }
 
 impl Endpoint {
-    #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+    #[cfg(unix)]
     fn is_socket(&self) -> bool {
         match self {
             Self::Socket(_) => true,
@@ -417,6 +417,11 @@ impl Stream {
     #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     pub(crate) fn is_secure(&self) -> bool {
         self.codec.as_ref().unwrap().get_ref().is_secure()
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn is_socket(&self) -> bool {
+        self.codec.as_ref().unwrap().get_ref().is_socket()
     }
 
     pub(crate) fn reset_seq_id(&mut self) {

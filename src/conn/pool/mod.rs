@@ -232,7 +232,7 @@ impl Pool {
 
     /// Async function that resolves to `Conn`.
     pub fn get_conn(&self) -> GetConn {
-        GetConn::new(self)
+        GetConn::new(self, true)
     }
 
     /// Starts a new transaction.
@@ -296,7 +296,7 @@ impl Pool {
     ///
     /// Decreases the exist counter since a broken or dropped connection should not count towards
     /// the total.
-    fn cancel_connection(&self) {
+    pub(super) fn cancel_connection(&self) {
         let mut exchange = self.inner.exchange.lock().unwrap();
         exchange.exist -= 1;
         // we just enabled the creation of a new connection!
@@ -461,7 +461,7 @@ mod test {
 
     #[tokio::test]
     async fn should_connect() -> super::Result<()> {
-        let pool = Pool::new(get_opts());
+        let pool = Pool::new(crate::Opts::from(get_opts()));
         pool.get_conn().await?.ping().await?;
         pool.disconnect().await?;
         Ok(())
@@ -573,20 +573,29 @@ mod test {
 
         let pool = Pool::new(opts);
 
-        "CREATE TEMPORARY TABLE tmp(id int)".ignore(&pool).await?;
+        "CREATE TABLE IF NOT EXISTS mysql.tmp(id int)"
+            .ignore(&pool)
+            .await?;
+        "DELETE FROM mysql.tmp".ignore(&pool).await?;
 
         let mut tx = pool.start_transaction(TxOpts::default()).await?;
-        tx.exec_batch("INSERT INTO tmp (id) VALUES (?)", vec![(1_u8,), (2_u8,)])
-            .await?;
-        tx.exec_drop("SELECT * FROM tmp", ()).await?;
+        tx.exec_batch(
+            "INSERT INTO mysql.tmp (id) VALUES (?)",
+            vec![(1_u8,), (2_u8,)],
+        )
+        .await?;
+        tx.exec_drop("SELECT * FROM mysql.tmp", ()).await?;
         drop(tx);
         let row_opt = pool
             .get_conn()
             .await?
-            .query_first("SELECT COUNT(*) FROM tmp")
+            .query_first("SELECT COUNT(*) FROM mysql.tmp")
             .await?;
         assert_eq!(row_opt, Some((0u8,)));
-        pool.get_conn().await?.query_drop("DROP TABLE tmp").await?;
+        pool.get_conn()
+            .await?
+            .query_drop("DROP TABLE mysql.tmp")
+            .await?;
         pool.disconnect().await?;
         Ok(())
     }
@@ -657,7 +666,7 @@ mod test {
             let _ = conns.pop();
 
             // then, wait for a bit to let the connection be reclaimed
-            sleep(Duration::from_millis(50)).await;
+            sleep(Duration::from_millis(500)).await;
 
             // now check that we have the expected # of connections
             // this may look a little funky, but think of it this way:

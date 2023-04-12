@@ -163,6 +163,9 @@ pub enum DriverError {
 
     #[error("Client asked for SSL but server does not have this capability")]
     NoClientSslFlagFromServer,
+
+    #[error("mysql_clear_password must be enabled on the client side")]
+    CleartextPluginDisabled,
 }
 
 #[derive(Debug, Error)]
