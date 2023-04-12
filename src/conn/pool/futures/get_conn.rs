@@ -69,16 +69,18 @@ pub struct GetConn {
     pub(crate) queue_id: Option<QueueId>,
     pub(crate) pool: Option<Pool>,
     pub(crate) inner: GetConnInner,
+    reset_upon_returning_to_a_pool: bool,
     #[cfg(feature = "tracing")]
     span: Arc<Span>,
 }
 
 impl GetConn {
-    pub(crate) fn new(pool: &Pool) -> GetConn {
+    pub(crate) fn new(pool: &Pool, reset_upon_returning_to_a_pool: bool) -> GetConn {
         GetConn {
             queue_id: None,
             pool: Some(pool.clone()),
             inner: GetConnInner::New,
+            reset_upon_returning_to_a_pool,
             #[cfg(feature = "tracing")]
             span: Arc::new(debug_span!("mysql_async::get_conn")),
         }
@@ -141,6 +143,8 @@ impl Future for GetConn {
                     return match result {
                         Ok(mut c) => {
                             c.inner.pool = Some(pool);
+                            c.inner.reset_upon_returning_to_a_pool =
+                                self.reset_upon_returning_to_a_pool;
                             Poll::Ready(Ok(c))
                         }
                         Err(e) => {
@@ -152,12 +156,14 @@ impl Future for GetConn {
                 GetConnInner::Checking(ref mut f) => {
                     let result = ready!(Pin::new(f).poll(cx));
                     match result {
-                        Ok(mut checked_conn) => {
+                        Ok(mut c) => {
                             self.inner = GetConnInner::Done;
 
                             let pool = self.pool_take();
-                            checked_conn.inner.pool = Some(pool);
-                            return Poll::Ready(Ok(checked_conn));
+                            c.inner.pool = Some(pool);
+                            c.inner.reset_upon_returning_to_a_pool =
+                                self.reset_upon_returning_to_a_pool;
+                            return Poll::Ready(Ok(c));
                         }
                         Err(_) => {
                             // Idling connection is broken. We'll drop it and try again.

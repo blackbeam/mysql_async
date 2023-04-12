@@ -191,7 +191,7 @@
 //! * [`Pool`] is a smart pointer – each clone will point to the same pool instance.
 //! * [`Pool`] is `Send + Sync + 'static` – feel free to pass it around.
 //! * use [`Pool::disconnect`] to gracefuly close the pool.
-//! * [`Pool::new`] is lazy and won't assert server availability.
+//! * ⚠️ [`Pool::new`] is lazy and won't assert server availability.
 //!
 //! # Transaction
 //!
@@ -470,8 +470,9 @@ pub use self::opts::ClientIdentity;
 
 #[doc(inline)]
 pub use self::opts::{
-    Opts, OptsBuilder, PoolConstraints, PoolOpts, SslOpts, DEFAULT_INACTIVE_CONNECTION_TTL,
-    DEFAULT_POOL_CONSTRAINTS, DEFAULT_STMT_CACHE_SIZE, DEFAULT_TTL_CHECK_INTERVAL,
+    ChangeUserOpts, Opts, OptsBuilder, PoolConstraints, PoolOpts, SslOpts,
+    DEFAULT_INACTIVE_CONNECTION_TTL, DEFAULT_POOL_CONSTRAINTS, DEFAULT_STMT_CACHE_SIZE,
+    DEFAULT_TTL_CHECK_INTERVAL,
 };
 
 #[doc(inline)]

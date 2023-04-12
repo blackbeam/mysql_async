@@ -21,6 +21,7 @@ use url::{Host, Url};
 use std::{
     borrow::Cow,
     convert::TryFrom,
+    fmt,
     net::{Ipv4Addr, Ipv6Addr},
     path::Path,
     str::FromStr,
@@ -1129,6 +1130,118 @@ impl From<OptsBuilder> for Opts {
         Opts {
             inner: Arc::new(inner_opts),
         }
+    }
+}
+
+/// [`COM_CHANGE_USER`][1] options.
+///
+/// Connection [`Opts`] are going to be updated accordingly upon `COM_CHANGE_USER`.
+///
+/// [`Opts`] won't be updated by default, because default `ChangeUserOpts` will reuse
+/// connection's `user`, `pass` and `db_name`.
+///
+/// [1]: https://dev.mysql.com/doc/c-api/5.7/en/mysql-change-user.html
+#[derive(Clone, Eq, PartialEq)]
+pub struct ChangeUserOpts {
+    user: Option<Option<String>>,
+    pass: Option<Option<String>>,
+    db_name: Option<Option<String>>,
+}
+
+impl ChangeUserOpts {
+    pub(crate) fn update_opts(self, opts: &mut Opts) {
+        if self.user.is_none() && self.pass.is_none() && self.db_name.is_none() {
+            return;
+        }
+
+        let mut builder = OptsBuilder::from_opts(opts.clone());
+
+        if let Some(user) = self.user {
+            builder = builder.user(user);
+        }
+
+        if let Some(pass) = self.pass {
+            builder = builder.pass(pass);
+        }
+
+        if let Some(db_name) = self.db_name {
+            builder = builder.db_name(db_name);
+        }
+
+        *opts = Opts::from(builder);
+    }
+
+    /// Creates change user options that'll reuse connection options.
+    pub fn new() -> Self {
+        Self {
+            user: None,
+            pass: None,
+            db_name: None,
+        }
+    }
+
+    /// Set [`Opts::user`] to the given value.
+    pub fn with_user(mut self, user: Option<String>) -> Self {
+        self.user = Some(user);
+        self
+    }
+
+    /// Set [`Opts::pass`] to the given value.
+    pub fn with_pass(mut self, pass: Option<String>) -> Self {
+        self.pass = Some(pass);
+        self
+    }
+
+    /// Set [`Opts::db_name`] to the given value.
+    pub fn with_db_name(mut self, db_name: Option<String>) -> Self {
+        self.db_name = Some(db_name);
+        self
+    }
+
+    /// Returns user.
+    ///
+    /// * if `None` then `self` does not meant to change user
+    /// * if `Some(None)` then `self` will clear user
+    /// * if `Some(Some(_))` then `self` will change user
+    pub fn user(&self) -> Option<Option<&str>> {
+        self.user.as_ref().map(|x| x.as_deref())
+    }
+
+    /// Returns password.
+    ///
+    /// * if `None` then `self` does not meant to change password
+    /// * if `Some(None)` then `self` will clear password
+    /// * if `Some(Some(_))` then `self` will change password
+    pub fn pass(&self) -> Option<Option<&str>> {
+        self.pass.as_ref().map(|x| x.as_deref())
+    }
+
+    /// Returns database name.
+    ///
+    /// * if `None` then `self` does not meant to change database name
+    /// * if `Some(None)` then `self` will clear database name
+    /// * if `Some(Some(_))` then `self` will change database name
+    pub fn db_name(&self) -> Option<Option<&str>> {
+        self.db_name.as_ref().map(|x| x.as_deref())
+    }
+}
+
+impl Default for ChangeUserOpts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for ChangeUserOpts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChangeUserOpts")
+            .field("user", &self.user)
+            .field(
+                "pass",
+                &self.pass.as_ref().map(|x| x.as_ref().map(|_| "...")),
+            )
+            .field("db_name", &self.db_name)
+            .finish()
     }
 }
 

@@ -2,8 +2,9 @@ use futures_core::future::BoxFuture;
 
 use crate::Conn;
 
-pub use self::{exec::*, next_set::*, ping::*, prepare::*, query::*, reset::*};
+pub use self::{change_user::*, exec::*, next_set::*, ping::*, prepare::*, query::*, reset::*};
 
+mod change_user;
 mod exec;
 mod next_set;
 mod ping;
