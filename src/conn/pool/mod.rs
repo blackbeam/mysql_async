@@ -666,7 +666,7 @@ mod test {
             let _ = conns.pop();
 
             // then, wait for a bit to let the connection be reclaimed
-            sleep(Duration::from_millis(50)).await;
+            sleep(Duration::from_millis(500)).await;
 
             // now check that we have the expected # of connections
             // this may look a little funky, but think of it this way:

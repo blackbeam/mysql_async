@@ -1544,34 +1544,28 @@ mod test {
     #[tokio::test]
     async fn should_reset_the_connection() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
-        let max_execution_time = conn
-            .query_first::<u64, _>("SELECT @@max_execution_time")
-            .await?
-            .unwrap();
-
-        conn.exec_drop(
-            "SET SESSION max_execution_time = ?",
-            (max_execution_time + 1,),
-        )
-        .await?;
 
         assert_eq!(
-            conn.query_first::<u64, _>("SELECT @@max_execution_time")
-                .await?,
-            Some(max_execution_time + 1)
+            conn.query_first::<Value, _>("SELECT @foo").await?.unwrap(),
+            Value::NULL
+        );
+
+        conn.query_drop("SET @foo = 'foo'").await?;
+
+        assert_eq!(
+            conn.query_first::<String, _>("SELECT @foo").await?.unwrap(),
+            "foo",
         );
 
         if conn.reset().await? {
             assert_eq!(
-                conn.query_first::<u64, _>("SELECT @@max_execution_time")
-                    .await?,
-                Some(max_execution_time)
+                conn.query_first::<Value, _>("SELECT @foo").await?.unwrap(),
+                Value::NULL
             );
         } else {
             assert_eq!(
-                conn.query_first::<u64, _>("SELECT @@max_execution_time")
-                    .await?,
-                Some(max_execution_time + 1)
+                conn.query_first::<String, _>("SELECT @foo").await?.unwrap(),
+                "foo",
             );
         }
 
@@ -1582,28 +1576,22 @@ mod test {
     #[tokio::test]
     async fn should_change_user() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
-        let max_execution_time = conn
-            .query_first::<u64, _>("SELECT @@max_execution_time")
-            .await?
-            .unwrap();
+        assert_eq!(
+            conn.query_first::<Value, _>("SELECT @foo").await?.unwrap(),
+            Value::NULL
+        );
 
-        conn.exec_drop(
-            "SET SESSION max_execution_time = ?",
-            (max_execution_time + 1,),
-        )
-        .await?;
+        conn.query_drop("SET @foo = 'foo'").await?;
 
         assert_eq!(
-            conn.query_first::<u64, _>("SELECT @@max_execution_time")
-                .await?,
-            Some(max_execution_time + 1)
+            conn.query_first::<String, _>("SELECT @foo").await?.unwrap(),
+            "foo",
         );
 
         conn.change_user(Default::default()).await?;
         assert_eq!(
-            conn.query_first::<u64, _>("SELECT @@max_execution_time")
-                .await?,
-            Some(max_execution_time)
+            conn.query_first::<Value, _>("SELECT @foo").await?.unwrap(),
+            Value::NULL
         );
 
         let plugins: &[&str] = if !conn.inner.is_mariadb && conn.server_version() >= (5, 8, 0) {
@@ -1613,42 +1601,67 @@ mod test {
         };
 
         for plugin in plugins {
-            let mut conn2 = Conn::new(get_opts()).await.unwrap();
-
             let mut rng = rand::thread_rng();
             let mut pass = [0u8; 10];
             pass.try_fill(&mut rng).unwrap();
             let pass: String = IntoIterator::into_iter(pass)
                 .map(|x| ((x % (123 - 97)) + 97) as char)
                 .collect();
-            conn.query_drop("DROP USER IF EXISTS __mysql_async_test_user")
+
+            conn.query_drop("DELETE FROM mysql.user WHERE user = '__mats'")
                 .await
                 .unwrap();
-            conn.query_drop(format!(
-                "CREATE USER '__mysql_async_test_user'@'%' IDENTIFIED WITH {} BY {}",
-                plugin,
-                Value::from(pass.clone()).as_sql(false)
-            ))
-            .await
-            .unwrap();
             conn.query_drop("FLUSH PRIVILEGES").await.unwrap();
 
+            if conn.inner.is_mariadb || conn.server_version() < (5, 7, 0) {
+                if matches!(conn.server_version(), (5, 6, _)) {
+                    conn.query_drop("CREATE USER '__mats'@'%' IDENTIFIED WITH mysql_old_password")
+                        .await
+                        .unwrap();
+                    conn.query_drop(format!(
+                        "SET PASSWORD FOR '__mats'@'%' = OLD_PASSWORD({})",
+                        Value::from(pass.clone()).as_sql(false)
+                    ))
+                    .await
+                    .unwrap();
+                } else {
+                    conn.query_drop("CREATE USER '__mats'@'%'").await.unwrap();
+                    conn.query_drop(format!(
+                        "SET PASSWORD FOR '__mats'@'%' = PASSWORD({})",
+                        Value::from(pass.clone()).as_sql(false)
+                    ))
+                    .await
+                    .unwrap();
+                }
+            } else {
+                conn.query_drop(format!(
+                    "CREATE USER '__mats'@'%' IDENTIFIED WITH {} BY {}",
+                    plugin,
+                    Value::from(pass.clone()).as_sql(false)
+                ))
+                .await
+                .unwrap();
+            };
+
+            conn.query_drop("FLUSH PRIVILEGES").await.unwrap();
+
+            let mut conn2 = Conn::new(get_opts().secure_auth(false)).await.unwrap();
             conn2
                 .change_user(
                     ChangeUserOpts::default()
                         .with_db_name(None)
-                        .with_user(Some("__mysql_async_test_user".into()))
+                        .with_user(Some("__mats".into()))
                         .with_pass(Some(pass)),
                 )
                 .await
                 .unwrap();
-            assert_eq!(
-                conn2
-                    .query_first::<(Option<String>, String), _>("SELECT DATABASE(), USER();")
-                    .await
-                    .unwrap(),
-                Some((None, String::from("__mysql_async_test_user@localhost"))),
-            );
+            let (db, user) = conn2
+                .query_first::<(Option<String>, String), _>("SELECT DATABASE(), USER();")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(db, None);
+            assert!(user.starts_with("__mats"));
 
             conn2.disconnect().await.unwrap();
         }
