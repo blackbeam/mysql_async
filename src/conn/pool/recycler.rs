@@ -201,7 +201,11 @@ impl Future for Recycler {
         // races on .exist
         let effectively_eof = close && self.inner.exchange.lock().unwrap().exist == 0;
 
-        if (self.eof || effectively_eof) && self.cleaning.is_empty() && self.discard.is_empty() {
+        if (self.eof || effectively_eof)
+            && self.cleaning.is_empty()
+            && self.discard.is_empty()
+            && self.reset.is_empty()
+        {
             // we know that all Pool handles have been dropped (self.dropped.poll returned None).
 
             // if this assertion fails, where are the remaining connections?
