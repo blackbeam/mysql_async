@@ -63,9 +63,9 @@ impl Future for Recycler {
         let mut close = self.inner.close.load(Ordering::Acquire);
 
         macro_rules! conn_return {
-            ($self:ident, $conn:ident) => {{
+            ($self:ident, $conn:ident, $pool_is_closed: expr) => {{
                 let mut exchange = $self.inner.exchange.lock().unwrap();
-                if exchange.available.len() >= $self.pool_opts.active_bound() {
+                if $pool_is_closed || exchange.available.len() >= $self.pool_opts.active_bound() {
                     drop(exchange);
                     $self.discard.push($conn.close_conn().boxed());
                 } else {
@@ -89,7 +89,7 @@ impl Future for Recycler {
                 } else if $conn.inner.reset_upon_returning_to_a_pool {
                     $self.reset.push($conn.reset_for_pool().boxed());
                 } else {
-                    conn_return!($self, $conn);
+                    conn_return!($self, $conn, false);
                 }
             };
         }
@@ -152,7 +152,7 @@ impl Future for Recycler {
         loop {
             match Pin::new(&mut self.reset).poll_next(cx) {
                 Poll::Pending | Poll::Ready(None) => break,
-                Poll::Ready(Some(Ok(conn))) => conn_return!(self, conn),
+                Poll::Ready(Some(Ok(conn))) => conn_return!(self, conn, close),
                 Poll::Ready(Some(Err(e))) => {
                     // an error during reset.
                     // replace with a new connection

@@ -26,7 +26,7 @@ use crate::{
     conn::{pool::futures::*, Conn},
     error::*,
     opts::{Opts, PoolOpts},
-    queryable::transaction::{Transaction, TxOpts, TxStatus},
+    queryable::transaction::{Transaction, TxOpts},
 };
 
 mod recycler;
