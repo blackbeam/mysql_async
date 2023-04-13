@@ -253,25 +253,6 @@ impl Pool {
     fn return_conn(&mut self, conn: Conn) {
         // NOTE: we're not in async context here, so we can't block or return NotReady
         // any and all cleanup work _has_ to be done in the spawned recycler
-
-        // fast-path for when the connection is immediately ready to be reused
-        if conn.inner.stream.is_some()
-            && !conn.inner.disconnected
-            && !conn.expired()
-            && conn.inner.tx_status == TxStatus::None
-            && !conn.has_pending_result()
-            && !self.inner.close.load(atomic::Ordering::Acquire)
-        {
-            let mut exchange = self.inner.exchange.lock().unwrap();
-            if exchange.available.len() < self.opts.pool_opts().active_bound() {
-                exchange.available.push_back(conn.into());
-                if let Some(w) = exchange.waiting.pop() {
-                    w.wake();
-                }
-                return;
-            }
-        }
-
         self.send_to_recycler(conn);
     }
 
@@ -491,6 +472,9 @@ mod test {
                 .into_iter()
                 .map(|conn| conn.id())
                 .collect::<Vec<_>>();
+
+            // give some time to reset connections
+            sleep(Duration::from_millis(500)).await;
 
             // get_conn should work if connection is available and alive
             pool.get_conn().await?;
