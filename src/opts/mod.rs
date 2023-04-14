@@ -209,9 +209,15 @@ pub struct PoolOpts {
     constraints: PoolConstraints,
     inactive_connection_ttl: Duration,
     ttl_check_interval: Duration,
+    reset_connection: bool,
 }
 
 impl PoolOpts {
+    /// Calls `Self::default`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Creates the default [`PoolOpts`] with the given constraints.
     pub fn with_constraints(mut self, constraints: PoolConstraints) -> Self {
         self.constraints = constraints;
@@ -221,6 +227,50 @@ impl PoolOpts {
     /// Returns pool constraints.
     pub fn constraints(&self) -> PoolConstraints {
         self.constraints
+    }
+
+    /// Sets whether to reset connection upon returning it to a pool (defaults to `true`).
+    ///
+    /// Default behavior increases reliability but comes with cons:
+    ///
+    /// * reset procedure removes all prepared statements, i.e. kills prepared statements cache
+    /// * connection reset is quite fast but requires additional client-server roundtrip
+    ///   (might also requires requthentication for older servers)
+    ///
+    /// The purpose of the reset procedure is to:
+    ///
+    /// * rollback any opened transactions (`mysql_async` is able to do this without explicit reset)
+    /// * reset transaction isolation level
+    /// * reset session variables
+    /// * delete user variables
+    /// * remove temporary tables
+    /// * remove all PREPARE statement (this action kills prepared statements cache)
+    ///
+    /// So to encrease overall performance you can safely opt-out of the default behavior
+    /// if you are not willing to change the session state in an unpleasant way.
+    ///
+    /// It is also possible to selectively opt-in/out using [`Conn::reset_connection`].
+    ///
+    /// # Connection URL
+    ///
+    /// You can use `reset_connection` URL parameter to set this value. E.g.
+    ///
+    /// ```
+    /// # use mysql_async::*;
+    /// # use std::time::Duration;
+    /// # fn main() -> Result<()> {
+    /// let opts = Opts::from_url("mysql://localhost/db?reset_connection=false")?;
+    /// assert_eq!(opts.pool_opts().reset_connection(), false);
+    /// # Ok(()) }
+    /// ```
+    pub fn with_reset_connection(mut self, reset_connection: bool) -> Self {
+        self.reset_connection = reset_connection;
+        self
+    }
+
+    /// Returns the `reset_connection` value (see [`PoolOpts::with_reset_connection`]).
+    pub fn reset_connection(&self) -> bool {
+        self.reset_connection
     }
 
     /// Pool will recycle inactive connection if it is outside of the lower bound of the pool
@@ -309,6 +359,7 @@ impl Default for PoolOpts {
             constraints: DEFAULT_POOL_CONSTRAINTS,
             inactive_connection_ttl: DEFAULT_INACTIVE_CONNECTION_TTL,
             ttl_check_interval: DEFAULT_TTL_CHECK_INTERVAL,
+            reset_connection: true,
         }
     }
 }
@@ -1340,7 +1391,6 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                 Ok(value) => {
                     opts.pool_opts = opts
                         .pool_opts
-                        .clone()
                         .with_inactive_connection_ttl(Duration::from_secs(value))
                 }
                 _ => {
@@ -1355,7 +1405,6 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                 Ok(value) => {
                     opts.pool_opts = opts
                         .pool_opts
-                        .clone()
                         .with_ttl_check_interval(Duration::from_secs(value))
                 }
                 _ => {
@@ -1414,6 +1463,16 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
         } else if key == "enable_cleartext_plugin" {
             match bool::from_str(&*value) {
                 Ok(parsed) => opts.enable_cleartext_plugin = parsed,
+                Err(_) => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: key.to_string(),
+                        value,
+                    });
+                }
+            }
+        } else if key == "reset_connection" {
+            match bool::from_str(&*value) {
+                Ok(parsed) => opts.pool_opts = opts.pool_opts.with_reset_connection(parsed),
                 Err(_) => {
                     return Err(UrlError::InvalidParamValue {
                         param: key.to_string(),
@@ -1538,7 +1597,7 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
     }
 
     if let Some(pool_constraints) = PoolConstraints::new(pool_min, pool_max) {
-        opts.pool_opts = opts.pool_opts.clone().with_constraints(pool_constraints);
+        opts.pool_opts = opts.pool_opts.with_constraints(pool_constraints);
     } else {
         return Err(UrlError::InvalidPoolConstraints {
             min: pool_min,

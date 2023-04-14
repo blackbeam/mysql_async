@@ -229,6 +229,13 @@ impl Conn {
         self.inner.last_ok_packet.as_ref()
     }
 
+    /// Turns on/off automatic connection reset (see [`crate::PoolOpts::with_reset_connection`]).
+    ///
+    /// Only makes sense for pooled connections.
+    pub fn reset_connection(&mut self, reset_connection: bool) {
+        self.inner.reset_upon_returning_to_a_pool = reset_connection;
+    }
+
     pub(crate) fn stream_mut(&mut self) -> Result<&mut Stream> {
         self.inner.stream_mut()
     }

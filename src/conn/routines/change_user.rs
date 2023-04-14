@@ -11,7 +11,7 @@ use crate::Conn;
 
 use super::Routine;
 
-/// A routine that performs `COM_RESET_CONNECTION`.
+/// A routine that performs `COM_CHANGE_USER`.
 #[derive(Debug, Copy, Clone)]
 pub struct ChangeUser;
 

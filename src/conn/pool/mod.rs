@@ -232,7 +232,8 @@ impl Pool {
 
     /// Async function that resolves to `Conn`.
     pub fn get_conn(&self) -> GetConn {
-        GetConn::new(self, true)
+        let reset_connection = self.opts.pool_opts().reset_connection();
+        GetConn::new(self, reset_connection)
     }
 
     /// Starts a new transaction.
@@ -382,7 +383,6 @@ mod test {
         future::{join_all, select, select_all, try_join_all},
         try_join, FutureExt,
     };
-    use mysql_common::row::Row;
     use tokio::time::{sleep, timeout};
 
     use std::{
@@ -396,7 +396,7 @@ mod test {
         opts::PoolOpts,
         prelude::*,
         test_misc::get_opts,
-        PoolConstraints, TxOpts,
+        PoolConstraints, Row, TxOpts, Value,
     };
 
     macro_rules! conn_ex_field {
@@ -409,6 +409,55 @@ mod test {
         ($pool:expr, $field:tt) => {
             $pool.inner.exchange.lock().unwrap().$field
         };
+    }
+
+    #[tokio::test]
+    async fn should_opt_out_of_connection_reset() -> super::Result<()> {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(1, 1).unwrap());
+        let opts = get_opts().pool_opts(pool_opts.clone());
+
+        let pool = Pool::new(opts.clone());
+
+        let mut conn = pool.get_conn().await.unwrap();
+        assert_eq!(
+            conn.query_first::<Value, _>("SELECT @foo").await?.unwrap(),
+            Value::NULL
+        );
+        conn.query_drop("SET @foo = 'foo'").await?;
+        assert_eq!(
+            conn.query_first::<String, _>("SELECT @foo").await?.unwrap(),
+            "foo",
+        );
+        drop(conn);
+
+        conn = pool.get_conn().await.unwrap();
+        assert_eq!(
+            conn.query_first::<Value, _>("SELECT @foo").await?.unwrap(),
+            Value::NULL
+        );
+        conn.query_drop("SET @foo = 'foo'").await?;
+        conn.reset_connection(false);
+        drop(conn);
+
+        conn = pool.get_conn().await.unwrap();
+        assert_eq!(
+            conn.query_first::<String, _>("SELECT @foo").await?.unwrap(),
+            "foo",
+        );
+        drop(conn);
+        pool.disconnect().await.unwrap();
+
+        let pool = Pool::new(opts.pool_opts(pool_opts.with_reset_connection(false)));
+        conn = pool.get_conn().await.unwrap();
+        conn.query_drop("SET @foo = 'foo'").await?;
+        drop(conn);
+        conn = pool.get_conn().await.unwrap();
+        assert_eq!(
+            conn.query_first::<String, _>("SELECT @foo").await?.unwrap(),
+            "foo",
+        );
+        drop(conn);
+        pool.disconnect().await
     }
 
     #[test]
