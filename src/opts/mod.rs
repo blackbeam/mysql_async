@@ -403,8 +403,12 @@ pub(crate) struct MysqlOpts {
     /// (defaults to `wait_timeout`).
     conn_ttl: Option<Duration>,
 
-    /// Commands to execute on each new database connection.
+    /// Commands to execute once new connection is established.
     init: Vec<String>,
+
+    /// Commands to execute on new connection and every time
+    /// [`Conn::reset`] or [`Conn::change_user`] is invoked.
+    setup: Vec<String>,
 
     /// Number of prepared statements cached on the client side (per connection). Defaults to `10`.
     stmt_cache_size: usize,
@@ -577,9 +581,15 @@ impl Opts {
         self.inner.mysql_opts.db_name.as_ref().map(AsRef::as_ref)
     }
 
-    /// Commands to execute on each new database connection.
+    /// Commands to execute once new connection is established.
     pub fn init(&self) -> &[String] {
         self.inner.mysql_opts.init.as_ref()
+    }
+
+    /// Commands to execute on new connection and every time
+    /// [`Conn::reset`] or [`Conn::change_user`] is invoked.
+    pub fn setup(&self) -> &[String] {
+        self.inner.mysql_opts.setup.as_ref()
     }
 
     /// TCP keep alive timeout in milliseconds (defaults to `None`).
@@ -871,6 +881,7 @@ impl Default for MysqlOpts {
             pass: None,
             db_name: None,
             init: vec![],
+            setup: vec![],
             tcp_keepalive: None,
             tcp_nodelay: true,
             local_infile_handler: None,
@@ -1034,6 +1045,12 @@ impl OptsBuilder {
     /// Defines initial queries. See [`Opts::init`].
     pub fn init<T: Into<String>>(mut self, init: Vec<T>) -> Self {
         self.opts.init = init.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Defines setup queries. See [`Opts::setup`].
+    pub fn setup<T: Into<String>>(mut self, setup: Vec<T>) -> Self {
+        self.opts.setup = setup.into_iter().map(Into::into).collect();
         self
     }
 
@@ -1654,6 +1671,7 @@ mod test {
         assert_eq!(url_opts.pass(), builder_opts.pass());
         assert_eq!(url_opts.db_name(), builder_opts.db_name());
         assert_eq!(url_opts.init(), builder_opts.init());
+        assert_eq!(url_opts.setup(), builder_opts.setup());
         assert_eq!(url_opts.tcp_keepalive(), builder_opts.tcp_keepalive());
         assert_eq!(url_opts.tcp_nodelay(), builder_opts.tcp_nodelay());
         assert_eq!(url_opts.pool_opts(), builder_opts.pool_opts());

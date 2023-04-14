@@ -881,6 +881,16 @@ impl Conn {
         Ok(())
     }
 
+    async fn run_setup_commands(&mut self) -> Result<()> {
+        let mut setup = self.inner.opts.setup().to_vec();
+
+        while let Some(query) = setup.pop() {
+            self.query_drop(query).await?;
+        }
+
+        Ok(())
+    }
+
     /// Returns a future that resolves to [`Conn`].
     pub fn new<T: Into<Opts>>(opts: T) -> crate::BoxFuture<'static, Conn> {
         let opts = opts.into();
@@ -913,6 +923,7 @@ impl Conn {
             conn.read_max_allowed_packet().await?;
             conn.read_wait_timeout().await?;
             conn.run_init_commands().await?;
+            conn.run_setup_commands().await?;
 
             Ok(conn)
         }
@@ -1011,6 +1022,7 @@ impl Conn {
             self.routine(routines::ResetRoutine).await?;
             self.inner.stmt_cache.clear();
             self.inner.infile_handler = None;
+            self.run_setup_commands().await?;
         }
 
         Ok(supports_com_reset_connection)
@@ -1052,6 +1064,7 @@ impl Conn {
         self.routine(routines::ChangeUser).await?;
         self.inner.stmt_cache.clear();
         self.inner.infile_handler = None;
+        self.run_setup_commands().await?;
         Ok(())
     }
 
@@ -1545,6 +1558,30 @@ mod test {
         let result: Vec<(u8, String)> = conn.query("SELECT @a, @b").await?;
         conn.disconnect().await?;
         assert_eq!(result, vec![(42, "foo".into())]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_execute_setup_queries_on_reset() -> super::Result<()> {
+        let opts = OptsBuilder::from_opts(get_opts()).setup(vec!["SET @a = 42", "SET @b = 'foo'"]);
+        let mut conn = Conn::new(opts).await?;
+
+        // initial run
+        let mut result: Vec<(u8, String)> = conn.query("SELECT @a, @b").await?;
+        assert_eq!(result, vec![(42, "foo".into())]);
+
+        // after reset
+        if conn.reset().await? {
+            result = conn.query("SELECT @a, @b").await?;
+            assert_eq!(result, vec![(42, "foo".into())]);
+        }
+
+        // after change user
+        conn.change_user(Default::default()).await?;
+        result = conn.query("SELECT @a, @b").await?;
+        assert_eq!(result, vec![(42, "foo".into())]);
+
+        conn.disconnect().await?;
         Ok(())
     }
 
