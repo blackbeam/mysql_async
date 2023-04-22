@@ -93,6 +93,8 @@
 //!     mysql_async = { version = "*", features = ["tracing"] }
 //!     ```
 //!
+//! *   `derive` – enables `mysql_commom/derive` feature
+//!
 //! [myslqcommonfeatures]: https://github.com/blackbeam/rust_mysql_common#crate-features
 //!
 //! # TLS/SSL Support

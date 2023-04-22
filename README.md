@@ -94,6 +94,8 @@ as well as `native-tls`-based TLS support.
     mysql_async = { version = "*", features = ["tracing"] }
     ```
 
+*   `derive` – enables `mysql_commom/derive` feature
+
 [myslqcommonfeatures]: https://github.com/blackbeam/rust_mysql_common#crate-features
 
 ## TLS/SSL Support
@@ -190,7 +192,7 @@ Please note:
 * [`Pool`] is a smart pointer – each clone will point to the same pool instance.
 * [`Pool`] is `Send + Sync + 'static` – feel free to pass it around.
 * use [`Pool::disconnect`] to gracefuly close the pool.
-* [`Pool::new`] is lazy and won't assert server availability.
+* ⚠️ [`Pool::new`] is lazy and won't assert server availability.
 
 ## Transaction
 
