@@ -89,7 +89,7 @@ default = [
     "native-tls-tls",
 ]
 default-rustls = [
-    "flate2/zlib",
+    "flate2/rust_backend",
     "mysql_common/bigdecimal",
     "mysql_common/rust_decimal",
     "mysql_common/time",

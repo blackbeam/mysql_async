@@ -523,7 +523,7 @@ mod test {
                 .collect::<Vec<_>>();
 
             // give some time to reset connections
-            sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(1000)).await;
 
             // get_conn should work if connection is available and alive
             pool.get_conn().await?;
