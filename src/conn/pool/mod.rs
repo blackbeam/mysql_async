@@ -7,7 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use futures_util::FutureExt;
-use priority_queue::PriorityQueue;
+use keyed_priority_queue::KeyedPriorityQueue;
 use tokio::sync::mpsc;
 
 use std::{
@@ -92,7 +92,7 @@ impl Exchange {
 
 #[derive(Default, Debug)]
 struct Waitlist {
-    queue: PriorityQueue<QueuedWaker, QueueId>,
+    queue: KeyedPriorityQueue<QueuedWaker, QueueId>,
 }
 
 impl Waitlist {
