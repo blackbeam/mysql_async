@@ -1169,12 +1169,19 @@ impl Conn {
         Ok(self)
     }
 
-    async fn register_as_slave(&mut self, server_id: u32) -> Result<()> {
+    async fn register_as_slave<'a>(
+        &mut self,
+        server_id: u32,
+        hostname: impl Into<Cow<'a, [u8]>>,
+        port: u16,
+    ) -> Result<()> {
         use mysql_common::packets::ComRegisterSlave;
 
+        let cmd_register_slave = ComRegisterSlave::new(server_id)
+            .with_hostname(hostname)
+            .with_port(port);
         self.query_drop("SET @master_binlog_checksum='ALL'").await?;
-        self.write_command(&ComRegisterSlave::new(server_id))
-            .await?;
+        self.write_command(&cmd_register_slave).await?;
 
         // Server will respond with OK.
         self.read_packet().await?;
@@ -1183,7 +1190,8 @@ impl Conn {
     }
 
     async fn request_binlog(&mut self, request: BinlogRequest<'_>) -> Result<()> {
-        self.register_as_slave(request.server_id()).await?;
+        self.register_as_slave(request.server_id(), request.hostname_raw(), request.port())
+            .await?;
         self.write_command(&request.as_cmd()).await?;
         Ok(())
     }
