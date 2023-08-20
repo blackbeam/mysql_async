@@ -273,7 +273,7 @@ pub trait Queryable: Send {
         async move { self.query_iter(query).await?.drop_result().await }.boxed()
     }
 
-    /// Exectues the given statement for each item in the given params iterator.
+    /// Executes the given statement for each item in the given params iterator.
     ///
     /// It'll prepare `stmt` (once), if necessary.
     fn exec_batch<'a: 'b, 'b, S, P, I>(&'a mut self, stmt: S, params_iter: I) -> BoxFuture<'b, ()>
@@ -283,7 +283,7 @@ pub trait Queryable: Send {
         I::IntoIter: Send,
         P: Into<Params> + Send;
 
-    /// Exectues the given statement and collects the first result set.
+    /// Executes the given statement and collects the first result set.
     ///
     /// It'll prepare `stmt`, if necessary.
     ///
@@ -307,7 +307,7 @@ pub trait Queryable: Send {
         .boxed()
     }
 
-    /// Exectues the given statement and returns the first row of the first result set.
+    /// Executes the given statement and returns the first row of the first result set.
     ///
     /// It'll prepare `stmt`, if necessary.
     ///
@@ -335,7 +335,7 @@ pub trait Queryable: Send {
         .boxed()
     }
 
-    /// Exectues the given stmt and maps each row of the first result set.
+    /// Executes the given stmt and maps each row of the first result set.
     ///
     /// It'll prepare `stmt`, if necessary.
     ///
@@ -367,7 +367,7 @@ pub trait Queryable: Send {
         .boxed()
     }
 
-    /// Exectues the given stmt and folds the first result set to a signel value.
+    /// Executes the given stmt and folds the first result set to a signel value.
     ///
     /// It'll prepare `stmt`, if necessary.
     ///
@@ -399,7 +399,7 @@ pub trait Queryable: Send {
         .boxed()
     }
 
-    /// Exectues the given statement and drops the result.
+    /// Executes the given statement and drops the result.
     fn exec_drop<'a: 'b, 'b, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, ()>
     where
         S: StatementLike + 'b,
