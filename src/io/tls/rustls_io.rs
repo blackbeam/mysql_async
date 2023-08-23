@@ -23,7 +23,7 @@ impl Endpoint {
         }
 
         let mut root_store = RootCertStore::empty();
-        root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
             OwnedTrustAnchor::from_subject_spki_name_constraints(
                 ta.subject,
                 ta.spki,
@@ -56,7 +56,7 @@ impl Endpoint {
 
         let mut config = if let Some(identity) = ssl_opts.client_identity() {
             let (cert_chain, priv_key) = identity.load()?;
-            config_builder.with_single_cert(cert_chain, priv_key)?
+            config_builder.with_client_auth_cert(cert_chain, priv_key)?
         } else {
             config_builder.with_no_client_auth()
         };
