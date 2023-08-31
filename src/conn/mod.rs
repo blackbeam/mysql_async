@@ -107,6 +107,7 @@ struct ConnInner {
     tx_status: TxStatus,
     reset_upon_returning_to_a_pool: bool,
     opts: Opts,
+    ttl_deadline: Option<Instant>,
     last_io: Instant,
     wait_timeout: Duration,
     stmt_cache: StmtCache,
@@ -140,6 +141,7 @@ impl fmt::Debug for ConnInner {
 impl ConnInner {
     /// Constructs an empty connection.
     fn empty(opts: Opts) -> ConnInner {
+        let ttl_deadline = opts.pool_opts().new_connection_ttl_deadline();
         ConnInner {
             capabilities: opts.get_capabilities(),
             status: StatusFlags::empty(),
@@ -157,6 +159,7 @@ impl ConnInner {
             stmt_cache: StmtCache::new(opts.stmt_cache_size()),
             socket: opts.socket().map(Into::into),
             opts,
+            ttl_deadline,
             nonce: Vec::default(),
             auth_plugin: AuthPlugin::MysqlNativePassword,
             auth_switched: false,
@@ -1088,6 +1091,11 @@ impl Conn {
     /// Returns true if time since last IO exceeds `wait_timeout`
     /// (or `conn_ttl` if specified in opts).
     fn expired(&self) -> bool {
+        if let Some(deadline) = self.inner.ttl_deadline {
+            if Instant::now() > deadline {
+                return true;
+            }
+        }
         let ttl = self
             .inner
             .opts
