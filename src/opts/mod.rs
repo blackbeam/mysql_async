@@ -1340,11 +1340,14 @@ fn get_opts_pass_from_url(url: &Url) -> Option<String> {
 
 fn get_opts_db_name_from_url(url: &Url) -> Option<String> {
     if let Some(mut segments) = url.path_segments() {
-        segments.next().map(|db_name| {
-            percent_decode(db_name.as_ref())
-                .decode_utf8_lossy()
-                .into_owned()
-        })
+        segments
+            .next()
+            .map(|db_name| {
+                percent_decode(db_name.as_ref())
+                    .decode_utf8_lossy()
+                    .into_owned()
+            })
+            .and_then(|db| if db.is_empty() { None } else { Some(db) })
     } else {
         None
     }
@@ -1812,5 +1815,19 @@ mod test {
 
         let opts = Opts::from_url("mysql://localhost/foo?compression=9").unwrap();
         assert_eq!(opts.compression(), Some(crate::Compression::new(9)));
+    }
+
+    #[test]
+    fn test_builder_eq_url_empty_db() {
+        let builder = super::OptsBuilder::default();
+        let builder_opts = Opts::from(builder);
+
+        let url: &str = "mysql://iq-controller@localhost";
+        let url_opts = super::Opts::from_str(url).unwrap();
+        assert_eq!(url_opts.db_name(), builder_opts.db_name());
+
+        let url: &str = "mysql://iq-controller@localhost/";
+        let url_opts = super::Opts::from_str(url).unwrap();
+        assert_eq!(url_opts.db_name(), builder_opts.db_name());
     }
 }
