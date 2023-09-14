@@ -1347,7 +1347,7 @@ fn get_opts_db_name_from_url(url: &Url) -> Option<String> {
                     .decode_utf8_lossy()
                     .into_owned()
             })
-            .and_then(|db| if db.is_empty() { None } else { Some(db) })
+            .filter(|db| !db.is_empty())
     } else {
         None
     }
