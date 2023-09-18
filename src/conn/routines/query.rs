@@ -29,6 +29,8 @@ impl<'a, L: TracingLevel> QueryRoutine<'a, L> {
 
 impl<L: TracingLevel> Routine<()> for QueryRoutine<'_, L> {
     fn call<'a>(&'a mut self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<()>> {
+        conn.metrics().routines.queries.incr();
+
         #[cfg(feature = "tracing")]
         let span = create_span!(
             L::LEVEL,

@@ -67,8 +67,10 @@ impl Future for Recycler {
                 let mut exchange = $self.inner.exchange.lock().unwrap();
                 if $pool_is_closed || exchange.available.len() >= $self.pool_opts.active_bound() {
                     drop(exchange);
+                    $self.inner.metrics.recycler.discards.incr();
                     $self.discard.push($conn.close_conn().boxed());
                 } else {
+                    $self.inner.metrics.recycler.recycled_returnals.incr();
                     exchange.available.push_back($conn.into());
                     if let Some(w) = exchange.waiting.pop() {
                         w.wake();
@@ -80,11 +82,14 @@ impl Future for Recycler {
         macro_rules! conn_decision {
             ($self:ident, $conn:ident) => {
                 if $conn.inner.stream.is_none() || $conn.inner.disconnected {
+                    $self.inner.metrics.recycler.discards.incr();
                     // drop unestablished connection
                     $self.discard.push(futures_util::future::ok(()).boxed());
                 } else if $conn.inner.tx_status != TxStatus::None || $conn.has_pending_result() {
+                    $self.inner.metrics.recycler.cleans.incr();
                     $self.cleaning.push($conn.cleanup_for_pool().boxed());
                 } else if $conn.expired() || close {
+                    $self.inner.metrics.recycler.discards.incr();
                     $self.discard.push($conn.close_conn().boxed());
                 } else if $conn.inner.reset_upon_returning_to_a_pool {
                     $self.reset.push($conn.reset_for_pool().boxed());

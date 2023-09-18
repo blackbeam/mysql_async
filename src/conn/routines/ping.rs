@@ -14,6 +14,8 @@ pub struct PingRoutine;
 
 impl Routine<()> for PingRoutine {
     fn call<'a>(&'a mut self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<()>> {
+        conn.metrics().routines.pings.incr();
+
         #[cfg(feature = "tracing")]
         let span = debug_span!("mysql_async::ping", mysql_async.connection.id = conn.id());
 

@@ -25,6 +25,7 @@ use std::{
 use crate::{
     conn::{pool::futures::*, Conn},
     error::*,
+    metrics::PoolMetrics,
     opts::{Opts, PoolOpts},
     queryable::transaction::{Transaction, TxOpts},
 };
@@ -133,6 +134,10 @@ impl Waitlist {
         self.queue.remove(&tmp);
     }
 
+    fn len(&self) -> usize {
+        self.queue.len()
+    }
+
     fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
@@ -189,6 +194,7 @@ pub struct Inner {
     close: atomic::AtomicBool,
     closed: atomic::AtomicBool,
     exchange: Mutex<Exchange>,
+    pub(crate) metrics: PoolMetrics,
 }
 
 /// Asynchronous pool of MySql connections.
@@ -202,7 +208,7 @@ pub struct Inner {
 #[derive(Debug, Clone)]
 pub struct Pool {
     opts: Opts,
-    inner: Arc<Inner>,
+    pub(super) inner: Arc<Inner>,
     drop: mpsc::UnboundedSender<Option<Conn>>,
 }
 
@@ -231,6 +237,7 @@ impl Pool {
                     exist: 0,
                     recycler: Some((rx, pool_opts)),
                 }),
+                metrics: Default::default(),
             }),
             drop: tx,
         }
@@ -244,6 +251,7 @@ impl Pool {
 
     /// Async function that resolves to `Conn`.
     pub fn get_conn(&self) -> GetConn {
+        self.inner.metrics.gets.incr();
         let reset_connection = self.opts.pool_opts().reset_connection();
         GetConn::new(self, reset_connection)
     }
@@ -262,6 +270,11 @@ impl Pool {
         DisconnectPool::new(self)
     }
 
+    #[cfg(feature = "metrics")]
+    pub fn snapshot_metrics(&self) -> PoolMetrics {
+        self.inner.metrics.clone()
+    }
+
     /// A way to return connection taken from a pool.
     fn return_conn(&mut self, conn: Conn) {
         // NOTE: we're not in async context here, so we can't block or return NotReady
@@ -270,6 +283,8 @@ impl Pool {
     }
 
     fn send_to_recycler(&self, conn: Conn) {
+        self.inner.metrics.recycler.recycles.incr();
+
         if let Err(conn) = self.drop.send(Some(conn)) {
             let conn = conn.0.unwrap();
 
@@ -365,6 +380,19 @@ impl Pool {
     fn unqueue(&self, queue_id: QueueId) {
         let mut exchange = self.inner.exchange.lock().unwrap();
         exchange.waiting.remove(queue_id);
+    }
+
+    /// Returns the number of
+    /// - open connections,
+    /// - idling connections in the pool and
+    /// - tasks waiting for a connection.
+    pub fn queue_stats(&self) -> (usize, usize, usize) {
+        let exchange = self.inner.exchange.lock().unwrap();
+        (
+            exchange.exist,
+            exchange.available.len(),
+            exchange.waiting.len(),
+        )
     }
 }
 

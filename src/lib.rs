@@ -440,6 +440,7 @@ mod connection_like;
 mod error;
 mod io;
 mod local_infile_handler;
+mod metrics;
 mod opts;
 mod query;
 mod queryable;
@@ -535,6 +536,10 @@ pub use self::queryable::stmt::Statement;
 pub mod futures {
     pub use crate::conn::pool::futures::{DisconnectPool, GetConn};
 }
+
+#[cfg(feature = "metrics")]
+#[doc(inline)]
+pub use metrics::{BufferPoolMetrics, PoolMetrics};
 
 /// Traits used in this crate
 pub mod prelude {

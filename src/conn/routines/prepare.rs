@@ -26,6 +26,8 @@ impl PrepareRoutine {
 
 impl Routine<Arc<StmtInner>> for PrepareRoutine {
     fn call<'a>(&'a mut self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<Arc<StmtInner>>> {
+        conn.metrics().routines.prepares.incr();
+
         #[cfg(feature = "tracing")]
         let span = info_span!(
             "mysql_async::prepare",
