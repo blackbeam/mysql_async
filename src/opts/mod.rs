@@ -16,6 +16,7 @@ pub use native_tls_opts::ClientIdentity;
 pub use rustls_opts::ClientIdentity;
 
 use percent_encoding::percent_decode;
+use rand::Rng;
 use url::{Host, Url};
 
 use std::{
@@ -26,7 +27,7 @@ use std::{
     path::Path,
     str::FromStr,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
     vec,
 };
 
@@ -209,6 +210,8 @@ pub struct PoolOpts {
     constraints: PoolConstraints,
     inactive_connection_ttl: Duration,
     ttl_check_interval: Duration,
+    abs_conn_ttl: Option<Duration>,
+    abs_conn_ttl_jitter: Option<Duration>,
     reset_connection: bool,
 }
 
@@ -271,6 +274,49 @@ impl PoolOpts {
     /// Returns the `reset_connection` value (see [`PoolOpts::with_reset_connection`]).
     pub fn reset_connection(&self) -> bool {
         self.reset_connection
+    }
+
+    /// Sets an absolute TTL after which a connection is removed from the pool.
+    /// This may push the pool below the requested minimum pool size and is indepedent of the
+    /// idle TTL.
+    /// The absolute TTL is disabled by default.
+    /// Fractions of seconds are ignored.
+    pub fn with_abs_conn_ttl(mut self, ttl: Option<Duration>) -> Self {
+        self.abs_conn_ttl = ttl;
+        self
+    }
+
+    /// Optionally, the absolute TTL can be extended by a per-connection random amount
+    /// bounded by `jitter`.
+    /// Setting `abs_conn_ttl_jitter` without `abs_conn_ttl` has no effect.
+    /// Fractions of seconds are ignored.
+    pub fn with_abs_conn_ttl_jitter(mut self, jitter: Option<Duration>) -> Self {
+        self.abs_conn_ttl_jitter = jitter;
+        self
+    }
+
+    /// Returns the absolute TTL, if set.
+    pub fn abs_conn_ttl(&self) -> Option<Duration> {
+        self.abs_conn_ttl
+    }
+
+    /// Returns the absolute TTL's jitter bound, if set.
+    pub fn abs_conn_ttl_jitter(&self) -> Option<Duration> {
+        self.abs_conn_ttl_jitter
+    }
+
+    /// Returns a new deadline that's TTL (+ random jitter) in the future.
+    pub(crate) fn new_connection_ttl_deadline(&self) -> Option<Instant> {
+        if let Some(ttl) = self.abs_conn_ttl {
+            let jitter = if let Some(jitter) = self.abs_conn_ttl_jitter {
+                Duration::from_secs(rand::thread_rng().gen_range(0..=jitter.as_secs()))
+            } else {
+                Duration::ZERO
+            };
+            Some(Instant::now() + ttl + jitter)
+        } else {
+            None
+        }
     }
 
     /// Pool will recycle inactive connection if it is outside of the lower bound of the pool
@@ -359,6 +405,8 @@ impl Default for PoolOpts {
             constraints: DEFAULT_POOL_CONSTRAINTS,
             inactive_connection_ttl: DEFAULT_INACTIVE_CONNECTION_TTL,
             ttl_check_interval: DEFAULT_TTL_CHECK_INTERVAL,
+            abs_conn_ttl: None,
+            abs_conn_ttl_jitter: None,
             reset_connection: true,
         }
     }
@@ -660,6 +708,49 @@ impl Opts {
     /// ```
     pub fn conn_ttl(&self) -> Option<Duration> {
         self.inner.mysql_opts.conn_ttl
+    }
+
+    /// The pool will close a connection when this absolute TTL has elapsed.
+    /// Disabled by default.
+    ///
+    /// Enables forced recycling and migration of connections in a guaranteed timeframe.
+    /// This TTL bypasses pool constraints and an idle pool can go below the min size.
+    ///
+    /// # Connection URL
+    ///
+    /// You can use `abs_conn_ttl` URL parameter to set this value (in seconds). E.g.
+    ///
+    /// ```
+    /// # use mysql_async::*;
+    /// # use std::time::Duration;
+    /// # fn main() -> Result<()> {
+    /// let opts = Opts::from_url("mysql://localhost/db?abs_conn_ttl=86400")?;
+    /// assert_eq!(opts.abs_conn_ttl(), Some(Duration::from_secs(24 * 60 * 60)));
+    /// # Ok(()) }
+    /// ```
+    pub fn abs_conn_ttl(&self) -> Option<Duration> {
+        self.inner.mysql_opts.pool_opts.abs_conn_ttl
+    }
+
+    /// Upper bound of a random value added to the absolute TTL, if enabled.
+    /// Disabled by default.
+    ///
+    /// Should be used to prevent connections from closing at the same time.
+    ///
+    /// # Connection URL
+    ///
+    /// You can use `abs_conn_ttl_jitter` URL parameter to set this value (in seconds). E.g.
+    ///
+    /// ```
+    /// # use mysql_async::*;
+    /// # use std::time::Duration;
+    /// # fn main() -> Result<()> {
+    /// let opts = Opts::from_url("mysql://localhost/db?abs_conn_ttl=7200&abs_conn_ttl_jitter=3600")?;
+    /// assert_eq!(opts.abs_conn_ttl_jitter(), Some(Duration::from_secs(60 * 60)));
+    /// # Ok(()) }
+    /// ```
+    pub fn abs_conn_ttl_jitter(&self) -> Option<Duration> {
+        self.inner.mysql_opts.pool_opts.abs_conn_ttl_jitter
     }
 
     /// Number of prepared statements cached on the client side (per connection). Defaults to
@@ -1444,6 +1535,34 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                     });
                 }
             }
+        } else if key == "abs_conn_ttl" {
+            match u64::from_str(&*value) {
+                Ok(value) => {
+                    opts.pool_opts = opts
+                        .pool_opts
+                        .with_abs_conn_ttl(Some(Duration::from_secs(value)))
+                }
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "abs_conn_ttl".into(),
+                        value,
+                    });
+                }
+            }
+        } else if key == "abs_conn_ttl_jitter" {
+            match u64::from_str(&*value) {
+                Ok(value) => {
+                    opts.pool_opts = opts
+                        .pool_opts
+                        .with_abs_conn_ttl_jitter(Some(Duration::from_secs(value)))
+                }
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "abs_conn_ttl_jitter".into(),
+                        value,
+                    });
+                }
+            }
         } else if key == "tcp_keepalive" {
             match u32::from_str(&*value) {
                 Ok(value) => opts.tcp_keepalive = Some(value),
@@ -1679,6 +1798,11 @@ mod test {
         assert_eq!(url_opts.tcp_nodelay(), builder_opts.tcp_nodelay());
         assert_eq!(url_opts.pool_opts(), builder_opts.pool_opts());
         assert_eq!(url_opts.conn_ttl(), builder_opts.conn_ttl());
+        assert_eq!(url_opts.abs_conn_ttl(), builder_opts.abs_conn_ttl());
+        assert_eq!(
+            url_opts.abs_conn_ttl_jitter(),
+            builder_opts.abs_conn_ttl_jitter()
+        );
         assert_eq!(url_opts.stmt_cache_size(), builder_opts.stmt_cache_size());
         assert_eq!(url_opts.ssl_opts(), builder_opts.ssl_opts());
         assert_eq!(url_opts.prefer_socket(), builder_opts.prefer_socket());

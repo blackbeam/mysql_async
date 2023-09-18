@@ -11,6 +11,7 @@ use pin_project::pin_project;
 use tokio::time::{self, Interval};
 
 use std::{
+    collections::VecDeque,
     future::Future,
     sync::{atomic::Ordering, Arc},
 };
@@ -46,24 +47,41 @@ impl TtlCheckInterval {
 
     /// Perform the check.
     pub fn check_ttl(&self) {
-        let mut exchange = self.inner.exchange.lock().unwrap();
+        let to_be_dropped = {
+            let mut exchange = self.inner.exchange.lock().unwrap();
 
-        let num_idling = exchange.available.len();
-        let num_to_drop = num_idling.saturating_sub(self.pool_opts.constraints().min());
+            let num_to_drop = exchange
+                .available
+                .len()
+                .saturating_sub(self.pool_opts.constraints().min());
 
-        for _ in 0..num_to_drop {
-            let idling_conn = exchange.available.pop_front().unwrap();
-            if idling_conn.elapsed() > self.pool_opts.inactive_connection_ttl() {
-                assert!(idling_conn.conn.inner.pool.is_none());
-                let inner = self.inner.clone();
-                tokio::spawn(idling_conn.conn.disconnect().then(move |_| {
-                    let mut exchange = inner.exchange.lock().unwrap();
-                    exchange.exist -= 1;
-                    ok::<_, ()>(())
-                }));
-            } else {
-                exchange.available.push_back(idling_conn);
+            let mut to_be_dropped = Vec::<_>::with_capacity(exchange.available.len());
+            let mut kept_available =
+                VecDeque::<_>::with_capacity(self.pool_opts.constraints().max());
+
+            while let Some(conn) = exchange.available.pop_front() {
+                if conn.expired() {
+                    to_be_dropped.push(conn);
+                } else if to_be_dropped.len() < num_to_drop
+                    && conn.elapsed() > self.pool_opts.inactive_connection_ttl()
+                {
+                    to_be_dropped.push(conn);
+                } else {
+                    kept_available.push_back(conn);
+                }
             }
+            exchange.available = kept_available;
+            to_be_dropped
+        };
+
+        for idling_conn in to_be_dropped {
+            assert!(idling_conn.conn.inner.pool.is_none());
+            let inner = self.inner.clone();
+            tokio::spawn(idling_conn.conn.disconnect().then(move |_| {
+                let mut exchange = inner.exchange.lock().unwrap();
+                exchange.exist -= 1;
+                ok::<_, ()>(())
+            }));
         }
     }
 }

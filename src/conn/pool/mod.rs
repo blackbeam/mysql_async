@@ -44,6 +44,15 @@ struct IdlingConn {
 }
 
 impl IdlingConn {
+    /// Returns true when this connection has a TTL and it elapsed.
+    fn expired(&self) -> bool {
+        self.conn
+            .inner
+            .ttl_deadline
+            .map(|t| Instant::now() > t)
+            .unwrap_or_default()
+    }
+
     /// Returns duration elapsed since this connection is idling.
     fn elapsed(&self) -> Duration {
         self.since.elapsed()
@@ -82,8 +91,11 @@ impl Exchange {
             // Spawn the Recycler.
             tokio::spawn(Recycler::new(pool_opts.clone(), inner.clone(), dropped));
 
-            // Spawn the ttl check interval if `inactive_connection_ttl` isn't `0`
-            if pool_opts.inactive_connection_ttl() > Duration::from_secs(0) {
+            // Spawn the ttl check interval if `inactive_connection_ttl` isn't `0` or
+            // connections have an absolute TTL.
+            if pool_opts.inactive_connection_ttl() > Duration::ZERO
+                || pool_opts.abs_conn_ttl().is_some()
+            {
                 tokio::spawn(TtlCheckInterval::new(pool_opts, inner.clone()));
             }
         }
@@ -1010,6 +1022,41 @@ mod test {
         assert_eq!(QUEUE_END_ID, id);
 
         assert_eq!(0, waitlist.queue.len());
+    }
+
+    #[tokio::test]
+    async fn check_absolute_connection_ttl() -> super::Result<()> {
+        let constraints = PoolConstraints::new(1, 3).unwrap();
+        let pool_opts = PoolOpts::default()
+            .with_constraints(constraints)
+            .with_inactive_connection_ttl(Duration::from_secs(99))
+            .with_ttl_check_interval(Duration::from_secs(1))
+            .with_abs_conn_ttl(Some(Duration::from_secs(2)));
+
+        let pool = Pool::new(get_opts().pool_opts(pool_opts));
+
+        let conn_ttl0 = pool.get_conn().await?;
+        sleep(Duration::from_millis(1000)).await;
+        let conn_ttl1 = pool.get_conn().await?;
+        sleep(Duration::from_millis(1000)).await;
+        let conn_ttl2 = pool.get_conn().await?;
+
+        drop(conn_ttl0);
+        drop(conn_ttl1);
+        drop(conn_ttl2);
+        assert_eq!(ex_field!(pool, exist), 3);
+
+        sleep(Duration::from_millis(1500)).await;
+        assert_eq!(ex_field!(pool, exist), 2);
+
+        sleep(Duration::from_millis(1000)).await;
+        assert_eq!(ex_field!(pool, exist), 1);
+
+        // Go even below min pool size.
+        sleep(Duration::from_millis(1000)).await;
+        assert_eq!(ex_field!(pool, exist), 0);
+
+        Ok(())
     }
 
     #[cfg(feature = "nightly")]
