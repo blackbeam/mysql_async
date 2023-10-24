@@ -14,10 +14,9 @@ use mysql_common::{
     crypto,
     io::ParseBuf,
     packets::{
-        binlog_request::BinlogRequest, AuthPlugin, AuthSwitchRequest, BinlogDumpFlags,
-        ComRegisterSlave, CommonOkPacket, ErrPacket, HandshakePacket, HandshakeResponse, OkPacket,
-        OkPacketDeserializer, OldAuthSwitchRequest, OldEofPacket, ResultSetTerminator, Sid,
-        SslRequest,
+        AuthPlugin, AuthSwitchRequest, CommonOkPacket, ErrPacket, HandshakePacket,
+        HandshakeResponse, OkPacket, OkPacketDeserializer, OldAuthSwitchRequest, OldEofPacket,
+        ResultSetTerminator, SslRequest,
     },
     proto::MySerialize,
     row::Row,
@@ -46,11 +45,12 @@ use crate::{
         transaction::TxStatus,
         BinaryProtocol, Queryable, TextProtocol,
     },
-    BinlogStream, ChangeUserOpts, InfileData, OptsBuilder,
+    ChangeUserOpts, InfileData, OptsBuilder,
 };
 
 use self::routines::Routine;
 
+#[cfg(feature = "binlog")]
 pub mod binlog_stream;
 pub mod pool;
 pub mod routines;
@@ -1260,200 +1260,19 @@ impl Conn {
         }
         Ok(self)
     }
-
-    async fn register_as_slave(&mut self, com_register_slave: ComRegisterSlave<'_>) -> Result<()> {
-        self.query_drop("SET @master_binlog_checksum='ALL'").await?;
-        self.write_command(&com_register_slave).await?;
-
-        // Server will respond with OK.
-        self.read_packet().await?;
-
-        Ok(())
-    }
-
-    async fn request_binlog(&mut self, request: BinlogStreamRequest<'_>) -> Result<()> {
-        self.register_as_slave(request.register_slave).await?;
-        self.write_command(&request.binlog_request.as_cmd()).await?;
-        Ok(())
-    }
-
-    /// Turns this connection into a binlog stream.
-    ///
-    /// You can use SHOW BINARY LOGS to get the current logfile and position from the master.
-    /// If the request’s filename is empty, the server will send the binlog-stream of the first known binlog.
-    pub async fn get_binlog_stream(
-        mut self,
-        request: BinlogStreamRequest<'_>,
-    ) -> Result<BinlogStream> {
-        self.request_binlog(request).await?;
-
-        Ok(BinlogStream::new(self))
-    }
-}
-
-/// Binlog stream request builder.
-pub struct BinlogStreamRequest<'a> {
-    binlog_request: BinlogRequest<'a>,
-    register_slave: ComRegisterSlave<'a>,
-}
-
-impl<'a> BinlogStreamRequest<'a> {
-    /// Creates a new request with the given slave server id.
-    pub fn new(server_id: u32) -> Self {
-        Self {
-            binlog_request: BinlogRequest::new(server_id),
-            register_slave: ComRegisterSlave::new(server_id),
-        }
-    }
-
-    /// Enables GTID-based replication (disabled by default).
-    pub fn with_gtid(mut self) -> Self {
-        self.binlog_request = self.binlog_request.with_use_gtid(true);
-        self
-    }
-
-    /// Enables `NON_BLOCK` flag. Stream will be terminated as soon as there are no events.
-    pub fn with_non_blocking(mut self) -> Self {
-        self.binlog_request = self
-            .binlog_request
-            .with_flags(BinlogDumpFlags::BINLOG_DUMP_NON_BLOCK);
-        self
-    }
-
-    /// Sets the filename of the binlog on the master (try `SHOW BINARY LOGS`).
-    pub fn with_filename(mut self, filename: &'a [u8]) -> Self {
-        self.binlog_request = self.binlog_request.with_filename(filename);
-        self
-    }
-
-    /// Sets the start position (defaults to `4`).
-    pub fn with_pos(mut self, position: u64) -> Self {
-        self.binlog_request = self.binlog_request.with_pos(position);
-        self
-    }
-
-    /// Adds the given set of GTIDs to the request (ignored if not GTID-based).
-    pub fn with_gtid_set<T>(mut self, set: T) -> Self
-    where
-        T: IntoIterator<Item = Sid<'a>>,
-    {
-        self.binlog_request = self.binlog_request.with_sids(set);
-        self
-    }
-
-    /// This hostname will be reported to the server (max len 255, default to an empty string).
-    ///
-    /// Usually left default.
-    pub fn with_hostname(mut self, hostname: &'a [u8]) -> Self {
-        self.register_slave = self.register_slave.with_hostname(hostname);
-        self
-    }
-
-    /// This username will be reported to the server (max len 255, default to an empty string).
-    ///
-    /// Usually left default.
-    pub fn with_user(mut self, user: &'a [u8]) -> Self {
-        self.register_slave = self.register_slave.with_user(user);
-        self
-    }
-
-    /// This password will be reported to the server (max len 255, default to an empty string).
-    ///
-    /// Usually left default.
-    pub fn with_password(mut self, password: &'a [u8]) -> Self {
-        self.register_slave = self.register_slave.with_password(password);
-        self
-    }
-
-    /// This port number will be reported to the server (defaults to `0`).
-    ///
-    /// Usually left default.
-    pub fn with_port(mut self, port: u16) -> Self {
-        self.register_slave = self.register_slave.with_port(port);
-        self
-    }
 }
 
 #[cfg(test)]
 mod test {
     use bytes::Bytes;
     use futures_util::stream::{self, StreamExt};
-    use mysql_common::{binlog::events::EventData, constants::MAX_PAYLOAD_LEN};
+    use mysql_common::constants::MAX_PAYLOAD_LEN;
     use rand::Fill;
-    use tokio::time::timeout;
-
-    use std::time::Duration;
 
     use crate::{
-        conn::BinlogStreamRequest, from_row, params, prelude::*, test_misc::get_opts,
-        ChangeUserOpts, Conn, Error, OptsBuilder, Pool, Value, WhiteListFsHandler,
+        from_row, params, prelude::*, test_misc::get_opts, ChangeUserOpts, Conn, Error,
+        OptsBuilder, Pool, Value, WhiteListFsHandler,
     };
-
-    async fn gen_dummy_data() -> super::Result<()> {
-        let mut conn = Conn::new(get_opts()).await?;
-
-        "CREATE TABLE IF NOT EXISTS customers (customer_id int not null)"
-            .ignore(&mut conn)
-            .await?;
-
-        for i in 0_u8..100 {
-            "INSERT INTO customers(customer_id) VALUES (?)"
-                .with((i,))
-                .ignore(&mut conn)
-                .await?;
-        }
-
-        "DROP TABLE customers".ignore(&mut conn).await?;
-
-        Ok(())
-    }
-
-    async fn create_binlog_stream_conn(pool: Option<&Pool>) -> super::Result<(Conn, Vec<u8>, u64)> {
-        let mut conn = match pool {
-            None => Conn::new(get_opts()).await.unwrap(),
-            Some(pool) => pool.get_conn().await.unwrap(),
-        };
-
-        if let Ok(Some(gtid_mode)) = "SELECT @@GLOBAL.GTID_MODE"
-            .first::<String, _>(&mut conn)
-            .await
-        {
-            if !gtid_mode.starts_with("ON") {
-                panic!(
-                    "GTID_MODE is disabled \
-                        (enable using --gtid_mode=ON --enforce_gtid_consistency=ON)"
-                );
-            }
-        }
-
-        let row: crate::Row = "SHOW BINARY LOGS".first(&mut conn).await.unwrap().unwrap();
-        let filename = row.get(0).unwrap();
-        let position = row.get(1).unwrap();
-
-        gen_dummy_data().await.unwrap();
-        Ok((conn, filename, position))
-    }
-
-    #[tokio::test]
-    async fn should_read_binlog() -> super::Result<()> {
-        read_binlog_streams_and_close_their_connections(None, (12, 13, 14))
-            .await
-            .unwrap();
-
-        let pool = Pool::new(get_opts());
-        read_binlog_streams_and_close_their_connections(Some(&pool), (15, 16, 17))
-            .await
-            .unwrap();
-
-        // Disconnecting the pool verifies that closing the binlog connections
-        // left the pool in a sane state.
-        timeout(Duration::from_secs(10), pool.disconnect())
-            .await
-            .unwrap()
-            .unwrap();
-
-        Ok(())
-    }
 
     #[tokio::test]
     async fn should_return_found_rows_if_flag_is_set() -> super::Result<()> {
@@ -1503,118 +1322,6 @@ mod test {
 
         // The query doesn't affect any rows.
         assert_eq!(conn.affected_rows(), 0);
-
-        Ok(())
-    }
-
-    async fn read_binlog_streams_and_close_their_connections(
-        pool: Option<&Pool>,
-        binlog_server_ids: (u32, u32, u32),
-    ) -> super::Result<()> {
-        // iterate using COM_BINLOG_DUMP
-        let (conn, filename, pos) = create_binlog_stream_conn(pool).await.unwrap();
-        let is_mariadb = conn.inner.is_mariadb;
-
-        let mut binlog_stream = conn
-            .get_binlog_stream(
-                BinlogStreamRequest::new(binlog_server_ids.0)
-                    .with_filename(&filename)
-                    .with_pos(pos),
-            )
-            .await
-            .unwrap();
-
-        let mut events_num = 0;
-        while let Ok(Some(event)) = timeout(Duration::from_secs(10), binlog_stream.next()).await {
-            let event = event.unwrap();
-            events_num += 1;
-
-            // assert that event type is known
-            event.header().event_type().unwrap();
-
-            // iterate over rows of an event
-            match event.read_data()?.unwrap() {
-                EventData::RowsEvent(re) => {
-                    let tme = binlog_stream.get_tme(re.table_id());
-                    for row in re.rows(tme.unwrap()) {
-                        row.unwrap();
-                    }
-                }
-                _ => (),
-            }
-        }
-        assert!(events_num > 0);
-        timeout(Duration::from_secs(10), binlog_stream.close())
-            .await
-            .unwrap()
-            .unwrap();
-
-        if !is_mariadb {
-            // iterate using COM_BINLOG_DUMP_GTID
-            let (conn, filename, pos) = create_binlog_stream_conn(pool).await.unwrap();
-
-            let mut binlog_stream = conn
-                .get_binlog_stream(
-                    BinlogStreamRequest::new(binlog_server_ids.1)
-                        .with_gtid()
-                        .with_filename(&filename)
-                        .with_pos(pos),
-                )
-                .await
-                .unwrap();
-
-            events_num = 0;
-            while let Ok(Some(event)) = timeout(Duration::from_secs(10), binlog_stream.next()).await
-            {
-                let event = event.unwrap();
-                events_num += 1;
-
-                // assert that event type is known
-                event.header().event_type().unwrap();
-
-                // iterate over rows of an event
-                match event.read_data()?.unwrap() {
-                    EventData::RowsEvent(re) => {
-                        let tme = binlog_stream.get_tme(re.table_id());
-                        for row in re.rows(tme.unwrap()) {
-                            row.unwrap();
-                        }
-                    }
-                    _ => (),
-                }
-            }
-            assert!(events_num > 0);
-            timeout(Duration::from_secs(10), binlog_stream.close())
-                .await
-                .unwrap()
-                .unwrap();
-        }
-
-        // iterate using COM_BINLOG_DUMP with BINLOG_DUMP_NON_BLOCK flag
-        let (conn, filename, pos) = create_binlog_stream_conn(pool).await.unwrap();
-
-        let mut binlog_stream = conn
-            .get_binlog_stream(
-                BinlogStreamRequest::new(binlog_server_ids.2)
-                    .with_filename(&filename)
-                    .with_pos(pos)
-                    .with_non_blocking(),
-            )
-            .await
-            .unwrap();
-
-        events_num = 0;
-        while let Some(event) = binlog_stream.next().await {
-            let event = event.unwrap();
-            events_num += 1;
-            event.header().event_type().unwrap();
-            event.read_data().unwrap();
-        }
-        assert!(events_num > 0);
-        timeout(Duration::from_secs(10), binlog_stream.close())
-            .await
-            .unwrap()
-            .unwrap();
 
         Ok(())
     }

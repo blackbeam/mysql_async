@@ -85,6 +85,7 @@ default = [
     "mysql_common/frunk",
     "derive",
     "native-tls-tls",
+    "binlog",
 ]
 default-rustls = [
     "flate2/rust_backend",
@@ -94,6 +95,7 @@ default-rustls = [
     "mysql_common/frunk",
     "derive",
     "rustls-tls",
+    "binlog",
 ]
 minimal = ["flate2/zlib"]
 native-tls-tls = ["native-tls", "tokio-native-tls"]
@@ -107,6 +109,7 @@ rustls-tls = [
 tracing = ["dep:tracing"]
 derive = ["mysql_common/derive"]
 nightly = []
+binlog = []
 
 [lib]
 name = "mysql_async"
