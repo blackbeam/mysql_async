@@ -105,9 +105,10 @@ impl futures_core::stream::Stream for BinlogStream {
         if first_byte == Some(0) {
             let event_data = &packet[1..];
             match self.esr.read(event_data) {
-                Ok(event) => {
+                Ok(Some(event)) => {
                     return Poll::Ready(Some(Ok(event)));
                 }
+                Ok(None) => return Poll::Ready(None),
                 Err(err) => return Poll::Ready(Some(Err(err.into()))),
             }
         } else {

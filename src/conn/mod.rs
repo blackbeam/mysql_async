@@ -9,14 +9,17 @@
 use futures_util::FutureExt;
 pub use mysql_common::named_params;
 
+#[cfg(feature = "binlog")]
+use crate::BinlogStream;
+
 use mysql_common::{
     constants::{DEFAULT_MAX_ALLOWED_PACKET, UTF8MB4_GENERAL_CI, UTF8_GENERAL_CI},
     crypto,
     io::ParseBuf,
     packets::{
-        binlog_request::BinlogRequest, AuthPlugin, AuthSwitchRequest, CommonOkPacket, ErrPacket,
-        HandshakePacket, HandshakeResponse, OkPacket, OkPacketDeserializer, OldAuthSwitchRequest,
-        OldEofPacket, ResultSetTerminator, SslRequest,
+        AuthPlugin, AuthSwitchRequest, CommonOkPacket, ErrPacket, HandshakePacket,
+        HandshakeResponse, OkPacket, OkPacketDeserializer, OldAuthSwitchRequest, OldEofPacket,
+        ResultSetTerminator, SslRequest,
     },
     proto::MySerialize,
     row::Row,
@@ -45,11 +48,13 @@ use crate::{
         transaction::TxStatus,
         BinaryProtocol, Queryable, TextProtocol,
     },
-    BinlogStream, ChangeUserOpts, InfileData, OptsBuilder,
+    ChangeUserOpts, InfileData, OptsBuilder,
 };
+#[cfg(feature = "binlog")]
+use mysql_common::packets::binlog_request::BinlogRequest;
 
 use self::routines::Routine;
-
+#[cfg(feature = "binlog")]
 pub mod binlog_stream;
 pub mod pool;
 pub mod routines;
@@ -1273,12 +1278,16 @@ impl Conn {
         Ok(())
     }
 
+    #[cfg(feature = "binlog")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "binlog")))]
     async fn request_binlog(&mut self, request: BinlogRequest<'_>) -> Result<()> {
         self.register_as_slave(request.server_id()).await?;
         self.write_command(&request.as_cmd()).await?;
         Ok(())
     }
 
+    #[cfg(feature = "binlog")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "binlog")))]
     pub async fn get_binlog_stream(mut self, request: BinlogRequest<'_>) -> Result<BinlogStream> {
         self.request_binlog(request).await?;
 
@@ -1290,7 +1299,9 @@ impl Conn {
 mod test {
     use bytes::Bytes;
     use futures_util::stream::{self, StreamExt};
-    use mysql_common::{binlog::events::EventData, constants::MAX_PAYLOAD_LEN};
+    #[cfg(feature = "binlog")]
+    use mysql_common::binlog::events::EventData;
+    use mysql_common::constants::MAX_PAYLOAD_LEN;
     use rand::Fill;
     use tokio::time::timeout;
 
@@ -1346,6 +1357,7 @@ mod test {
         Ok((conn, filename, position))
     }
 
+    #[cfg(feature = "binlog")]
     #[tokio::test]
     async fn should_read_binlog() -> super::Result<()> {
         read_binlog_streams_and_close_their_connections(None, (12, 13, 14))
@@ -1419,6 +1431,7 @@ mod test {
         Ok(())
     }
 
+    #[cfg(feature = "binlog")]
     async fn read_binlog_streams_and_close_their_connections(
         pool: Option<&Pool>,
         binlog_server_ids: (u32, u32, u32),

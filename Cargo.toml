@@ -106,6 +106,7 @@ rustls-tls = [
 ]
 tracing = ["dep:tracing"]
 derive = ["mysql_common/derive"]
+binlog = ["mysql_common/binlog"]
 nightly = []
 
 [lib]
