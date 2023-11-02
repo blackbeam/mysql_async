@@ -9,7 +9,7 @@
 use futures_util::FutureExt;
 use mysql_common::{
     io::ParseBuf,
-    named_params::parse_named_params,
+    named_params::ParsedNamedParams,
     packets::{ComStmtClose, StmtPacket},
 };
 
@@ -45,12 +45,22 @@ fn to_statement_move<'a, T: AsQuery + 'a>(
 ) -> ToStatementResult<'a> {
     let fut = async move {
         let query = stmt.as_query();
-        let (named_params, raw_query) = parse_named_params(query.as_ref())?;
-        let inner_stmt = match conn.get_cached_stmt(&*raw_query) {
+        let parsed = ParsedNamedParams::parse(query.as_ref())?;
+        let inner_stmt = match conn.get_cached_stmt(parsed.query()) {
             Some(inner_stmt) => inner_stmt,
-            None => conn.prepare_statement(raw_query).await?,
+            None => {
+                conn.prepare_statement(Cow::Borrowed(parsed.query()))
+                    .await?
+            }
         };
-        Ok(Statement::new(inner_stmt, named_params))
+        Ok(Statement::new(
+            inner_stmt,
+            parsed
+                .params()
+                .iter()
+                .map(|x| x.as_ref().to_vec())
+                .collect::<Vec<_>>(),
+        ))
     }
     .boxed();
     ToStatementResult::Mediate(fut)
@@ -240,11 +250,12 @@ impl StmtInner {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Statement {
     pub(crate) inner: Arc<StmtInner>,
-    pub(crate) named_params: Option<Vec<Vec<u8>>>,
+    /// An empty vector in case of no named params.
+    pub(crate) named_params: Vec<Vec<u8>>,
 }
 
 impl Statement {
-    pub(crate) fn new(inner: Arc<StmtInner>, named_params: Option<Vec<Vec<u8>>>) -> Self {
+    pub(crate) fn new(inner: Arc<StmtInner>, named_params: Vec<Vec<u8>>) -> Self {
         Self {
             inner,
             named_params,

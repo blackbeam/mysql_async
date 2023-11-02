@@ -9,8 +9,8 @@
 use futures_core::ready;
 use mysql_common::{
     binlog::{
-        consts::BinlogVersion::Version4,
-        events::{Event, TableMapEvent},
+        consts::{BinlogVersion::Version4, EventType},
+        events::{Event, TableMapEvent, TransactionPayloadEvent},
         EventStreamReader,
     },
     io::ParseBuf,
@@ -19,7 +19,7 @@ use mysql_common::{
 
 use std::{
     future::Future,
-    io::ErrorKind,
+    io::{Cursor, ErrorKind},
     pin::Pin,
     task::{Context, Poll},
 };
@@ -71,6 +71,9 @@ impl super::Conn {
 pub struct BinlogStream {
     read_packet: ReadPacket<'static, 'static>,
     esr: EventStreamReader,
+    // TODO: Use 'static reader here (requires impl on the mysql_common side).
+    /// Uncompressed Transaction_payload_event we are iterating over (if any).
+    tpe: Option<Cursor<Vec<u8>>>,
 }
 
 impl BinlogStream {
@@ -79,6 +82,7 @@ impl BinlogStream {
         BinlogStream {
             read_packet: ReadPacket::new(conn),
             esr: EventStreamReader::new(Version4),
+            tpe: None,
         }
     }
 
@@ -114,6 +118,22 @@ impl futures_core::stream::Stream for BinlogStream {
     type Item = Result<Event>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        {
+            let Self {
+                ref mut tpe,
+                ref mut esr,
+                ..
+            } = *self;
+
+            if let Some(tpe) = tpe.as_mut() {
+                match esr.read_decompressed(tpe) {
+                    Ok(Some(event)) => return Poll::Ready(Some(Ok(event))),
+                    Ok(None) => self.tpe = None,
+                    Err(err) => return Poll::Ready(Some(Err(err.into()))),
+                }
+            }
+        }
+
         let packet = match ready!(Pin::new(&mut self.read_packet).poll(cx)) {
             Ok(packet) => packet,
             Err(err) => return Poll::Ready(Some(Err(err.into()))),
@@ -143,9 +163,17 @@ impl futures_core::stream::Stream for BinlogStream {
         if first_byte == Some(0) {
             let event_data = &packet[1..];
             match self.esr.read(event_data) {
-                Ok(event) => {
+                Ok(Some(event)) => {
+                    if event.header().event_type_raw() == EventType::TRANSACTION_PAYLOAD_EVENT as u8
+                    {
+                        match event.read_event::<TransactionPayloadEvent<'_>>() {
+                            Ok(e) => self.tpe = Some(Cursor::new(e.danger_decompress())),
+                            Err(_) => (/* TODO: Log the error */),
+                        }
+                    }
                     return Poll::Ready(Some(Ok(event)));
                 }
+                Ok(None) => return Poll::Ready(None),
                 Err(err) => return Poll::Ready(Some(Err(err.into()))),
             }
         } else {
@@ -168,21 +196,21 @@ mod tests {
     use crate::prelude::*;
     use crate::{test_misc::get_opts, *};
 
-    async fn gen_dummy_data() -> super::Result<()> {
-        let mut conn = Conn::new(get_opts()).await?;
-
+    async fn gen_dummy_data(conn: &mut Conn) -> super::Result<()> {
         "CREATE TABLE IF NOT EXISTS customers (customer_id int not null)"
-            .ignore(&mut conn)
+            .ignore(&mut *conn)
             .await?;
 
+        let mut tx = conn.start_transaction(Default::default()).await?;
         for i in 0_u8..100 {
             "INSERT INTO customers(customer_id) VALUES (?)"
                 .with((i,))
-                .ignore(&mut conn)
+                .ignore(&mut tx)
                 .await?;
         }
+        tx.commit().await?;
 
-        "DROP TABLE customers".ignore(&mut conn).await?;
+        "DROP TABLE customers".ignore(conn).await?;
 
         Ok(())
     }
@@ -192,6 +220,12 @@ mod tests {
             None => Conn::new(get_opts()).await.unwrap(),
             Some(pool) => pool.get_conn().await.unwrap(),
         };
+
+        if conn.server_version() >= (8, 0, 31) && conn.server_version() < (9, 0, 0) {
+            let _ = "SET binlog_transaction_compression=ON"
+                .ignore(&mut conn)
+                .await;
+        }
 
         if let Ok(Some(gtid_mode)) = "SELECT @@GLOBAL.GTID_MODE"
             .first::<String, _>(&mut conn)
@@ -209,7 +243,7 @@ mod tests {
         let filename = row.get(0).unwrap();
         let position = row.get(1).unwrap();
 
-        gen_dummy_data().await.unwrap();
+        gen_dummy_data(&mut conn).await.unwrap();
         Ok((conn, filename, position))
     }
 
