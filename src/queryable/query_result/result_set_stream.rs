@@ -102,13 +102,15 @@ impl<'r, 'a: 'r, 't: 'a, T, P> ResultSetStream<'r, 'a, 't, T, P> {
             .unwrap_or_default()
     }
 
-    /// Returns type result set.
-    ///
-    /// In order to know the type of the returned result in advance, it is helpful to process the type conversion of the data.
-    pub fn get_columns(&self) -> Arc<[Column]> {
-        self.columns.clone()
+    /// See [`QueryResult::columns_ref`].
+    pub fn columns_ref(&self) -> &[Column] {
+        &self.columns[..]
     }
 
+    /// See [`QueryResult::columns`].
+    pub fn columns(&self) -> Arc<[Column]> {
+        self.columns.clone()
+    }
 
     /// See [`Conn::info`][1].
     ///
