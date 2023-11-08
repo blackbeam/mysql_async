@@ -102,6 +102,16 @@ impl<'r, 'a: 'r, 't: 'a, T, P> ResultSetStream<'r, 'a, 't, T, P> {
             .unwrap_or_default()
     }
 
+    /// See [`QueryResult::columns_ref`].
+    pub fn columns_ref(&self) -> &[Column] {
+        &self.columns[..]
+    }
+
+    /// See [`QueryResult::columns`].
+    pub fn columns(&self) -> Arc<[Column]> {
+        self.columns.clone()
+    }
+
     /// See [`Conn::info`][1].
     ///
     /// [1]: crate::Conn::info
