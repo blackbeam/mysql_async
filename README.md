@@ -54,6 +54,7 @@ as well as `native-tls`-based TLS support.
     -   `mysql_common/time03`
     -   `mysql_common/uuid`
     -   `mysql_common/frunk`
+    -   `binlog`
 
 *   `default-rustls` – same as default but with `rustls-tls` instead of `native-tls-tls`.
 
@@ -95,6 +96,10 @@ as well as `native-tls`-based TLS support.
     ```
 
 *   `derive` – enables `mysql_commom/derive` feature
+
+*   `binlog` - enables binlog-related functionality. Enables:
+
+    -   `mysql_common/binlog"
 
 [myslqcommonfeatures]: https://github.com/blackbeam/rust_mysql_common#crate-features
 
