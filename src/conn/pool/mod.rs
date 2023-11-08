@@ -606,7 +606,7 @@ mod test {
             }
             drop(tx);
             // see that all the tx's eventually complete
-            while let Some(_) = rx.recv().await {}
+            while (rx.recv().await).is_some() {}
         }
         drop(pool);
     }

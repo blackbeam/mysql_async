@@ -33,7 +33,7 @@ where
     TupleType: FromRow + Send + 'static,
     P: Protocol + Send + 'static,
 {
-    Ok(result.collect().await?)
+    result.collect().await
 }
 
 pub async fn get_single_result<TupleType, P>(result: QueryResult<'_, '_, P>) -> Result<TupleType>
@@ -51,7 +51,7 @@ where
 
 #[tokio::test]
 async fn use_generic_code() {
-    let pool = Pool::new(Opts::from_url(&*get_url()).unwrap());
+    let pool = Pool::new(Opts::from_url(&get_url()).unwrap());
     let mut conn = pool.get_conn().await.unwrap();
     let result = conn.query_iter("SELECT 1, 2, 3").await.unwrap();
     let result = get_single_result::<(u8, u8, u8), _>(result).await.unwrap();

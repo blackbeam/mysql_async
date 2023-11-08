@@ -23,13 +23,13 @@ pub struct QueryString(pub Arc<[u8]>);
 
 impl Borrow<[u8]> for QueryString {
     fn borrow(&self) -> &[u8] {
-        &*self.0.as_ref()
+        self.0.as_ref()
     }
 }
 
 impl PartialEq<[u8]> for QueryString {
     fn eq(&self, other: &[u8]) -> bool {
-        &*self.0.as_ref() == other
+        self.0.as_ref() == other
     }
 }
 
@@ -80,7 +80,7 @@ impl StmtCache {
 
         if self.cache.len() > self.cap {
             if let Some((_, entry)) = self.cache.pop_lru() {
-                self.query_map.remove(&*entry.query.0.as_ref());
+                self.query_map.remove(entry.query.0.as_ref());
                 return Some(entry.stmt);
             }
         }

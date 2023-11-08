@@ -7,7 +7,7 @@
 // modified, or distributed except according to those terms.
 
 use crossbeam::queue::ArrayQueue;
-use std::{mem::replace, ops::Deref, sync::Arc};
+use std::{mem::take, ops::Deref, sync::Arc};
 
 #[derive(Debug)]
 pub struct BufferPool {
@@ -93,6 +93,6 @@ impl Deref for PooledBuf {
 
 impl Drop for PooledBuf {
     fn drop(&mut self) {
-        self.1.put(replace(&mut self.0, vec![]))
+        self.1.put(take(&mut self.0))
     }
 }

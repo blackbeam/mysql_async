@@ -34,7 +34,7 @@ pub type InfileData = BoxStream<'static, std::io::Result<Bytes>>;
 /// **Warning:** You should be aware of [Security Considerations for LOAD DATA LOCAL][1].
 ///
 /// The purpose of the handler is to emit infile data in response to a file name.
-/// This handler will be called if there is no [`LocalHandler`] installed for the connection.
+/// This handler will be called if there is no local handler installed for the connection.
 ///
 /// The library will call this handler in response to a LOCAL INFILE request from the server.
 /// The server, in its turn, will emit LOCAL INFILE requests in response to a `LOAD DATA LOCAL`

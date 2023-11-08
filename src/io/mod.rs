@@ -155,10 +155,7 @@ impl Future for CheckTcpStream<'_> {
 impl Endpoint {
     #[cfg(unix)]
     fn is_socket(&self) -> bool {
-        match self {
-            Self::Socket(_) => true,
-            _ => false,
-        }
+        matches!(self, Self::Socket(_))
     }
 
     /// Checks, that connection is alive.
@@ -182,7 +179,7 @@ impl Endpoint {
             }
             #[cfg(unix)]
             Endpoint::Socket(socket) => {
-                socket.write(&[]).await?;
+                let _ = socket.write(&[]).await?;
                 Ok(())
             }
             Endpoint::Plain(None) => unreachable!(),

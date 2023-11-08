@@ -162,7 +162,7 @@ async fn should_map_resultset() -> super::Result<()> {
         )
         .await?;
 
-    let rows_1 = result.map(|row| from_row::<(String, u8)>(row)).await?;
+    let rows_1 = result.map(from_row::<(String, u8)>).await?;
     let rows_2 = result.map_and_drop(from_row).await?;
     conn.disconnect().await?;
 
@@ -219,7 +219,7 @@ async fn should_handle_multi_result_sets_where_some_results_have_no_output() -> 
     r.for_each_and_drop(|x| assert_eq!(from_row::<u8>(x), 1))
         .await?;
     let r = t.query_iter(QUERY).await?;
-    let out = r.map_and_drop(|row| from_row::<u8>(row)).await?;
+    let out = r.map_and_drop(from_row::<u8>).await?;
     assert_eq!(vec![1], out);
     let r = t.query_iter(QUERY).await?;
     let out = r

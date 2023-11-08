@@ -195,7 +195,7 @@ impl Deref for Transaction<'_> {
     type Target = Conn;
 
     fn deref(&self) -> &Self::Target {
-        &*self.0
+        &self.0
     }
 }
 

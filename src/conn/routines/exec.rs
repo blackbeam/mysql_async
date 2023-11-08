@@ -60,7 +60,7 @@ impl Routine<()> for ExecRoutine<'_> {
                         }
 
                         let (body, as_long_data) =
-                            ComStmtExecuteRequestBuilder::new(self.stmt.id()).build(&*params);
+                            ComStmtExecuteRequestBuilder::new(self.stmt.id()).build(params);
 
                         if as_long_data {
                             conn.send_long_data(self.stmt.id(), params.iter()).await?;
@@ -71,14 +71,13 @@ impl Routine<()> for ExecRoutine<'_> {
                         break;
                     }
                     Params::Named(_) => {
-                        if self.stmt.named_params.is_none() {
+                        if self.stmt.named_params.is_empty() {
                             let error = DriverError::NamedParamsForPositionalQuery.into();
                             return Err(error);
                         }
 
                         let named = mem::replace(&mut self.params, Params::Empty);
-                        self.params =
-                            named.into_positional(self.stmt.named_params.as_ref().unwrap())?;
+                        self.params = named.into_positional(&self.stmt.named_params)?;
 
                         continue;
                     }

@@ -15,7 +15,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{buffer_pool::PooledBuf, connection_like::Connection, error::IoError, Conn};
+use crate::{buffer_pool::PooledBuf, connection_like::Connection, error::IoError};
 
 /// Reads a packet.
 #[derive(Debug)]
@@ -27,8 +27,9 @@ impl<'a, 't> ReadPacket<'a, 't> {
         Self(conn.into())
     }
 
-    pub(crate) fn conn_ref(&self) -> &Conn {
-        &*self.0
+    #[cfg(feature = "binlog")]
+    pub(crate) fn conn_ref(&self) -> &crate::Conn {
+        &self.0
     }
 }
 
