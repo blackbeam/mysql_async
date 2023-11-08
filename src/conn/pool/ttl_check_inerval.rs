@@ -60,10 +60,9 @@ impl TtlCheckInterval {
                 VecDeque::<_>::with_capacity(self.pool_opts.constraints().max());
 
             while let Some(conn) = exchange.available.pop_front() {
-                if conn.expired() {
-                    to_be_dropped.push(conn);
-                } else if to_be_dropped.len() < num_to_drop
-                    && conn.elapsed() > self.pool_opts.inactive_connection_ttl()
+                if conn.expired()
+                    || (to_be_dropped.len() < num_to_drop
+                        && conn.elapsed() > self.pool_opts.inactive_connection_ttl())
                 {
                     to_be_dropped.push(conn);
                 } else {

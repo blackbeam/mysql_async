@@ -306,7 +306,7 @@ impl crate::Conn {
         let packets = self.read_packets(num).await?;
         let defs = packets
             .into_iter()
-            .map(|x| ParseBuf(&*x).parse(()))
+            .map(|x| ParseBuf(&x).parse(()))
             .collect::<std::result::Result<Vec<Column>, _>>()
             .map_err(Error::from)?;
 

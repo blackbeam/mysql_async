@@ -139,25 +139,25 @@ impl futures_core::stream::Stream for BinlogStream {
             Err(err) => return Poll::Ready(Some(Err(err.into()))),
         };
 
-        let first_byte = packet.get(0).copied();
+        let first_byte = packet.first().copied();
 
         if first_byte == Some(255) {
             if let Ok(ErrPacket::Error(err)) =
-                ParseBuf(&*packet).parse(self.read_packet.conn_ref().capabilities())
+                ParseBuf(&packet).parse(self.read_packet.conn_ref().capabilities())
             {
                 return Poll::Ready(Some(Err(From::from(err))));
             }
         }
 
-        if first_byte == Some(254) && packet.len() < 8 {
-            if ParseBuf(&*packet)
+        if first_byte == Some(254)
+            && packet.len() < 8
+            && ParseBuf(&packet)
                 .parse::<OkPacketDeserializer<NetworkStreamTerminator>>(
                     self.read_packet.conn_ref().capabilities(),
                 )
                 .is_ok()
-            {
-                return Poll::Ready(None);
-            }
+        {
+            return Poll::Ready(None);
         }
 
         if first_byte == Some(0) {
@@ -171,16 +171,16 @@ impl futures_core::stream::Stream for BinlogStream {
                             Err(_) => (/* TODO: Log the error */),
                         }
                     }
-                    return Poll::Ready(Some(Ok(event)));
+                    Poll::Ready(Some(Ok(event)))
                 }
-                Ok(None) => return Poll::Ready(None),
-                Err(err) => return Poll::Ready(Some(Err(err.into()))),
+                Ok(None) => Poll::Ready(None),
+                Err(err) => Poll::Ready(Some(Err(err.into()))),
             }
         } else {
-            return Poll::Ready(Some(Err(DriverError::UnexpectedPacket {
+            Poll::Ready(Some(Err(DriverError::UnexpectedPacket {
                 payload: packet.to_vec(),
             }
-            .into())));
+            .into())))
         }
     }
 }
@@ -294,14 +294,11 @@ mod tests {
             event.header().event_type().unwrap();
 
             // iterate over rows of an event
-            match event.read_data()?.unwrap() {
-                EventData::RowsEvent(re) => {
-                    let tme = binlog_stream.get_tme(re.table_id());
-                    for row in re.rows(tme.unwrap()) {
-                        row.unwrap();
-                    }
+            if let EventData::RowsEvent(re) = event.read_data()?.unwrap() {
+                let tme = binlog_stream.get_tme(re.table_id());
+                for row in re.rows(tme.unwrap()) {
+                    row.unwrap();
                 }
-                _ => (),
             }
         }
         assert!(events_num > 0);
@@ -334,14 +331,11 @@ mod tests {
                 event.header().event_type().unwrap();
 
                 // iterate over rows of an event
-                match event.read_data()?.unwrap() {
-                    EventData::RowsEvent(re) => {
-                        let tme = binlog_stream.get_tme(re.table_id());
-                        for row in re.rows(tme.unwrap()) {
-                            row.unwrap();
-                        }
+                if let EventData::RowsEvent(re) = event.read_data()?.unwrap() {
+                    let tme = binlog_stream.get_tme(re.table_id());
+                    for row in re.rows(tme.unwrap()) {
+                        row.unwrap();
                     }
-                    _ => (),
                 }
             }
             assert!(events_num > 0);

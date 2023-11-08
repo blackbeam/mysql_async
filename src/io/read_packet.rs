@@ -29,7 +29,7 @@ impl<'a, 't> ReadPacket<'a, 't> {
 
     #[cfg(feature = "binlog")]
     pub(crate) fn conn_ref(&self) -> &crate::Conn {
-        &*self.0
+        &self.0
     }
 }
 

@@ -174,16 +174,16 @@ where
         columns: Arc<[Column]>,
     ) -> crate::Result<Option<Row>> {
         if let Some(row) = self.next_row(columns).await? {
-            return Ok(Some(row));
+            Ok(Some(row))
         } else {
             self.next_set().await?;
-            return Ok(None);
+            Ok(None)
         }
     }
 
     /// Skips the taken result set.
     async fn skip_taken(&mut self, meta: Arc<ResultSetMeta>) -> crate::Result<()> {
-        while let Some(_) = self.next_row_or_next_set((*meta).clone()).await? {}
+        while (self.next_row_or_next_set((*meta).clone()).await?).is_some() {}
         Ok(())
     }
 

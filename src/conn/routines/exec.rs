@@ -60,7 +60,7 @@ impl Routine<()> for ExecRoutine<'_> {
                         }
 
                         let (body, as_long_data) =
-                            ComStmtExecuteRequestBuilder::new(self.stmt.id()).build(&*params);
+                            ComStmtExecuteRequestBuilder::new(self.stmt.id()).build(params);
 
                         if as_long_data {
                             conn.send_long_data(self.stmt.id(), params.iter()).await?;

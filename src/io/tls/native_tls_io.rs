@@ -21,7 +21,7 @@ impl Endpoint {
             let mut root_cert_file = File::open(root_cert_path)?;
             root_cert_file.read_to_end(&mut root_cert_data)?;
 
-            let root_certs = Certificate::from_der(&*root_cert_data)
+            let root_certs = Certificate::from_der(&root_cert_data)
                 .map(|x| vec![x])
                 .or_else(|_| {
                     pem::parse_many(&*root_cert_data)
@@ -42,7 +42,7 @@ impl Endpoint {
             let password = client_identity.password().unwrap_or("");
 
             let der = std::fs::read(pkcs12_path)?;
-            let identity = Identity::from_pkcs12(&*der, password)?;
+            let identity = Identity::from_pkcs12(&der, password)?;
             builder.identity(identity);
         }
         builder.danger_accept_invalid_hostnames(ssl_opts.skip_domain_validation());
@@ -52,7 +52,7 @@ impl Endpoint {
         *self = match self {
             Endpoint::Plain(ref mut stream) => {
                 let stream = stream.take().unwrap();
-                let tls_stream = tls_connector.connect(&*domain, stream).await?;
+                let tls_stream = tls_connector.connect(&domain, stream).await?;
                 Endpoint::Secure(tls_stream)
             }
             Endpoint::Secure(_) => unreachable!(),

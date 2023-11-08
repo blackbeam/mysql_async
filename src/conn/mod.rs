@@ -309,7 +309,7 @@ impl Conn {
         if let Err(ref e) = self.inner.pending_result {
             let e = e.clone();
             self.inner.pending_result = Ok(None);
-            return Err(e);
+            Err(e)
         } else {
             Ok(self.inner.pending_result.as_ref().unwrap().as_ref())
         }
@@ -322,8 +322,7 @@ impl Conn {
     }
 
     pub(crate) fn has_pending_result(&self) -> bool {
-        matches!(self.inner.pending_result, Err(_))
-            || matches!(self.inner.pending_result, Ok(Some(_)))
+        self.inner.pending_result.is_err() || matches!(self.inner.pending_result, Ok(Some(_)))
     }
 
     /// Sets the given pening result metadata for this connection. Returns the previous value.
@@ -487,7 +486,7 @@ impl Conn {
 
     async fn handle_handshake(&mut self) -> Result<()> {
         let packet = self.read_packet().await?;
-        let handshake = ParseBuf(&*packet).parse::<HandshakePacket>(())?;
+        let handshake = ParseBuf(&packet).parse::<HandshakePacket>(())?;
 
         // Handshake scramble is always 21 bytes length (20 + zero terminator)
         self.inner.nonce = {
@@ -563,7 +562,7 @@ impl Conn {
         let auth_data = self
             .inner
             .auth_plugin
-            .gen_data(self.inner.opts.pass(), &*self.inner.nonce);
+            .gen_data(self.inner.opts.pass(), &self.inner.nonce);
 
         let handshake_response = HandshakeResponse::new(
             auth_data.as_deref(),
@@ -594,10 +593,9 @@ impl Conn {
             if matches!(
                 auth_switch_request.auth_plugin(),
                 AuthPlugin::MysqlOldPassword
-            ) {
-                if self.inner.opts.secure_auth() {
-                    return Err(DriverError::MysqlOldPasswordDisabled.into());
-                }
+            ) && self.inner.opts.secure_auth()
+            {
+                return Err(DriverError::MysqlOldPasswordDisabled.into());
             }
 
             self.inner.auth_plugin = auth_switch_request.auth_plugin().clone().into_owned();
@@ -685,7 +683,7 @@ impl Conn {
 
     async fn continue_caching_sha2_password_auth(&mut self) -> Result<()> {
         let packet = self.read_packet().await?;
-        match packet.get(0) {
+        match packet.first() {
             Some(0x00) => {
                 // ok packet for empty password
                 Ok(())
@@ -712,10 +710,10 @@ impl Conn {
                             *byte ^= self.inner.nonce[i % self.inner.nonce.len()];
                         }
                         let encrypted_pass = crypto::encrypt(
-                            &*pass,
+                            &pass,
                             self.inner.server_key.as_deref().expect("unreachable"),
                         );
-                        self.write_bytes(&*encrypted_pass).await?;
+                        self.write_bytes(&encrypted_pass).await?;
                     };
                     self.drop_packet().await?;
                     Ok(())
@@ -726,7 +724,7 @@ impl Conn {
                 .into()),
             },
             Some(0xfe) if !self.inner.auth_switched => {
-                let auth_switch_request = ParseBuf(&*packet).parse::<AuthSwitchRequest>(())?;
+                let auth_switch_request = ParseBuf(&packet).parse::<AuthSwitchRequest>(())?;
                 self.perform_auth_switch(auth_switch_request).await?;
                 Ok(())
             }
@@ -739,13 +737,13 @@ impl Conn {
 
     async fn continue_mysql_native_password_auth(&mut self) -> Result<()> {
         let packet = self.read_packet().await?;
-        match packet.get(0) {
+        match packet.first() {
             Some(0x00) => Ok(()),
             Some(0xfe) if !self.inner.auth_switched => {
                 let auth_switch = if packet.len() > 1 {
-                    ParseBuf(&*packet).parse(())?
+                    ParseBuf(&packet).parse(())?
                 } else {
-                    let _ = ParseBuf(&*packet).parse::<OldAuthSwitchRequest>(())?;
+                    let _ = ParseBuf(&packet).parse::<OldAuthSwitchRequest>(())?;
                     // map OldAuthSwitch to AuthSwitch with mysql_old_password plugin
                     AuthSwitchRequest::new(
                         "mysql_old_password".as_bytes(),
@@ -768,16 +766,16 @@ impl Conn {
                 .capabilities()
                 .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
             {
-                ParseBuf(&*packet)
+                ParseBuf(packet)
                     .parse::<OkPacketDeserializer<ResultSetTerminator>>(self.capabilities())
                     .map(|x| x.into_inner())
             } else {
-                ParseBuf(&*packet)
+                ParseBuf(packet)
                     .parse::<OkPacketDeserializer<OldEofPacket>>(self.capabilities())
                     .map(|x| x.into_inner())
             }
         } else {
-            ParseBuf(&*packet)
+            ParseBuf(packet)
                 .parse::<OkPacketDeserializer<CommonOkPacket>>(self.capabilities())
                 .map(|x| x.into_inner())
         };
@@ -785,7 +783,7 @@ impl Conn {
         if let Ok(ok_packet) = ok_packet {
             self.handle_ok(ok_packet.into_owned());
         } else {
-            let err_packet = ParseBuf(&*packet).parse::<ErrPacket>(self.capabilities());
+            let err_packet = ParseBuf(packet).parse::<ErrPacket>(self.capabilities());
             if let Ok(err_packet) = err_packet {
                 self.handle_err(err_packet)?;
                 return Ok(true);
@@ -1011,14 +1009,13 @@ impl Conn {
             fn apply(&self, conn: &mut Conn, value: Option<crate::Value>) {
                 match self {
                     Cfg::Socket => {
-                        conn.inner.socket = value.map(crate::from_value).flatten();
+                        conn.inner.socket = value.and_then(crate::from_value);
                     }
                     Cfg::MaxAllowedPacket => {
                         if let Some(stream) = conn.inner.stream.as_mut() {
                             stream.set_max_allowed_packet(
                                 value
-                                    .map(crate::from_value)
-                                    .flatten()
+                                    .and_then(crate::from_value)
                                     .unwrap_or(DEFAULT_MAX_ALLOWED_PACKET),
                             );
                         }
@@ -1026,8 +1023,7 @@ impl Conn {
                     Cfg::WaitTimeout => {
                         conn.inner.wait_timeout = Duration::from_secs(
                             value
-                                .map(crate::from_value)
-                                .flatten()
+                                .and_then(crate::from_value)
                                 .unwrap_or(DEFAULT_WAIT_TIMEOUT) as u64,
                         );
                     }
@@ -1329,6 +1325,7 @@ mod test {
     #[test]
     fn opts_should_satisfy_send_and_sync() {
         struct A<T: Sync + Send>(T);
+        #[allow(clippy::unnecessary_operation)]
         A(get_opts());
     }
 
@@ -1672,7 +1669,7 @@ mod test {
     async fn should_perform_queries() -> super::Result<()> {
         let mut conn = Conn::new(get_opts()).await?;
         for x in (MAX_PAYLOAD_LEN - 2)..=(MAX_PAYLOAD_LEN + 2) {
-            let long_string = ::std::iter::repeat('A').take(x).collect::<String>();
+            let long_string = "A".repeat(x);
             let result: Vec<(String, u8)> = conn
                 .query(format!(r"SELECT '{}', 231", long_string))
                 .await?;
@@ -1724,15 +1721,11 @@ mod test {
 
     #[tokio::test]
     async fn should_execute_statement() -> super::Result<()> {
-        let long_string = ::std::iter::repeat('A')
-            .take(18 * 1024 * 1024)
-            .collect::<String>();
+        let long_string = "A".repeat(18 * 1024 * 1024);
         let mut conn = Conn::new(get_opts()).await?;
         let stmt = conn.prep(r"SELECT ?").await?;
         let result = conn.exec_iter(&stmt, (&long_string,)).await?;
-        let mut mapped = result
-            .map_and_drop(|row| from_row::<(String,)>(row))
-            .await?;
+        let mut mapped = result.map_and_drop(from_row::<(String,)>).await?;
         assert_eq!(mapped.len(), 1);
         assert_eq!(mapped.pop(), Some((long_string,)));
         let result = conn.exec_iter(&stmt, (42_u8,)).await?;
@@ -1755,7 +1748,7 @@ mod test {
             .exec_iter(&stmt, params! { "foo" => "quux", "bar" => "baz" })
             .await?;
         let mut mapped = result
-            .map_and_drop(|row| from_row::<(String, String, String, u8)>(row))
+            .map_and_drop(from_row::<(String, String, String, u8)>)
             .await?;
         assert_eq!(mapped.len(), 1);
         assert_eq!(
@@ -1847,7 +1840,7 @@ mod test {
         let result = conn.query_iter(q).await?;
 
         let loaded_structs = result
-            .map_and_drop(|row| crate::from_row::<(Vec<u8>, Vec<u8>, u64, Vec<u8>)>(row))
+            .map_and_drop(crate::from_row::<(Vec<u8>, Vec<u8>, u64, Vec<u8>)>)
             .await?;
 
         conn.disconnect().await?;

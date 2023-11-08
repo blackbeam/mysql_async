@@ -65,14 +65,14 @@ impl Conn {
             }
         };
 
-        match packet.get(0) {
+        match packet.first() {
             Some(0x00) => {
                 self.set_pending_result(Some(P::result_set_meta(Arc::from(
                     Vec::new().into_boxed_slice(),
                 ))))?;
             }
-            Some(0xFB) => self.handle_local_infile::<P>(&*packet).await?,
-            _ => self.handle_result_set::<P>(&*packet).await?,
+            Some(0xFB) => self.handle_local_infile::<P>(&packet).await?,
+            _ => self.handle_result_set::<P>(&packet).await?,
         }
 
         Ok(())
@@ -98,7 +98,7 @@ impl Conn {
             match bytes {
                 Ok(bytes) => {
                     // We'll skip empty chunks to stay compliant with the protocol.
-                    if bytes.len() > 0 {
+                    if !bytes.is_empty() {
                         self.write_bytes(&bytes).await?;
                     }
                 }
