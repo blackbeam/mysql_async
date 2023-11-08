@@ -252,7 +252,7 @@ impl PoolOpts {
     /// So to encrease overall performance you can safely opt-out of the default behavior
     /// if you are not willing to change the session state in an unpleasant way.
     ///
-    /// It is also possible to selectively opt-in/out using [`Conn::reset_connection`].
+    /// It is also possible to selectively opt-in/out using [`Conn::reset_connection`][1].
     ///
     /// # Connection URL
     ///
@@ -266,6 +266,8 @@ impl PoolOpts {
     /// assert_eq!(opts.pool_opts().reset_connection(), false);
     /// # Ok(()) }
     /// ```
+    ///
+    /// [1]: crate::Conn::reset_connection
     pub fn with_reset_connection(mut self, reset_connection: bool) -> Self {
         self.reset_connection = reset_connection;
         self
@@ -635,7 +637,10 @@ impl Opts {
     }
 
     /// Commands to execute on new connection and every time
-    /// [`Conn::reset`] or [`Conn::change_user`] is invoked.
+    /// [`Conn::reset`][1] or [`Conn::change_user`][2] is invoked.
+    ///
+    /// [1]: crate::Conn::reset
+    /// [2]: crate::Conn::change_user
     pub fn setup(&self) -> &[String] {
         self.inner.mysql_opts.setup.as_ref()
     }
