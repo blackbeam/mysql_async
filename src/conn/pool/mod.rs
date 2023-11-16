@@ -110,6 +110,18 @@ struct Waitlist {
 
 impl Waitlist {
     fn push(&mut self, waker: Waker, queue_id: QueueId) {
+        // The documentation of Future::poll says:
+        //   Note that on multiple calls to poll, only the Waker from
+        //   the Context passed to the most recent call should be
+        //   scheduled to receive a wakeup.
+        //
+        // But the the documentation of KeyedPriorityQueue::push says:
+        //   Adds new element to queue if missing key or replace its
+        //   priority if key exists. In second case doesn’t replace key.
+        //
+        // This means we have to remove first to have the most recent
+        // waker in the queue.
+        self.remove(queue_id);
         self.queue.push(QueuedWaker { queue_id, waker }, queue_id);
     }
 
