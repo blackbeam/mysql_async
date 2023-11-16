@@ -423,6 +423,12 @@ mod test {
         };
     }
 
+    fn pool_with_one_connection() -> Pool {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(1, 1).unwrap());
+        let opts = get_opts().pool_opts(pool_opts.clone());
+        Pool::new(opts)
+    }
+
     #[tokio::test]
     async fn should_opt_out_of_connection_reset() -> super::Result<()> {
         let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(1, 1).unwrap());
@@ -571,10 +577,7 @@ mod test {
 
     #[tokio::test]
     async fn should_reuse_connections() -> super::Result<()> {
-        let constraints = PoolConstraints::new(1, 1).unwrap();
-        let opts = get_opts().pool_opts(PoolOpts::default().with_constraints(constraints));
-
-        let pool = Pool::new(opts);
+        let pool = pool_with_one_connection();
         let mut conn = pool.get_conn().await?;
 
         let server_version = conn.server_version();
@@ -613,10 +616,7 @@ mod test {
 
     #[tokio::test]
     async fn should_start_transaction() -> super::Result<()> {
-        let constraints = PoolConstraints::new(1, 1).unwrap();
-        let opts = get_opts().pool_opts(PoolOpts::default().with_constraints(constraints));
-
-        let pool = Pool::new(opts);
+        let pool = pool_with_one_connection();
 
         "CREATE TABLE IF NOT EXISTS mysql.tmp(id int)"
             .ignore(&pool)
@@ -909,10 +909,7 @@ mod test {
 
     #[tokio::test]
     async fn should_ignore_non_fatal_errors_while_returning_to_a_pool() -> super::Result<()> {
-        let pool_constraints = PoolConstraints::new(1, 1).unwrap();
-        let pool_opts = PoolOpts::default().with_constraints(pool_constraints);
-
-        let pool = Pool::new(get_opts().pool_opts(pool_opts));
+        let pool = pool_with_one_connection();
         let id = pool.get_conn().await?.id();
 
         // non-fatal errors are ignored
@@ -927,10 +924,7 @@ mod test {
 
     #[tokio::test]
     async fn should_remove_waker_of_cancelled_task() {
-        let pool_constraints = PoolConstraints::new(1, 1).unwrap();
-        let pool_opts = PoolOpts::default().with_constraints(pool_constraints);
-
-        let pool = Pool::new(get_opts().pool_opts(pool_opts));
+        let pool = pool_with_one_connection();
         let only_conn = pool.get_conn().await.unwrap();
 
         let join_handle = tokio::spawn(timeout(Duration::from_secs(1), pool.get_conn()));
