@@ -106,6 +106,7 @@ rustls-tls = [
     "webpki-roots",
     "rustls-pemfile",
 ]
+native-tls-vendored = ["native-tls/vendored"]
 tracing = ["dep:tracing"]
 derive = ["mysql_common/derive"]
 nightly = []
