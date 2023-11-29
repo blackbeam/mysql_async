@@ -28,7 +28,7 @@ as well as `native-tls`-based TLS support.
 *   `minimal` – enables only necessary features (at the moment the only necessary feature
     is `flate2` backend). Enables:
 
-    -   `flate2/zlib"
+    -   `flate2/zlib`
 
     **Example:**
 
@@ -48,7 +48,7 @@ as well as `native-tls`-based TLS support.
 *   `default` – enables the following set of crate's and dependencies' features:
 
     -   `native-tls-tls`
-    -   `flate2/zlib"
+    -   `flate2/zlib`
     -   `mysql_common/bigdecimal03`
     -   `mysql_common/rust_decimal`
     -   `mysql_common/time03`
@@ -99,7 +99,7 @@ as well as `native-tls`-based TLS support.
 
 *   `binlog` - enables binlog-related functionality. Enables:
 
-    -   `mysql_common/binlog"
+    -   `mysql_common/binlog`
 
 [myslqcommonfeatures]: https://github.com/blackbeam/rust_mysql_common#crate-features
 
