@@ -81,6 +81,14 @@ as well as `native-tls`-based TLS support.
     [dependencies]
     mysql_async = { version = "*", default-features = false, features = ["rustls-tls"] }
 
+*   `native-tls-vendored` – enables `vendored` of `native-tls`
+
+    **Example:**
+
+    ```toml
+    [dependencies]
+    mysql_async = { version = "*", features = ["native-tls-vendored"] }
+
 *   `tracing` – enables instrumentation via `tracing` package.
 
     Primary operations (`query`, `prepare`, `exec`) are instrumented at `INFO` level.
