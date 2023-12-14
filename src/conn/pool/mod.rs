@@ -392,14 +392,14 @@ impl Drop for Conn {
 #[cfg(test)]
 mod test {
     use futures_util::{
-        future::{join_all, select, select_all, try_join_all},
-        try_join, FutureExt,
+        future::{join_all, select, select_all, try_join_all, Either},
+        poll, try_join, FutureExt,
     };
     use tokio::time::{sleep, timeout};
 
     use std::{
         cmp::Reverse,
-        task::{RawWaker, RawWakerVTable, Waker},
+        task::{Poll, RawWaker, RawWakerVTable, Waker},
         time::Duration,
     };
 
@@ -1051,6 +1051,68 @@ mod test {
         assert_eq!(ex_field!(pool, exist), 0);
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn check_priorities() -> super::Result<()> {
+        let pool = pool_with_one_connection();
+
+        let queue_len = || {
+            let exchange = pool.inner.exchange.lock().unwrap();
+            exchange.waiting.queue.len()
+        };
+
+        // Get a connection, so we know the next futures will be
+        // queued.
+        let conn = pool.get_conn().await.unwrap();
+
+        let get_pending = || async {
+            let fut = async {
+                pool.get_conn().await.unwrap();
+            }
+            .shared();
+            let p = poll!(fut.clone());
+            assert!(matches!(p, Poll::Pending));
+            fut
+        };
+
+        let fut1 = get_pending().await;
+        let fut2 = get_pending().await;
+
+        // Both futures are queued
+        assert_eq!(queue_len(), 2);
+
+        drop(conn); // This will pop fut1 from the queue, making it [2]
+        while queue_len() != 1 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // We called wake on fut1, but with the select fut2 will
+        // resolve first
+        let Either::Left((_, fut1)) = select(fut2, fut1).await else {
+            panic!("wrong future");
+        };
+
+        // We dropped the connection of fut2, but very likely hasn't
+        // made it through the recycler yet.
+        assert_eq!(queue_len(), 1);
+
+        let p = poll!(fut1.clone());
+        assert!(matches!(p, Poll::Pending));
+        assert_eq!(queue_len(), 2); // Now fut1 is queued again
+
+        // The connection will pass by the recycler and unblock fut1
+        // and pop it from the queue.
+        fut1.await;
+        assert_eq!(queue_len(), 1);
+
+        // Since the queue is not empty, a new future will be pending
+        let fut3 = get_pending().await;
+        assert_eq!(queue_len(), 2);
+
+        println!("we get here");
+        fut3.await;
+        panic!("we never get here");
     }
 
     #[cfg(feature = "nightly")]
