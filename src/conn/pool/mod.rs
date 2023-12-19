@@ -11,7 +11,8 @@ use keyed_priority_queue::KeyedPriorityQueue;
 use tokio::sync::mpsc;
 
 use std::{
-    cmp::{Ordering, Reverse},
+    borrow::Borrow,
+    cmp::Reverse,
     collections::VecDeque,
     convert::TryFrom,
     hash::{Hash, Hasher},
@@ -108,29 +109,19 @@ struct Waitlist {
 }
 
 impl Waitlist {
-    fn push(&mut self, w: Waker, queue_id: QueueId) {
-        self.queue.push(
-            QueuedWaker {
-                queue_id,
-                waker: Some(w),
-            },
-            queue_id,
-        );
+    fn push(&mut self, waker: Waker, queue_id: QueueId) {
+        self.queue.push(QueuedWaker { queue_id, waker }, queue_id);
     }
 
     fn pop(&mut self) -> Option<Waker> {
         match self.queue.pop() {
-            Some((qw, _)) => Some(qw.waker.unwrap()),
+            Some((qw, _)) => Some(qw.waker),
             None => None,
         }
     }
 
     fn remove(&mut self, id: QueueId) {
-        let tmp = QueuedWaker {
-            queue_id: id,
-            waker: None,
-        };
-        self.queue.remove(&tmp);
+        self.queue.remove(&id);
     }
 
     fn peek_id(&mut self) -> Option<QueueId> {
@@ -154,26 +145,20 @@ impl QueueId {
 #[derive(Debug)]
 struct QueuedWaker {
     queue_id: QueueId,
-    waker: Option<Waker>,
+    waker: Waker,
 }
 
 impl Eq for QueuedWaker {}
 
+impl Borrow<QueueId> for QueuedWaker {
+    fn borrow(&self) -> &QueueId {
+        &self.queue_id
+    }
+}
+
 impl PartialEq for QueuedWaker {
     fn eq(&self, other: &Self) -> bool {
         self.queue_id == other.queue_id
-    }
-}
-
-impl Ord for QueuedWaker {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.queue_id.cmp(&other.queue_id)
-    }
-}
-
-impl PartialOrd for QueuedWaker {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
     }
 }
 
