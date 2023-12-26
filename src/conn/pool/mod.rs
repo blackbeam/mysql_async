@@ -1048,6 +1048,7 @@ mod test {
         // queued.
         let conn = pool.get_conn().await.unwrap();
 
+        #[allow(clippy::async_yields_async)]
         let get_pending = || async {
             let fut = async {
                 pool.get_conn().await.unwrap();
