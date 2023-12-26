@@ -1,8 +1,6 @@
 #[allow(unused_imports)]
 use mysql_async::{
-    consts, from_row, from_row_opt, from_value, from_value_opt,
-    futures::GetConn,
-    params,
+    consts, from_row, from_row_opt, from_value, from_value_opt, params,
     prelude::{
         BatchQuery, FromRow, FromValue, GlobalHandler, Protocol, Query, Queryable, StatementLike,
         ToValue,
