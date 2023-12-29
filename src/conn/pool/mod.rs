@@ -16,7 +16,6 @@ use std::{
     collections::VecDeque,
     convert::TryFrom,
     hash::{Hash, Hasher},
-    pin::Pin,
     str::FromStr,
     sync::{atomic, Arc, Mutex},
     task::{Context, Poll, Waker},
@@ -286,7 +285,7 @@ impl Pool {
 
     /// Poll the pool for an available connection.
     fn poll_new_conn(
-        self: Pin<&mut Self>,
+        &mut self,
         cx: &mut Context<'_>,
         queue_id: QueueId,
     ) -> Poll<Result<GetConnInner>> {

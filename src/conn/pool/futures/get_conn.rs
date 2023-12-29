@@ -113,7 +113,7 @@ impl Future for GetConn {
             match self.inner {
                 GetConnInner::New => {
                     let queue_id = self.queue_id;
-                    let next = ready!(Pin::new(self.pool_mut()).poll_new_conn(cx, queue_id))?;
+                    let next = ready!(self.pool_mut().poll_new_conn(cx, queue_id))?;
                     match next {
                         GetConnInner::Connecting(conn_fut) => {
                             self.inner = GetConnInner::Connecting(conn_fut);
