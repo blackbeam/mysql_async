@@ -166,6 +166,7 @@ impl futures_core::stream::Stream for BinlogStream {
                 Ok(Some(event)) => {
                     if event.header().event_type_raw() == EventType::TRANSACTION_PAYLOAD_EVENT as u8
                     {
+                        #[allow(clippy::single_match)]
                         match event.read_event::<TransactionPayloadEvent<'_>>() {
                             Ok(e) => self.tpe = Some(Cursor::new(e.danger_decompress())),
                             Err(_) => (/* TODO: Log the error */),
