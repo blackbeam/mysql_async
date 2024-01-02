@@ -109,6 +109,18 @@ struct Waitlist {
 
 impl Waitlist {
     fn push(&mut self, waker: Waker, queue_id: QueueId) {
+        // The documentation of Future::poll says:
+        //   Note that on multiple calls to poll, only the Waker from
+        //   the Context passed to the most recent call should be
+        //   scheduled to receive a wakeup.
+        //
+        // But the the documentation of KeyedPriorityQueue::push says:
+        //   Adds new element to queue if missing key or replace its
+        //   priority if key exists. In second case doesn’t replace key.
+        //
+        // This means we have to remove first to have the most recent
+        // waker in the queue.
+        self.remove(queue_id);
         self.queue.push(QueuedWaker { queue_id, waker }, queue_id);
     }
 
@@ -377,10 +389,14 @@ mod test {
         poll, try_join, FutureExt,
     };
     use tokio::time::{sleep, timeout};
+    use waker_fn::waker_fn;
 
     use std::{
         cmp::Reverse,
-        task::{Poll, RawWaker, RawWakerVTable, Waker},
+        future::Future,
+        pin::pin,
+        sync::{Arc, OnceLock},
+        task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
         time::Duration,
     };
 
@@ -1032,6 +1048,46 @@ mod test {
         assert_eq!(ex_field!(pool, exist), 0);
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn save_last_waker() {
+        // Test that if passed multiple wakers, we call the last one.
+
+        let pool = pool_with_one_connection();
+
+        // Get a connection, so we know the next future will be
+        // queued.
+        let conn = pool.get_conn().await.unwrap();
+        let mut pending_fut = pin!(pool.get_conn());
+
+        let build_waker = || {
+            let called = Arc::new(OnceLock::new());
+            let called2 = called.clone();
+            let waker = waker_fn(move || called2.set(()).unwrap());
+            (called, waker)
+        };
+
+        let mut assert_pending = |waker| {
+            let mut context = Context::from_waker(&waker);
+            let p = pending_fut.as_mut().poll(&mut context);
+            assert!(matches!(p, Poll::Pending));
+        };
+
+        let (first_called, waker) = build_waker();
+        assert_pending(waker);
+
+        let (second_called, waker) = build_waker();
+        assert_pending(waker);
+
+        drop(conn);
+
+        while second_called.get().is_none() {
+            assert!(first_called.get().is_none());
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        assert!(first_called.get().is_none());
     }
 
     #[tokio::test]
