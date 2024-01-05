@@ -55,13 +55,6 @@ impl fmt::Debug for GetConnInner {
     }
 }
 
-impl GetConnInner {
-    /// Take the value of the inner connection, resetting it to `New`.
-    pub fn take(&mut self) -> GetConnInner {
-        std::mem::replace(self, GetConnInner::New)
-    }
-}
-
 /// This future will take connection from a pool and resolve to [`Conn`].
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
@@ -186,7 +179,7 @@ impl Drop for GetConn {
             // Remove the waker from the pool's waitlist in case this task was
             // woken by another waker, like from tokio::time::timeout.
             pool.unqueue(self.queue_id);
-            if let GetConnInner::Connecting(..) = self.inner.take() {
+            if let GetConnInner::Connecting(..) = self.inner {
                 pool.cancel_connection();
             }
         }
