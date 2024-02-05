@@ -33,11 +33,13 @@ impl Endpoint {
         }
 
         if let Some(client_identity) = ssl_opts.client_identity() {
-            let pkcs12_path = client_identity.pkcs12_path();
-            let password = client_identity.password().unwrap_or("");
-
-            let der = std::fs::read(pkcs12_path)?;
-            let identity = Identity::from_pkcs12(&der, password)?;
+            let identity = if let Some(data) = client_identity.pkcs12_data() {
+                Identity::from_pkcs12(data, client_identity.password().unwrap_or(""))?
+            } else {
+                let path = client_identity.pkcs12_path();
+                let der = std::fs::read(path)?;
+                Identity::from_pkcs12(&der, client_identity.password().unwrap_or(""))?
+            };
             builder.identity(identity);
         }
         builder.danger_accept_invalid_hostnames(ssl_opts.skip_domain_validation());
