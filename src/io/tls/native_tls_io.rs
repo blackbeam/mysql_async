@@ -21,18 +21,13 @@ impl Endpoint {
             let mut root_cert_file = File::open(root_cert_path)?;
             root_cert_file.read_to_end(&mut root_cert_data)?;
 
-            let root_certs = Certificate::from_der(&root_cert_data)
-                .map(|x| vec![x])
-                .or_else(|_| {
-                    pem::parse_many(&*root_cert_data)
-                        .unwrap_or_default()
-                        .iter()
-                        .map(pem::encode)
-                        .map(|s| Certificate::from_pem(s.as_bytes()))
-                        .collect()
-                })?;
+            for root_cert in parse_certs(&root_cert_data)? {
+                builder.add_root_certificate(root_cert);
+            }
+        }
 
-            for root_cert in root_certs {
+        if let Some(root_cert_data) = ssl_opts.root_cert() {
+            for root_cert in parse_certs(root_cert_data)? {
                 builder.add_root_certificate(root_cert);
             }
         }
@@ -62,4 +57,15 @@ impl Endpoint {
 
         Ok(())
     }
+}
+
+fn parse_certs(buf: &[u8]) -> Result<Vec<Certificate>> {
+    Ok(Certificate::from_der(buf).map(|x| vec![x]).or_else(|_| {
+        pem::parse_many(buf)
+            .unwrap_or_default()
+            .iter()
+            .map(pem::encode)
+            .map(|s| Certificate::from_pem(s.as_bytes()))
+            .collect()
+    })?)
 }

@@ -50,6 +50,21 @@ impl Endpoint {
             }
         }
 
+        if let Some(root_cert_data) = ssl_opts.root_cert() {
+            let mut root_certs = Vec::new();
+            for cert in certs(&mut &*root_cert_data)? {
+                root_certs.push(Certificate(cert));
+            }
+
+            if root_certs.is_empty() && !root_cert_data.is_empty() {
+                root_certs.push(Certificate(root_cert_data.to_vec()));
+            }
+
+            for cert in &root_certs {
+                root_store.add(cert)?;
+            }
+        }
+
         let config_builder = ClientConfig::builder()
             .with_safe_defaults()
             .with_root_certificates(root_store.clone());
@@ -136,8 +151,7 @@ impl ServerCertVerifier for DangerousVerifier {
             ) {
                 Ok(assertion) => Ok(assertion),
                 Err(ref e)
-                    if e.to_string().contains("NotValidForName")
-                        && self.skip_domain_validation =>
+                    if e.to_string().contains("NotValidForName") && self.skip_domain_validation =>
                 {
                     Ok(rustls::client::ServerCertVerified::assertion())
                 }

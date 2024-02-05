@@ -142,6 +142,7 @@ pub struct SslOpts {
     #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
     client_identity: Option<ClientIdentity>,
     root_cert_path: Option<Cow<'static, Path>>,
+    root_cert: Option<Vec<u8>>,
     skip_domain_validation: bool,
     accept_invalid_certs: bool,
 }
@@ -156,11 +157,24 @@ impl SslOpts {
     /// Sets path to a `pem` or `der` certificate of the root that connector will trust.
     ///
     /// Multiple certs are allowed in .pem files.
+    ///
+    /// Will be merged with any certs provided by `with_root_cert`.
     pub fn with_root_cert_path<T: Into<Cow<'static, Path>>>(
         mut self,
         root_cert_path: Option<T>,
     ) -> Self {
         self.root_cert_path = root_cert_path.map(Into::into);
+        self
+    }
+
+    /// Sets the bytes for a `pem` or `der` encoded certificate of the root that the connector
+    /// will trust.
+    ///
+    /// Multiple certs are allowed in .pem format.
+    ///
+    /// Will be merged with any certs provided by `with_root_cert_path`.
+    pub fn with_root_cert(mut self, cert: Option<Vec<u8>>) -> Self {
+        self.root_cert = cert;
         self
     }
 
@@ -185,6 +199,10 @@ impl SslOpts {
 
     pub fn root_cert_path(&self) -> Option<&Path> {
         self.root_cert_path.as_ref().map(AsRef::as_ref)
+    }
+
+    pub fn root_cert(&self) -> Option<&[u8]> {
+        self.root_cert.as_ref().map(AsRef::as_ref)
     }
 
     pub fn skip_domain_validation(&self) -> bool {
