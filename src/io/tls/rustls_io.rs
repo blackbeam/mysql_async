@@ -136,8 +136,7 @@ impl ServerCertVerifier for DangerousVerifier {
             ) {
                 Ok(assertion) => Ok(assertion),
                 Err(ref e)
-                    if e.to_string().contains("NotValidForName")
-                        && self.skip_domain_validation =>
+                    if e.to_string().contains("NotValidForName") && self.skip_domain_validation =>
                 {
                     Ok(rustls::client::ServerCertVerified::assertion())
                 }
