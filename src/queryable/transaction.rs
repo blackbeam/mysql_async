@@ -126,6 +126,7 @@ impl fmt::Display for IsolationLevel {
 ///
 /// You should always call either `commit` or `rollback`, otherwise transaction will be rolled
 /// back implicitly when corresponding connection is dropped or queried.
+#[must_use = "transaction object must be committed or rolled back explicitly"]
 #[derive(Debug)]
 pub struct Transaction<'a>(pub(crate) Connection<'a, 'static>);
 
