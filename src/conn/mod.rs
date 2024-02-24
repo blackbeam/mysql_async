@@ -7,7 +7,6 @@
 // modified, or distributed except according to those terms.
 
 use futures_util::FutureExt;
-pub use mysql_common::named_params;
 
 use mysql_common::{
     constants::{DEFAULT_MAX_ALLOWED_PACKET, UTF8MB4_GENERAL_CI, UTF8_GENERAL_CI},
@@ -575,6 +574,10 @@ impl Conn {
             Some(self.inner.auth_plugin.borrow()),
             self.capabilities(),
             Default::default(), // TODO: Add support
+            self.inner
+                .opts
+                .max_allowed_packet()
+                .unwrap_or(DEFAULT_MAX_ALLOWED_PACKET) as u32,
         );
 
         // Serialize here to satisfy borrow checker.

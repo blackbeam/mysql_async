@@ -610,10 +610,8 @@ pub mod test_misc {
 
     #[allow(dead_code)]
     #[allow(unreachable_code)]
-    fn error_should_implement_send_and_sync() {
+    fn error_should_implement_send_and_sync(err: crate::Error) {
         fn _dummy<T: Send + Sync + Unpin>(_: T) {}
-        #[allow(unused_variables)]
-        let err: crate::Error = panic!();
         _dummy(err);
     }
 
