@@ -195,6 +195,7 @@ pub struct SslOpts {
     root_certs: Vec<PathOrBuf<'static>>,
     skip_domain_validation: bool,
     accept_invalid_certs: bool,
+    tls_hostname_override: Option<Cow<'static, str>>,
 }
 
 impl SslOpts {
@@ -228,6 +229,18 @@ impl SslOpts {
         self
     }
 
+    /// If set, will override the hostname used to verify the server's certificate.
+    ///
+    /// This is useful when connecting to a server via a tunnel, where the server hostname is
+    /// different from the hostname used to connect to the tunnel.
+    pub fn with_danger_tls_hostname_override<T: Into<Cow<'static, str>>>(
+        mut self,
+        domain: Option<T>,
+    ) -> Self {
+        self.tls_hostname_override = domain.map(Into::into);
+        self
+    }
+
     #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
     pub fn client_identity(&self) -> Option<&ClientIdentity> {
         self.client_identity.as_ref()
@@ -243,6 +256,10 @@ impl SslOpts {
 
     pub fn accept_invalid_certs(&self) -> bool {
         self.accept_invalid_certs
+    }
+
+    pub fn tls_hostname_override(&self) -> Option<&str> {
+        self.tls_hostname_override.as_deref()
     }
 }
 
