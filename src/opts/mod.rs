@@ -181,9 +181,9 @@ impl SslOpts {
 
     /// If set, will override the hostname used to verify the server's certificate.
     ///
-    /// This is useful when connecting to a server via a tunnel, where the server hostname
-    /// name is different from the hostname used to connect to the tunnel.
-    pub fn with_tls_hostname_override<T: Into<Cow<'static, str>>>(
+    /// This is useful when connecting to a server via a tunnel, where the server hostname is
+    /// different from the hostname used to connect to the tunnel.
+    pub fn with_danger_tls_hostname_override<T: Into<Cow<'static, str>>>(
         mut self,
         domain: Option<T>,
     ) -> Self {
@@ -209,7 +209,7 @@ impl SslOpts {
     }
 
     pub fn tls_hostname_override(&self) -> Option<&str> {
-        self.tls_hostname_override.as_ref().map(AsRef::as_ref)
+        self.tls_hostname_override.as_deref()
     }
 }
 
