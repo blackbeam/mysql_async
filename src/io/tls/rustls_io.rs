@@ -7,12 +7,31 @@ use rustls::{
     Certificate, ClientConfig, OwnedTrustAnchor, RootCertStore,
 };
 
-use tokio::{fs::File, io::AsyncReadExt};
-
 use rustls_pemfile::certs;
 use tokio_rustls::TlsConnector;
 
 use crate::{io::Endpoint, Result, SslOpts};
+
+impl SslOpts {
+    async fn load_root_certs(&self) -> crate::Result<Vec<Certificate>> {
+        let mut output = Vec::new();
+
+        for root_cert in self.root_certs() {
+            let root_cert_data = root_cert.read().await?;
+            let mut seen = false;
+            for cert in certs(&mut &*root_cert_data)? {
+                seen = true;
+                output.push(Certificate(cert));
+            }
+
+            if !seen && !root_cert_data.is_empty() {
+                output.push(Certificate(root_cert_data.into_owned()));
+            }
+        }
+
+        Ok(output)
+    }
+}
 
 impl Endpoint {
     pub async fn make_secure(&mut self, domain: String, ssl_opts: SslOpts) -> Result<()> {
@@ -31,23 +50,8 @@ impl Endpoint {
             )
         }));
 
-        if let Some(root_cert_path) = ssl_opts.root_cert_path() {
-            let mut root_cert_data = vec![];
-            let mut root_cert_file = File::open(root_cert_path).await?;
-            root_cert_file.read_to_end(&mut root_cert_data).await?;
-
-            let mut root_certs = Vec::new();
-            for cert in certs(&mut &*root_cert_data)? {
-                root_certs.push(Certificate(cert));
-            }
-
-            if root_certs.is_empty() && !root_cert_data.is_empty() {
-                root_certs.push(Certificate(root_cert_data));
-            }
-
-            for cert in &root_certs {
-                root_store.add(cert)?;
-            }
+        for cert in ssl_opts.load_root_certs().await? {
+            root_store.add(&cert)?;
         }
 
         let config_builder = ClientConfig::builder()
@@ -55,7 +59,7 @@ impl Endpoint {
             .with_root_certificates(root_store.clone());
 
         let mut config = if let Some(identity) = ssl_opts.client_identity() {
-            let (cert_chain, priv_key) = identity.load()?;
+            let (cert_chain, priv_key) = identity.load().await?;
             config_builder.with_client_auth_cert(cert_chain, priv_key)?
         } else {
             config_builder.with_no_client_auth()
@@ -136,8 +140,7 @@ impl ServerCertVerifier for DangerousVerifier {
             ) {
                 Ok(assertion) => Ok(assertion),
                 Err(ref e)
-                    if e.to_string().contains("NotValidForName")
-                        && self.skip_domain_validation =>
+                    if e.to_string().contains("NotValidForName") && self.skip_domain_validation =>
                 {
                     Ok(rustls::client::ServerCertVerified::assertion())
                 }
