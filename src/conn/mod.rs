@@ -1552,10 +1552,9 @@ mod test {
                 .map(|x| ((x % (123 - 97)) + 97) as char)
                 .collect();
 
-            conn.query_drop("DELETE FROM mysql.user WHERE user = '__mats'")
+            conn.query_drop("DROP USER /*!50700 IF EXISTS */ /*M!100103 IF EXISTS */ __mats")
                 .await
                 .unwrap();
-            conn.query_drop("FLUSH PRIVILEGES").await.unwrap();
 
             if conn.inner.is_mariadb || conn.server_version() < (5, 7, 0) {
                 if matches!(conn.server_version(), (5, 6, _)) {
@@ -1586,8 +1585,6 @@ mod test {
                 .await
                 .unwrap();
             };
-
-            conn.query_drop("FLUSH PRIVILEGES").await.unwrap();
 
             let mut conn2 = Conn::new(get_opts().secure_auth(false)).await.unwrap();
             conn2
