@@ -1,6 +1,6 @@
 #![cfg(feature = "rustls-tls")]
 
-use rustls::{Certificate, PrivateKey};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer};
 use rustls_pemfile::{certs, rsa_private_keys};
 
 use std::{borrow::Cow, path::Path};
@@ -50,27 +50,31 @@ impl ClientIdentity {
         self.priv_key.borrow()
     }
 
-    pub(crate) async fn load(&self) -> crate::Result<(Vec<Certificate>, PrivateKey)> {
+    pub(crate) async fn load(
+        &self,
+    ) -> crate::Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
         let cert_data = self.cert_chain.read().await?;
         let key_data = self.priv_key.read().await?;
 
         let mut cert_chain = Vec::new();
         if std::str::from_utf8(&cert_data).is_err() {
-            cert_chain.push(Certificate(cert_data.into_owned()));
+            cert_chain.push(CertificateDer::from(cert_data.into_owned()));
         } else {
-            for cert in certs(&mut &*cert_data)? {
-                cert_chain.push(Certificate(cert));
+            for cert in certs(&mut &*cert_data) {
+                cert_chain.push(cert?);
             }
         }
 
         let priv_key = if std::str::from_utf8(&key_data).is_err() {
-            Some(PrivateKey(key_data.into_owned()))
+            Some(PrivateKeyDer::Pkcs1(PrivatePkcs1KeyDer::from(
+                key_data.into_owned(),
+            )))
         } else {
-            rsa_private_keys(&mut &*key_data)?
-                .into_iter()
-                .take(1)
-                .map(PrivateKey)
-                .next()
+            let mut priv_key = None;
+            for key in rsa_private_keys(&mut &*key_data).take(1) {
+                priv_key = Some(PrivateKeyDer::Pkcs1(key?.clone_key()));
+            }
+            priv_key
         };
 
         Ok((

@@ -2,16 +2,25 @@
 
 use std::fmt::Display;
 
+use rustls::server::VerifierBuilderError;
+
 #[derive(Debug)]
 pub enum TlsError {
     Tls(rustls::Error),
     Pki(webpki::Error),
     InvalidDnsName(webpki::InvalidDnsNameError),
+    VerifierBuilderError(VerifierBuilderError),
 }
 
 impl From<TlsError> for crate::Error {
     fn from(e: TlsError) -> Self {
         crate::Error::Io(crate::error::IoError::Tls(e))
+    }
+}
+
+impl From<VerifierBuilderError> for TlsError {
+    fn from(e: VerifierBuilderError) -> Self {
+        TlsError::VerifierBuilderError(e)
     }
 }
 
@@ -57,6 +66,7 @@ impl std::error::Error for TlsError {
             TlsError::Tls(e) => Some(e),
             TlsError::Pki(e) => Some(e),
             TlsError::InvalidDnsName(e) => Some(e),
+            TlsError::VerifierBuilderError(e) => Some(e),
         }
     }
 }
@@ -67,6 +77,7 @@ impl Display for TlsError {
             TlsError::Tls(e) => e.fmt(f),
             TlsError::Pki(e) => e.fmt(f),
             TlsError::InvalidDnsName(e) => e.fmt(f),
+            TlsError::VerifierBuilderError(e) => e.fmt(f),
         }
     }
 }

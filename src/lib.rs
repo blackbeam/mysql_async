@@ -466,7 +466,8 @@ pub use self::conn::pool::Pool;
 
 #[doc(inline)]
 pub use self::error::{
-    DriverError, Error, IoError, LocalInfileError, ParseError, Result, ServerError, UrlError,
+    tls::TlsError, DriverError, Error, IoError, LocalInfileError, ParseError, Result, ServerError,
+    UrlError,
 };
 
 #[doc(inline)]

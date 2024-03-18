@@ -8,7 +8,7 @@
 
 pub use url::ParseError;
 
-mod tls;
+pub mod tls;
 
 use mysql_common::{
     named_params::MixedParamsError, params::MissingNamedParameterError,
