@@ -142,20 +142,16 @@ jobs:
     strategy:
       maxParallel: 10
       matrix:
-        v107:
-          DB_VERSION: "10.7"
+        v113:
+          DB_VERSION: "11.3"
+        v1011:
+          DB_VERSION: "10.11"
         v106:
           DB_VERSION: "10.6"
         v105:
           DB_VERSION: "10.5"
         v104:
           DB_VERSION: "10.4"
-        v103:
-          DB_VERSION: "10.3"
-        v102:
-          DB_VERSION: "10.2"
-        v101:
-          DB_VERSION: "10.1"
     steps:
       - bash: |
           sudo apt-get update
