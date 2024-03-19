@@ -21,7 +21,6 @@ use url::{Host, Url};
 
 use std::{
     borrow::Cow,
-    convert::TryFrom,
     fmt, io,
     net::{Ipv4Addr, Ipv6Addr},
     path::{Path, PathBuf},
