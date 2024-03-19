@@ -9,7 +9,7 @@
 mod native_tls_opts;
 mod rustls_opts;
 
-#[cfg(feature = "native-tls")]
+#[cfg(feature = "native-tls-tls")]
 pub use native_tls_opts::ClientIdentity;
 
 #[cfg(feature = "rustls-tls")]
@@ -117,13 +117,11 @@ impl HostPortOrUrl {
 
 /// Represents data that is either on-disk or in the buffer.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
 pub enum PathOrBuf<'a> {
     Path(Cow<'a, Path>),
     Buf(Cow<'a, [u8]>),
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
 impl<'a> PathOrBuf<'a> {
     /// Will either read data from disk or return the buffered data.
     pub async fn read(&self) -> io::Result<Cow<[u8]>> {
@@ -190,7 +188,7 @@ impl<'a> From<&'a [u8]> for PathOrBuf<'a> {
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub struct SslOpts {
-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+    #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     client_identity: Option<ClientIdentity>,
     root_certs: Vec<PathOrBuf<'static>>,
     skip_domain_validation: bool,
@@ -199,7 +197,7 @@ pub struct SslOpts {
 }
 
 impl SslOpts {
-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+    #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     pub fn with_client_identity(mut self, identity: Option<ClientIdentity>) -> Self {
         self.client_identity = identity;
         self
@@ -241,7 +239,7 @@ impl SslOpts {
         self
     }
 
-    #[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+    #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     pub fn client_identity(&self) -> Option<&ClientIdentity> {
         self.client_identity.as_ref()
     }

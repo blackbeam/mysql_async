@@ -117,6 +117,8 @@ rustls-tls = [
     "rustls-pemfile",
 ]
 
+binlog = ["mysql_common/binlog"]
+
 # mysql_common features
 derive = ["mysql_common/derive"]
 chrono = ["mysql_common/chrono"]
@@ -124,7 +126,6 @@ time = ["mysql_common/time"]
 bigdecimal = ["mysql_common/bigdecimal"]
 rust_decimal = ["mysql_common/rust_decimal"]
 frunk = ["mysql_common/frunk"]
-binlog = ["mysql_common/binlog"]
 
 # other features
 tracing = ["dep:tracing"]

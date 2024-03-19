@@ -36,23 +36,18 @@
 //!     mysql_async = { version = "*", default-features = false, features = ["minimal"]}
 //!     ```
 //!
-//!     **Note:* it is possible to use another `flate2` backend by directly choosing it:
+//! *   `minimal-rust` - same as `minimal` but rust-based flate2 backend is chosen. Enables:
 //!
-//!     ```toml
-//!     [dependencies]
-//!     mysql_async = { version = "*", default-features = false }
-//!     flate2 = { version = "*", default-features = false, features = ["rust_backend"] }
-//!     ```
+//!     -    `flate2/rust_backend`
 //!
-//! *   `default` – enables the following set of crate's and dependencies' features:
+//! *   `default` – enables the following set of features:
 //!
+//!     -   `minimal`
 //!     -   `native-tls-tls`
-//!     -   `flate2/zlib"
-//!     -   `mysql_common/bigdecimal03`
-//!     -   `mysql_common/rust_decimal`
-//!     -   `mysql_common/time03`
-//!     -   `mysql_common/uuid`
-//!     -   `mysql_common/frunk`
+//!     -   `bigdecimal`
+//!     -   `rust_decimal`
+//!     -   `time`
+//!     -   `frunk`
 //!     -   `binlog`
 //!
 //! *   `default-rustls` – same as default but with `rustls-tls` instead of `native-tls-tls`.
@@ -94,11 +89,18 @@
 //!     mysql_async = { version = "*", features = ["tracing"] }
 //!     ```
 //!
-//! *   `derive` – enables `mysql_commom/derive` feature
-//!
 //! *   `binlog` - enables binlog-related functionality. Enables:
 //!
 //!     -   `mysql_common/binlog"
+//!
+//! ### Proxied features
+//!
+//! *   `derive` – enables `mysql_common/derive` feature
+//! *   `chrono` = enables `mysql_common/chrono` feature
+//! *   `time` = enables `mysql_common/time` feature
+//! *   `bigdecimal` = enables `mysql_common/bigdecimal` feature
+//! *   `rust_decimal` = enables `mysql_common/rust_decimal` feature
+//! *   `frunk` = enables `mysql_common/frunk` feature
 //!
 //! [myslqcommonfeatures]: https://github.com/blackbeam/rust_mysql_common#crate-features
 //!
@@ -464,10 +466,13 @@ pub use self::conn::Conn;
 #[doc(inline)]
 pub use self::conn::pool::Pool;
 
+#[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
+#[doc(inline)]
+pub use self::error::tls::TlsError;
+
 #[doc(inline)]
 pub use self::error::{
-    tls::TlsError, DriverError, Error, IoError, LocalInfileError, ParseError, Result, ServerError,
-    UrlError,
+    DriverError, Error, IoError, LocalInfileError, ParseError, Result, ServerError, UrlError,
 };
 
 #[doc(inline)]
@@ -477,7 +482,7 @@ pub use self::query::QueryWithParams;
 pub use self::queryable::transaction::IsolationLevel;
 
 #[doc(inline)]
-#[cfg(any(feature = "rustls", feature = "native-tls"))]
+#[cfg(any(feature = "rustls", feature = "native-tls-tls"))]
 pub use self::opts::ClientIdentity;
 
 #[doc(inline)]
