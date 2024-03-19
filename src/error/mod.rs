@@ -8,7 +8,7 @@
 
 pub use url::ParseError;
 
-mod tls;
+pub mod tls;
 
 use mysql_common::{
     named_params::MixedParamsError, params::MissingNamedParameterError,
@@ -243,7 +243,10 @@ impl From<mysql_common::packets::ServerError<'_>> for ServerError {
         ServerError {
             code: packet.error_code(),
             message: packet.message_str().into(),
-            state: packet.sql_state_str().into(),
+            state: packet
+                .sql_state_ref()
+                .map(|s| s.as_str().into_owned())
+                .unwrap_or_else(|| "HY000".to_owned()),
         }
     }
 }

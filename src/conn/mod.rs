@@ -7,7 +7,6 @@
 // modified, or distributed except according to those terms.
 
 use futures_util::FutureExt;
-pub use mysql_common::named_params;
 
 use mysql_common::{
     constants::{DEFAULT_MAX_ALLOWED_PACKET, UTF8MB4_GENERAL_CI, UTF8_GENERAL_CI},
@@ -575,6 +574,10 @@ impl Conn {
             Some(self.inner.auth_plugin.borrow()),
             self.capabilities(),
             Default::default(), // TODO: Add support
+            self.inner
+                .opts
+                .max_allowed_packet()
+                .unwrap_or(DEFAULT_MAX_ALLOWED_PACKET) as u32,
         );
 
         // Serialize here to satisfy borrow checker.
@@ -1544,7 +1547,7 @@ mod test {
             &["mysql_native_password"]
         };
 
-        for plugin in plugins {
+        for (i, plugin) in plugins.iter().enumerate() {
             let mut rng = rand::thread_rng();
             let mut pass = [0u8; 10];
             pass.try_fill(&mut rng).unwrap();
@@ -1552,9 +1555,15 @@ mod test {
                 .map(|x| ((x % (123 - 97)) + 97) as char)
                 .collect();
 
-            conn.query_drop("DROP USER /*!50700 IF EXISTS */ /*M!100103 IF EXISTS */ __mats")
-                .await
-                .unwrap();
+            let result = conn
+                .query_drop("DROP USER /*!50700 IF EXISTS */ /*M!100103 IF EXISTS */ __mats")
+                .await;
+            if matches!(conn.server_version(), (5, 6, _)) && i == 0 {
+                // IF EXISTS is not supported on 5.6 so the query will fail on the first iteration
+                drop(result);
+            } else {
+                result.unwrap();
+            }
 
             if conn.inner.is_mariadb || conn.server_version() < (5, 7, 0) {
                 if matches!(conn.server_version(), (5, 6, _)) {
