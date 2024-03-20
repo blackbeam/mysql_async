@@ -191,7 +191,7 @@ impl Endpoint {
         matches!(self, Endpoint::Secure(_))
     }
 
-    #[cfg(all(not(feature = "native-tls"), not(feature = "rustls")))]
+    #[cfg(all(not(feature = "native-tls-tls"), not(feature = "rustls")))]
     pub async fn make_secure(
         &mut self,
         _domain: String,
@@ -499,7 +499,7 @@ mod test {
             super::Endpoint::Plain(Some(stream)) => stream,
             #[cfg(feature = "rustls-tls")]
             super::Endpoint::Secure(tls_stream) => tls_stream.get_ref().0,
-            #[cfg(feature = "native-tls")]
+            #[cfg(feature = "native-tls-tls")]
             super::Endpoint::Secure(tls_stream) => tls_stream.get_ref().get_ref().get_ref(),
             _ => unreachable!(),
         };

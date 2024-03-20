@@ -45,6 +45,9 @@ jobs:
           SSL=false COMPRESS=true cargo test
           SSL=true COMPRESS=true cargo test
           SSL=true COMPRESS=false cargo test --no-default-features --features default-rustls
+
+          SSL=true COMPRESS=false cargo check --no-default-features --features minimal
+          SSL=true COMPRESS=false cargo check --no-default-features --features minimal-rust
         env:
           RUST_BACKTRACE: 1
           DATABASE_URL: mysql://root:root@127.0.0.1:3306/mysql

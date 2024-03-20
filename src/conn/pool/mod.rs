@@ -14,7 +14,6 @@ use std::{
     borrow::Borrow,
     cmp::Reverse,
     collections::VecDeque,
-    convert::TryFrom,
     hash::{Hash, Hasher},
     str::FromStr,
     sync::{atomic, Arc, Mutex},

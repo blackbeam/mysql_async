@@ -587,7 +587,6 @@ impl Queryable for Transaction<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::Queryable;
     use crate::{error::Result, prelude::*, test_misc::get_opts, Conn};
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-#![cfg(feature = "native-tls")]
+#![cfg(feature = "native-tls-tls")]
 
 use std::fmt::Display;
 
