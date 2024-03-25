@@ -31,6 +31,7 @@ use std::{
         ErrorKind::{BrokenPipe, NotConnected, Other},
     },
     mem::replace,
+    net::SocketAddr,
     ops::{Deref, DerefMut},
     pin::Pin,
     task::{Context, Poll},
@@ -357,9 +358,20 @@ impl Stream {
         keepalive: Option<Duration>,
     ) -> io::Result<Stream> {
         let tcp_stream = match addr {
-            HostPortOrUrl::HostPort(host, port) => {
-                TcpStream::connect((host.as_str(), *port)).await?
-            }
+            HostPortOrUrl::HostPort {
+                host,
+                port,
+                resolved_ips,
+            } => match resolved_ips {
+                Some(ips) => {
+                    let addrs = ips
+                        .iter()
+                        .map(|ip| SocketAddr::new(*ip, *port))
+                        .collect::<Vec<_>>();
+                    TcpStream::connect(&*addrs).await?
+                }
+                None => TcpStream::connect((host.as_str(), *port)).await?,
+            },
             HostPortOrUrl::Url(url) => {
                 let addrs = url.socket_addrs(|| Some(DEFAULT_PORT))?;
                 TcpStream::connect(&*addrs).await?
