@@ -12,6 +12,7 @@ use bytes::BytesMut;
 use futures_core::{ready, stream};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use pin_project::pin_project;
+#[cfg(any(unix, windows))]
 use socket2::{Socket as Socket2Socket, TcpKeepalive};
 #[cfg(unix)]
 use tokio::io::AsyncWriteExt;
@@ -378,6 +379,7 @@ impl Stream {
             }
         };
 
+        #[cfg(any(unix, windows))]
         if let Some(duration) = keepalive {
             #[cfg(unix)]
             let socket = {
