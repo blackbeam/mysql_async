@@ -913,7 +913,7 @@ impl Conn {
                 {
                     Stream::connect_socket(_path.to_owned()).await?
                 }
-                #[cfg(target_os = "windows")]
+                #[cfg(not(unix))]
                 return Err(crate::DriverError::NamedPipesDisabled.into());
             } else {
                 let keepalive = opts
