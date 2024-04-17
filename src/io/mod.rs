@@ -75,7 +75,7 @@ impl Default for PacketCodec {
     fn default() -> Self {
         Self {
             inner: Default::default(),
-            decode_buf: crate::BUFFER_POOL.get(),
+            decode_buf: crate::buffer_pool().get(),
         }
     }
 }
@@ -100,7 +100,7 @@ impl Decoder for PacketCodec {
 
     fn decode(&mut self, src: &mut BytesMut) -> std::result::Result<Option<Self::Item>, IoError> {
         if self.inner.decode(src, self.decode_buf.as_mut())? {
-            let new_buf = crate::BUFFER_POOL.get();
+            let new_buf = crate::buffer_pool().get();
             Ok(Some(replace(&mut self.decode_buf, new_buf)))
         } else {
             Ok(None)
