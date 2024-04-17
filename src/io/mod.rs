@@ -12,8 +12,6 @@ use bytes::BytesMut;
 use futures_core::{ready, stream};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
 use pin_project::pin_project;
-#[cfg(any(unix, windows))]
-use socket2::{Socket as Socket2Socket, TcpKeepalive};
 #[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 use tokio::{
@@ -381,20 +379,8 @@ impl Stream {
 
         #[cfg(any(unix, windows))]
         if let Some(duration) = keepalive {
-            #[cfg(unix)]
-            let socket = {
-                use std::os::unix::prelude::*;
-                let fd = tcp_stream.as_raw_fd();
-                unsafe { Socket2Socket::from_raw_fd(fd) }
-            };
-            #[cfg(windows)]
-            let socket = {
-                use std::os::windows::prelude::*;
-                let sock = tcp_stream.as_raw_socket();
-                unsafe { Socket2Socket::from_raw_socket(sock) }
-            };
-            socket.set_tcp_keepalive(&TcpKeepalive::new().with_time(duration))?;
-            std::mem::forget(socket);
+            socket2::SockRef::from(&tcp_stream)
+                .set_tcp_keepalive(&socket2::TcpKeepalive::new().with_time(duration))?;
         }
 
         Ok(Stream {
