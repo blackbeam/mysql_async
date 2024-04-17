@@ -20,7 +20,6 @@ futures-core = "0.3"
 futures-util = "0.3"
 futures-sink = "0.3"
 keyed_priority_queue = "0.4"
-lazy_static = "1"
 lru = "0.12.0"
 mio = { version = "0.8.0", features = ["os-poll", "net"] }
 mysql_common = { version = "0.32", default-features = false }

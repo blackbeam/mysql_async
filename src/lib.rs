@@ -608,9 +608,8 @@ pub mod prelude {
 
 #[doc(hidden)]
 pub mod test_misc {
-    use lazy_static::lazy_static;
-
     use std::env;
+    use std::sync::OnceLock;
 
     use crate::opts::{Opts, OptsBuilder, SslOpts};
 
@@ -621,26 +620,17 @@ pub mod test_misc {
         _dummy(err);
     }
 
-    lazy_static! {
-        pub static ref DATABASE_URL: String = {
-            if let Ok(url) = env::var("DATABASE_URL") {
-                let opts = Opts::from_url(&url).expect("DATABASE_URL invalid");
-                if opts
-                    .db_name()
-                    .expect("a database name is required")
-                    .is_empty()
-                {
-                    panic!("database name is empty");
-                }
-                url
-            } else {
-                "mysql://root:password@localhost:3307/mysql".into()
-            }
-        };
-    }
-
     pub fn get_opts() -> OptsBuilder {
-        let mut builder = OptsBuilder::from_opts(Opts::from_url(&DATABASE_URL).unwrap());
+        static DATABASE_OPTS: OnceLock<Opts> = OnceLock::new();
+        let database_opts = DATABASE_OPTS.get_or_init(|| {
+            if let Ok(url) = env::var("DATABASE_URL") {
+                Opts::from_url(&url).expect("DATABASE_URL invalid")
+            } else {
+                Opts::from_url("mysql://root:password@localhost:3307/mysql").unwrap()
+            }
+        });
+
+        let mut builder = OptsBuilder::from_opts(database_opts.clone());
         if test_ssl() {
             let ssl_opts = SslOpts::default()
                 .with_danger_skip_domain_validation(true)
