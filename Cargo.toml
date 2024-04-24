@@ -40,6 +40,7 @@ url = "2.1"
 
 [dependencies.tokio-rustls]
 version = "0.26"
+default-features = false
 optional = true
 
 [dependencies.tokio-native-tls]
@@ -52,7 +53,7 @@ optional = true
 
 [dependencies.rustls]
 version = "0.23"
-features = []
+default-features = false
 optional = true
 
 [dependencies.rustls-pemfile]
@@ -87,6 +88,16 @@ default = [
 ]
 
 default-rustls = [
+    "default-rustls-no-provider",
+    "aws-lc-rs",
+]
+
+default-rustls-ring = [
+    "default-rustls-no-provider",
+    "ring",
+]
+
+default-rustls-no-provider = [
     "flate2/rust_backend",
     "bigdecimal",
     "rust_decimal",
@@ -95,6 +106,7 @@ default-rustls = [
     "derive",
     "rustls-tls",
     "binlog",
+    "tls12",
 ]
 
 # minimal feature set with system flate2 impl
@@ -113,6 +125,10 @@ rustls-tls = [
     "webpki-roots",
     "rustls-pemfile",
 ]
+
+aws-lc-rs = ["rustls/aws_lc_rs", "tokio-rustls/aws_lc_rs"]
+ring = ["rustls/ring", "tokio-rustls/ring"]
+tls12 = ["rustls/tls12", "tokio-rustls/tls12"]
 
 binlog = ["mysql_common/binlog"]
 
