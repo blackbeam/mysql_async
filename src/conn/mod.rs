@@ -1270,10 +1270,11 @@ mod test {
     use futures_util::stream::{self, StreamExt};
     use mysql_common::constants::MAX_PAYLOAD_LEN;
     use rand::Fill;
+    use tokio::{io::AsyncWriteExt, net::TcpListener};
 
     use crate::{
         from_row, params, prelude::*, test_misc::get_opts, ChangeUserOpts, Conn, Error,
-        OptsBuilder, Pool, Value, WhiteListFsHandler,
+        OptsBuilder, Pool, ServerError, Value, WhiteListFsHandler,
     };
 
     #[tokio::test]
@@ -2187,6 +2188,45 @@ mod test {
         assert_eq!(result[2], "CCCCCC");
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_handle_initial_error_packet() {
+        let header = [
+            0x68, 0x00, 0x00, // packet_length
+            0x00, // sequence
+            0xff, // error_header
+            0x69, 0x04, // error_code
+        ];
+        let error_message = "Host '172.17.0.1' is blocked because of many connection errors; unblock with 'mysqladmin flush-hosts'";
+
+        // Create a fake MySQL server that immediately replies with an error packet.
+        let listener = TcpListener::bind("127.0.0.1:0000").await.unwrap();
+
+        let listen_addr = listener.local_addr().unwrap();
+
+        tokio::task::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            stream.write_all(&header).await.unwrap();
+            stream.write_all(error_message.as_bytes()).await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+
+        let opts = OptsBuilder::default()
+            .ip_or_hostname(listen_addr.ip().to_string())
+            .tcp_port(listen_addr.port());
+        let server_err = match Conn::new(opts).await {
+            Err(Error::Server(server_err)) => server_err,
+            other => panic!("expected server error but got: {:?}", other),
+        };
+        assert_eq!(
+            server_err,
+            ServerError {
+                code: 1129,
+                state: "HY000".to_owned(),
+                message: error_message.to_owned(),
+            }
+        );
     }
 
     #[cfg(feature = "nightly")]
