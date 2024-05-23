@@ -102,6 +102,7 @@ struct ConnInner {
     status: StatusFlags,
     last_ok_packet: Option<OkPacket<'static>>,
     last_err_packet: Option<mysql_common::packets::ServerError<'static>>,
+    handshake_complete: bool,
     pool: Option<Pool>,
     pending_result: std::result::Result<Option<PendingResult>, ServerError>,
     tx_status: TxStatus,
@@ -147,6 +148,7 @@ impl ConnInner {
             status: StatusFlags::empty(),
             last_ok_packet: None,
             last_err_packet: None,
+            handshake_complete: false,
             stream: None,
             is_mariadb: false,
             version: (0, 0, 0),
@@ -585,6 +587,7 @@ impl Conn {
         handshake_response.serialize(buf.as_mut());
 
         self.write_packet(buf).await?;
+        self.inner.handshake_complete = true;
         Ok(())
     }
 
@@ -789,7 +792,19 @@ impl Conn {
         if let Ok(ok_packet) = ok_packet {
             self.handle_ok(ok_packet.into_owned());
         } else {
-            let err_packet = ParseBuf(packet).parse::<ErrPacket>(self.capabilities());
+            // If we haven't completed the handshake the server will not be aware of our
+            // capabilities and so it will behave as if we have none. In particular, the error
+            // packet will not contain a SQL State field even if our capabilities do contain the
+            // `CLIENT_PROTOCOL_41` flag. Therefore it is necessary to parse an incoming packet
+            // with no capability assumptions if we have not completed the handshake.
+            //
+            // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_connection_phase.html
+            let capabilities = if self.inner.handshake_complete {
+                self.capabilities()
+            } else {
+                CapabilityFlags::empty()
+            };
+            let err_packet = ParseBuf(packet).parse::<ErrPacket>(capabilities);
             if let Ok(err_packet) = err_packet {
                 self.handle_err(err_packet)?;
                 return Ok(true);
