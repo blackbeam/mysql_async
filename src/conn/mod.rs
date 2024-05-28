@@ -102,6 +102,7 @@ struct ConnInner {
     status: StatusFlags,
     last_ok_packet: Option<OkPacket<'static>>,
     last_err_packet: Option<mysql_common::packets::ServerError<'static>>,
+    handshake_complete: bool,
     pool: Option<Pool>,
     pending_result: std::result::Result<Option<PendingResult>, ServerError>,
     tx_status: TxStatus,
@@ -147,6 +148,7 @@ impl ConnInner {
             status: StatusFlags::empty(),
             last_ok_packet: None,
             last_err_packet: None,
+            handshake_complete: false,
             stream: None,
             is_mariadb: false,
             version: (0, 0, 0),
@@ -585,6 +587,7 @@ impl Conn {
         handshake_response.serialize(buf.as_mut());
 
         self.write_packet(buf).await?;
+        self.inner.handshake_complete = true;
         Ok(())
     }
 
@@ -789,7 +792,19 @@ impl Conn {
         if let Ok(ok_packet) = ok_packet {
             self.handle_ok(ok_packet.into_owned());
         } else {
-            let err_packet = ParseBuf(packet).parse::<ErrPacket>(self.capabilities());
+            // If we haven't completed the handshake the server will not be aware of our
+            // capabilities and so it will behave as if we have none. In particular, the error
+            // packet will not contain a SQL State field even if our capabilities do contain the
+            // `CLIENT_PROTOCOL_41` flag. Therefore it is necessary to parse an incoming packet
+            // with no capability assumptions if we have not completed the handshake.
+            //
+            // https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_connection_phase.html
+            let capabilities = if self.inner.handshake_complete {
+                self.capabilities()
+            } else {
+                CapabilityFlags::empty()
+            };
+            let err_packet = ParseBuf(packet).parse::<ErrPacket>(capabilities);
             if let Ok(err_packet) = err_packet {
                 self.handle_err(err_packet)?;
                 return Ok(true);
@@ -1270,10 +1285,11 @@ mod test {
     use futures_util::stream::{self, StreamExt};
     use mysql_common::constants::MAX_PAYLOAD_LEN;
     use rand::Fill;
+    use tokio::{io::AsyncWriteExt, net::TcpListener};
 
     use crate::{
         from_row, params, prelude::*, test_misc::get_opts, ChangeUserOpts, Conn, Error,
-        OptsBuilder, Pool, Value, WhiteListFsHandler,
+        OptsBuilder, Pool, ServerError, Value, WhiteListFsHandler,
     };
 
     #[tokio::test]
@@ -2187,6 +2203,45 @@ mod test {
         assert_eq!(result[2], "CCCCCC");
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_handle_initial_error_packet() {
+        let header = [
+            0x68, 0x00, 0x00, // packet_length
+            0x00, // sequence
+            0xff, // error_header
+            0x69, 0x04, // error_code
+        ];
+        let error_message = "Host '172.17.0.1' is blocked because of many connection errors; unblock with 'mysqladmin flush-hosts'";
+
+        // Create a fake MySQL server that immediately replies with an error packet.
+        let listener = TcpListener::bind("127.0.0.1:0000").await.unwrap();
+
+        let listen_addr = listener.local_addr().unwrap();
+
+        tokio::task::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            stream.write_all(&header).await.unwrap();
+            stream.write_all(error_message.as_bytes()).await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+
+        let opts = OptsBuilder::default()
+            .ip_or_hostname(listen_addr.ip().to_string())
+            .tcp_port(listen_addr.port());
+        let server_err = match Conn::new(opts).await {
+            Err(Error::Server(server_err)) => server_err,
+            other => panic!("expected server error but got: {:?}", other),
+        };
+        assert_eq!(
+            server_err,
+            ServerError {
+                code: 1129,
+                state: "HY000".to_owned(),
+                message: error_message.to_owned(),
+            }
+        );
     }
 
     #[cfg(feature = "nightly")]
