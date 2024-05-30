@@ -6,8 +6,8 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+pub use self::disconnect_pool::DisconnectPool;
+pub(crate) use self::get_conn::get_conn;
 pub(super) use self::get_conn::GetConnInner;
-pub use self::{disconnect_pool::DisconnectPool, get_conn::GetConn};
-
 mod disconnect_pool;
 mod get_conn;
