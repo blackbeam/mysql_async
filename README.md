@@ -7,7 +7,7 @@
 
 # mysql_async
 
-Tokio based asynchronous MySql client library for The Rust Programming Language.
+Tokio based asynchronous MySql client library for The Rust Programming Language. Supported by MariaDB 10.4, 10.5, 10.6, 10.11 and 11.4 as well as MySQL 5.6, 5.7 and 8.0.
 
 ## Installation
 
