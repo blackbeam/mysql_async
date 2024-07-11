@@ -190,9 +190,17 @@ where
     #[doc(hidden)]
     pub async fn next(&mut self) -> Result<Option<Row>> {
         loop {
-            match self.conn.use_pending_result()?.cloned() {
-                Some(PendingResult::Pending(meta)) => return self.next_row_or_next_set(meta).await,
-                Some(PendingResult::Taken(meta)) => self.skip_taken(meta).await?,
+            let result = self.conn.use_pending_result();
+            dbg!("Pending result found", &result);
+            match result?.cloned() {
+                Some(PendingResult::Pending(meta)) => {
+                    return self.next_row_or_next_set(meta).await;
+                }
+                Some(PendingResult::Taken(meta)) => {
+                    let result = self.skip_taken(meta).await;
+                    dbg!("Taken result skipped");
+                    result?
+                }
                 None => return Ok(None),
             }
         }

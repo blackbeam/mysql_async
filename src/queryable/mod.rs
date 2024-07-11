@@ -24,7 +24,7 @@ use self::{
 };
 
 use crate::{
-    conn::routines::{PingRoutine, QueryRoutine},
+    conn::routines::{ExecQueryRoutine, PingRoutine, QueryBinaryRoutine, QueryRoutine},
     consts::CapabilityFlags,
     error::*,
     prelude::{FromRow, StatementLike},
@@ -108,6 +108,18 @@ impl Conn {
         Q: AsQuery + 'a,
     {
         self.routine(QueryRoutine::<'_, L>::new(query.as_query().as_ref()))
+            .await
+    }
+
+    /// Low level function that performs a text query.
+    pub(crate) async fn raw_binary_query<'a, Q, L: TracingLevel>(
+        &'a mut self,
+        query: Q,
+    ) -> Result<()>
+    where
+        Q: AsQuery + 'a,
+    {
+        self.routine(QueryBinaryRoutine::<'_, L>::new(query.as_query().as_ref()))
             .await
     }
 
@@ -272,6 +284,13 @@ pub trait Queryable: Send {
     {
         async move { self.query_iter(query).await?.drop_result().await }.boxed()
     }
+    /// Executes multiple queries in a single command using the binary protocol.
+    fn exec_multi<'a: 's, 's, Q>(
+        &'a mut self,
+        stmt: Q,
+    ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
+    where
+        Q: AsQuery + 'a;
 
     /// Executes the given statement for each item in the given params iterator.
     ///
@@ -460,6 +479,22 @@ pub trait Queryable: Send {
 }
 
 impl Queryable for Conn {
+    // execites non-prepared queries using the binary protocol
+    fn exec_multi<'a: 's, 's, Q>(
+        &'a mut self,
+        query: Q,
+    ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
+    where
+        Q: AsQuery + 'a,
+    {
+        async move {
+            dbg!("our query is:", query.as_query());
+            self.raw_binary_query::<'_, _, LevelInfo>(query).await?;
+            Ok(QueryResult::new(self))
+        }
+        .boxed()
+    }
+
     fn ping(&mut self) -> BoxFuture<'_, ()> {
         async move {
             self.routine(PingRoutine).await?;
@@ -508,7 +543,7 @@ impl Queryable for Conn {
     {
         let params = params.into();
         async move {
-            let statement = self.get_statement(stmt).await?;
+            let statement: Statement = self.get_statement(stmt).await?;
             self.execute_statement(&statement, params).await?;
             Ok(QueryResult::new(self))
         }
@@ -534,9 +569,213 @@ impl Queryable for Conn {
         }
         .boxed()
     }
+
+    fn query<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Vec<T>>
+    where
+        Q: AsQuery + 'a,
+        T: FromRow + Send + 'static,
+    {
+        async move { self.query_iter(query).await?.collect_and_drop::<T>().await }.boxed()
+    }
+
+    fn query_first<'a, T, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Option<T>>
+    where
+        Q: AsQuery + 'a,
+        T: FromRow + Send + 'static,
+    {
+        async move {
+            let mut result = self.query_iter(query).await?;
+            let output = if result.is_empty() {
+                None
+            } else {
+                result.next().await?.map(crate::from_row)
+            };
+            result.drop_result().await?;
+            Ok(output)
+        }
+        .boxed()
+    }
+
+    fn query_map<'a, T, F, Q, U>(&'a mut self, query: Q, mut f: F) -> BoxFuture<'a, Vec<U>>
+    where
+        Q: AsQuery + 'a,
+        T: FromRow + Send + 'static,
+        F: FnMut(T) -> U + Send + 'a,
+        U: Send,
+    {
+        async move {
+            self.query_fold(query, Vec::new(), |mut acc, row| {
+                acc.push(f(crate::from_row(row)));
+                acc
+            })
+            .await
+        }
+        .boxed()
+    }
+
+    fn query_fold<'a, T, F, Q, U>(&'a mut self, query: Q, init: U, mut f: F) -> BoxFuture<'a, U>
+    where
+        Q: AsQuery + 'a,
+        T: FromRow + Send + 'static,
+        F: FnMut(U, T) -> U + Send + 'a,
+        U: Send + 'a,
+    {
+        async move {
+            self.query_iter(query)
+                .await?
+                .reduce_and_drop(init, |acc, row| f(acc, crate::from_row(row)))
+                .await
+        }
+        .boxed()
+    }
+
+    fn query_drop<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, ()>
+    where
+        Q: AsQuery + 'a,
+    {
+        async move { self.query_iter(query).await?.drop_result().await }.boxed()
+    }
+
+    fn exec<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, Vec<T>>
+    where
+        S: StatementLike + 'b,
+        P: Into<Params> + Send + 'b,
+        T: FromRow + Send + 'static,
+    {
+        async move {
+            self.exec_iter(stmt, params)
+                .await?
+                .collect_and_drop::<T>()
+                .await
+        }
+        .boxed()
+    }
+
+    fn exec_first<'a: 'b, 'b, T, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, Option<T>>
+    where
+        S: StatementLike + 'b,
+        P: Into<Params> + Send + 'b,
+        T: FromRow + Send + 'static,
+    {
+        async move {
+            let mut result = self.exec_iter(stmt, params).await?;
+            let row = if result.is_empty() {
+                None
+            } else {
+                result.next().await?
+            };
+            result.drop_result().await?;
+            Ok(row.map(crate::from_row))
+        }
+        .boxed()
+    }
+
+    fn exec_map<'a: 'b, 'b, T, S, P, U, F>(
+        &'a mut self,
+        stmt: S,
+        params: P,
+        mut f: F,
+    ) -> BoxFuture<'b, Vec<U>>
+    where
+        S: StatementLike + 'b,
+        P: Into<Params> + Send + 'b,
+        T: FromRow + Send + 'static,
+        F: FnMut(T) -> U + Send + 'a,
+        U: Send + 'a,
+    {
+        async move {
+            self.exec_fold(stmt, params, Vec::new(), |mut acc, row| {
+                acc.push(f(crate::from_row(row)));
+                acc
+            })
+            .await
+        }
+        .boxed()
+    }
+
+    fn exec_fold<'a: 'b, 'b, T, S, P, U, F>(
+        &'a mut self,
+        stmt: S,
+        params: P,
+        init: U,
+        mut f: F,
+    ) -> BoxFuture<'b, U>
+    where
+        S: StatementLike + 'b,
+        P: Into<Params> + Send + 'b,
+        T: FromRow + Send + 'static,
+        F: FnMut(U, T) -> U + Send + 'a,
+        U: Send + 'a,
+    {
+        async move {
+            self.exec_iter(stmt, params)
+                .await?
+                .reduce_and_drop(init, |acc, row| f(acc, crate::from_row(row)))
+                .await
+        }
+        .boxed()
+    }
+
+    fn exec_drop<'a: 'b, 'b, S, P>(&'a mut self, stmt: S, params: P) -> BoxFuture<'b, ()>
+    where
+        S: StatementLike + 'b,
+        P: Into<Params> + Send + 'b,
+    {
+        async move { self.exec_iter(stmt, params).await?.drop_result().await }.boxed()
+    }
+
+    fn query_stream<'a, T, Q>(
+        &'a mut self,
+        query: Q,
+    ) -> BoxFuture<'a, ResultSetStream<'a, 'a, 'static, T, TextProtocol>>
+    where
+        T: Unpin + FromRow + Send + 'static,
+        Q: AsQuery + 'a,
+    {
+        async move {
+            self.query_iter(query)
+                .await?
+                .stream_and_drop()
+                .await
+                .transpose()
+                .expect("At least one result set is expected")
+        }
+        .boxed()
+    }
+
+    fn exec_stream<'a: 's, 's, T, Q, P>(
+        &'a mut self,
+        stmt: Q,
+        params: P,
+    ) -> BoxFuture<'s, ResultSetStream<'a, 'a, 'static, T, BinaryProtocol>>
+    where
+        T: Unpin + FromRow + Send + 'static,
+        Q: StatementLike + 'a,
+        P: Into<Params> + Send + 's,
+    {
+        async move {
+            self.exec_iter(stmt, params)
+                .await?
+                .stream_and_drop()
+                .await
+                .transpose()
+                .expect("At least one result set is expected")
+        }
+        .boxed()
+    }
 }
 
 impl Queryable for Transaction<'_> {
+    //todo exec multi
+    fn exec_multi<'a: 's, 's, Q>(
+        &'a mut self,
+        query: Q,
+    ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
+    where
+        Q: AsQuery + 'a,
+    {
+        todo!()
+    }
     fn ping(&mut self) -> BoxFuture<'_, ()> {
         self.0.ping()
     }
@@ -587,7 +826,11 @@ impl Queryable for Transaction<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{error::Result, prelude::*, test_misc::get_opts, Conn};
+    use std::{f32::consts::E, sync::Arc};
+
+    use mysql_common::{frunk::labelled::chars::d, Row};
+
+    use crate::{error::Result, prelude::*, test_misc::get_opts, Conn, Opts, Pool};
 
     #[tokio::test]
     async fn should_prep() -> Result<()> {
@@ -621,6 +864,45 @@ mod tests {
         assert_eq!(result_stmt_positional, result_str_positional);
 
         conn.disconnect().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn exec_multi_works() -> Result<()> {
+        let pool = Pool::new(Opts::from_url("mysql://root@127.0.0.1:1033/mysql".into()).unwrap());
+        let mut conn = pool.get_conn().await?;
+        dbg!("Got connection");
+
+        let query = "SELECT 'hello there' as aaa; SELECT 'hello there' as bbb";
+        let mut result = conn.exec_multi(query).await?;
+
+        dbg!("Executed query");
+
+        if result.is_empty() {
+            dbg!("No rows returned");
+        } else {
+            dbg!("Rows returned");
+        }
+
+        loop {
+            match result.next().await {
+                Ok(Some(row)) => {
+                    //dbg!(row);
+                    dbg!("Some row found.");
+                }
+                Err(e) => {
+                    dbg!(e);
+                    // break;
+                }
+                Ok(None) => {
+                    dbg!("No more rows");
+                    break;
+                }
+            }
+        }
+
+        dbg!("Finished processing results");
 
         Ok(())
     }

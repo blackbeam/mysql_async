@@ -1,0 +1,4 @@
+name: bottle
+up:
+  - rust
+  - mysql
