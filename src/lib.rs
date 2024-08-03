@@ -567,6 +567,8 @@ pub mod prelude {
     #[doc(inline)]
     pub use mysql_common::prelude::FromRow;
     #[doc(inline)]
+    pub use mysql_common::prelude::ColumnIndex;
+    #[doc(inline)]
     pub use mysql_common::prelude::{FromValue, ToValue};
 
     /// Everything that is a statement.
