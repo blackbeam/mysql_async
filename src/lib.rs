@@ -565,6 +565,8 @@ pub mod prelude {
     #[doc(inline)]
     pub use crate::queryable::Queryable;
     #[doc(inline)]
+    pub use mysql_common::prelude::ColumnIndex;
+    #[doc(inline)]
     pub use mysql_common::prelude::FromRow;
     #[doc(inline)]
     pub use mysql_common::prelude::{FromValue, ToValue};
