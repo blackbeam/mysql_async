@@ -35,7 +35,7 @@ tokio-util = { version = "0.7.2", features = ["codec", "io"] }
 tracing = { version = "0.1.37", default-features = false, features = [
     "attributes",
 ], optional = true }
-twox-hash = "1"
+twox-hash = { version = "2", default-features = false, features = ["xxhash64"] }
 url = "2.1"
 
 [dependencies.tokio-rustls]
