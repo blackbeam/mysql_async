@@ -44,7 +44,25 @@ macro_rules! instrument_result {
     ($fut:expr, $span:expr) => {{
         let fut = async {
             $fut.await.or_else(|e| {
-                tracing::error!(error = %e);
+                match &e {
+                    $crate::error::Error::Server(server_error) => {
+                        match server_error.code {
+                            1062 => {
+                                tracing::warn!(error = %e, "duplicated entry for key")
+                            }
+                            1451 => {
+                                tracing::warn!(error = %e, "foreign key violation")
+                            }
+                            1644 => {
+                                tracing::warn!(error = %e, "user defined exception condition");
+                            }
+                            _ => tracing::error!(error = %e),
+                        }
+                    },
+                    e => {
+                        tracing::error!(error = %e);
+                    }
+                }
                 Err(e)
             })
         };
