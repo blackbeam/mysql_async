@@ -47,14 +47,17 @@ macro_rules! instrument_result {
                 match &e {
                     $crate::error::Error::Server(server_error) => {
                         match server_error.code {
+                            // Duplicated entry for key
                             1062 => {
-                                tracing::warn!(error = %e, "duplicated entry for key")
+                                tracing::warn!(error = %e)
                             }
+                            // Foreign key violation
                             1451 => {
-                                tracing::warn!(error = %e, "foreign key violation")
+                                tracing::warn!(error = %e)
                             }
+                            // User defined exception condition
                             1644 => {
-                                tracing::warn!(error = %e, "user defined exception condition");
+                                tracing::warn!(error = %e);
                             }
                             _ => tracing::error!(error = %e),
                         }
