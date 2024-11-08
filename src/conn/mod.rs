@@ -1416,16 +1416,18 @@ mod test {
         .filter(|variant| plugins.iter().any(|p| p == variant.0));
 
         for (plug, val, pass) in variants {
+            dbg!((plug, val, pass, conn.inner.version));
+
+            if plug == "mysql_native_password" && conn.inner.version >= (9, 0, 0) {
+                continue;
+            }
+
             let _ = conn.query_drop("DROP USER 'test_user'@'%'").await;
 
             let query = format!("CREATE USER 'test_user'@'%' IDENTIFIED WITH {}", plug);
             conn.query_drop(query).await.unwrap();
 
-            if (8, 0, 11) <= conn.inner.version && conn.inner.version <= (9, 0, 0) {
-                conn.query_drop(format!("SET PASSWORD FOR 'test_user'@'%' = '{}'", pass))
-                    .await
-                    .unwrap();
-            } else {
+            if conn.inner.version <= (8, 0, 11) {
                 conn.query_drop(format!("SET old_passwords = {}", val))
                     .await
                     .unwrap();
@@ -1435,6 +1437,10 @@ mod test {
                 ))
                 .await
                 .unwrap();
+            } else {
+                conn.query_drop(format!("SET PASSWORD FOR 'test_user'@'%' = '{}'", pass))
+                    .await
+                    .unwrap();
             };
 
             let opts = get_opts()
@@ -1564,6 +1570,10 @@ mod test {
         };
 
         for (i, plugin) in plugins.iter().enumerate() {
+            if *plugin == "mysql_native_password" && conn.server_version() >= (9, 0, 0) {
+                continue;
+            }
+
             let mut rng = rand::thread_rng();
             let mut pass = [0u8; 10];
             pass.try_fill(&mut rng).unwrap();
