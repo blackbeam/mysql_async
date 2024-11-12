@@ -37,6 +37,7 @@ tracing = { version = "0.1.37", default-features = false, features = [
 ], optional = true }
 twox-hash = "2"
 url = "2.1"
+hdrhistogram = { version = "7.5", optional = true }
 
 [dependencies.tokio-rustls]
 version = "0.26"
