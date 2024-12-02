@@ -14,6 +14,7 @@ use std::{
     borrow::Borrow,
     cmp::Reverse,
     collections::VecDeque,
+    future::Future,
     hash::{Hash, Hasher},
     str::FromStr,
     sync::{atomic, Arc, Mutex},
@@ -238,9 +239,8 @@ impl Pool {
     }
 
     /// Async function that resolves to `Conn`.
-    pub fn get_conn(&self) -> GetConn {
-        let reset_connection = self.opts.pool_opts().reset_connection();
-        GetConn::new(self, reset_connection)
+    pub fn get_conn(&self) -> impl Future<Output = Result<Conn>> {
+        get_conn(self.clone())
     }
 
     /// Starts a new transaction.
@@ -252,7 +252,7 @@ impl Pool {
     /// Async function that disconnects this pool from the server and resolves to `()`.
     ///
     /// **Note:** This Future won't resolve until all active connections, taken from it,
-    /// are dropped or disonnected. Also all pending and new `GetConn`'s will resolve to error.
+    /// are dropped or disonnected. Also all pending and new `get_conn()`'s will resolve to error.
     pub fn disconnect(self) -> DisconnectPool {
         DisconnectPool::new(self)
     }
