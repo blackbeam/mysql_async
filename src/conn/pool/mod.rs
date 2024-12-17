@@ -28,9 +28,12 @@ use crate::{
     queryable::transaction::{Transaction, TxOpts},
 };
 
+pub use metrics::Metrics;
+
 mod recycler;
 // this is a really unfortunate name for a module
 pub mod futures;
+mod metrics;
 mod ttl_check_inerval;
 
 /// Connection that is idling in the pool.
@@ -107,7 +110,7 @@ struct Waitlist {
 }
 
 impl Waitlist {
-    fn push(&mut self, waker: Waker, queue_id: QueueId) {
+    fn push(&mut self, waker: Waker, queue_id: QueueId) -> bool {
         // The documentation of Future::poll says:
         //   Note that on multiple calls to poll, only the Waker from
         //   the Context passed to the most recent call should be
@@ -120,7 +123,9 @@ impl Waitlist {
         // This means we have to remove first to have the most recent
         // waker in the queue.
         self.remove(queue_id);
-        self.queue.push(QueuedWaker { queue_id, waker }, queue_id);
+        self.queue
+            .push(QueuedWaker { queue_id, waker }, queue_id)
+            .is_none()
     }
 
     fn pop(&mut self) -> Option<Waker> {
@@ -130,8 +135,8 @@ impl Waitlist {
         }
     }
 
-    fn remove(&mut self, id: QueueId) {
-        self.queue.remove(&id);
+    fn remove(&mut self, id: QueueId) -> bool {
+        self.queue.remove(&id).is_some()
     }
 
     fn peek_id(&mut self) -> Option<QueueId> {
@@ -181,6 +186,7 @@ impl Hash for QueuedWaker {
 /// Connection pool data.
 #[derive(Debug)]
 pub struct Inner {
+    metrics: Arc<Metrics>,
     close: atomic::AtomicBool,
     closed: atomic::AtomicBool,
     exchange: Mutex<Exchange>,
@@ -220,6 +226,7 @@ impl Pool {
             inner: Arc::new(Inner {
                 close: false.into(),
                 closed: false.into(),
+                metrics: Arc::new(Metrics::default()),
                 exchange: Mutex::new(Exchange {
                     available: VecDeque::with_capacity(pool_opts.constraints().max()),
                     waiting: Waitlist::default(),
@@ -229,6 +236,11 @@ impl Pool {
             }),
             drop: tx,
         }
+    }
+
+    /// Returns metrics for the connection pool.
+    pub fn metrics(&self) -> Arc<Metrics> {
+        self.inner.metrics.clone()
     }
 
     /// Creates a new pool of connections.
@@ -288,6 +300,10 @@ impl Pool {
     pub(super) fn cancel_connection(&self) {
         let mut exchange = self.inner.exchange.lock().unwrap();
         exchange.exist -= 1;
+        self.inner
+            .metrics
+            .create_failed
+            .fetch_add(1, atomic::Ordering::Relaxed);
         // we just enabled the creation of a new connection!
         if let Some(w) = exchange.waiting.pop() {
             w.wake();
@@ -320,15 +336,44 @@ impl Pool {
 
         // If we are not, just queue
         if !highest {
-            exchange.waiting.push(cx.waker().clone(), queue_id);
+            if exchange.waiting.push(cx.waker().clone(), queue_id) {
+                self.inner
+                    .metrics
+                    .active_wait_requests
+                    .fetch_add(1, atomic::Ordering::Relaxed);
+            }
             return Poll::Pending;
         }
 
-        while let Some(IdlingConn { mut conn, .. }) = exchange.available.pop_back() {
+        #[allow(unused_variables)] // `since` is only used when `hdrhistogram` is enabled
+        while let Some(IdlingConn { mut conn, since }) = exchange.available.pop_back() {
+            self.inner
+                .metrics
+                .connections_in_pool
+                .fetch_sub(1, atomic::Ordering::Relaxed);
+
             if !conn.expired() {
+                #[cfg(feature = "hdrhistogram")]
+                self.inner
+                    .metrics
+                    .connection_idle_duration
+                    .lock()
+                    .unwrap()
+                    .saturating_record(since.elapsed().as_micros() as u64);
+                #[cfg(feature = "hdrhistogram")]
+                let metrics = self.metrics();
+                conn.inner.active_since = Instant::now();
                 return Poll::Ready(Ok(GetConnInner::Checking(
                     async move {
                         conn.stream_mut()?.check().await?;
+                        #[cfg(feature = "hdrhistogram")]
+                        metrics
+                            .check_duration
+                            .lock()
+                            .unwrap()
+                            .saturating_record(
+                                conn.inner.active_since.elapsed().as_micros() as u64
+                            );
                         Ok(conn)
                     }
                     .boxed(),
@@ -344,19 +389,52 @@ impl Pool {
             // we are allowed to make a new connection, so we will!
             exchange.exist += 1;
 
+            self.inner
+                .metrics
+                .connection_count
+                .fetch_add(1, atomic::Ordering::Relaxed);
+
+            let opts = self.opts.clone();
+            #[cfg(feature = "hdrhistogram")]
+            let metrics = self.metrics();
+
             return Poll::Ready(Ok(GetConnInner::Connecting(
-                Conn::new(self.opts.clone()).boxed(),
+                async move {
+                    let conn = Conn::new(opts).await;
+                    #[cfg(feature = "hdrhistogram")]
+                    if let Ok(conn) = &conn {
+                        metrics
+                            .connect_duration
+                            .lock()
+                            .unwrap()
+                            .saturating_record(
+                                conn.inner.active_since.elapsed().as_micros() as u64
+                            );
+                    }
+                    conn
+                }
+                .boxed(),
             )));
         }
 
         // Polled, but no conn available? Back into the queue.
-        exchange.waiting.push(cx.waker().clone(), queue_id);
+        if exchange.waiting.push(cx.waker().clone(), queue_id) {
+            self.inner
+                .metrics
+                .active_wait_requests
+                .fetch_add(1, atomic::Ordering::Relaxed);
+        }
         Poll::Pending
     }
 
     fn unqueue(&self, queue_id: QueueId) {
         let mut exchange = self.inner.exchange.lock().unwrap();
-        exchange.waiting.remove(queue_id);
+        if exchange.waiting.remove(queue_id) {
+            self.inner
+                .metrics
+                .active_wait_requests
+                .fetch_sub(1, atomic::Ordering::Relaxed);
+        }
     }
 }
 

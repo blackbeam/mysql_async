@@ -67,8 +67,31 @@ impl Future for Recycler {
                 let mut exchange = $self.inner.exchange.lock().unwrap();
                 if $pool_is_closed || exchange.available.len() >= $self.pool_opts.active_bound() {
                     drop(exchange);
+                    $self
+                        .inner
+                        .metrics
+                        .discarded_superfluous_connection
+                        .fetch_add(1, Ordering::Relaxed);
                     $self.discard.push($conn.close_conn().boxed());
                 } else {
+                    $self
+                        .inner
+                        .metrics
+                        .connection_returned_to_pool
+                        .fetch_add(1, Ordering::Relaxed);
+                    $self
+                        .inner
+                        .metrics
+                        .connections_in_pool
+                        .fetch_add(1, Ordering::Relaxed);
+                    #[cfg(feature = "hdrhistogram")]
+                    $self
+                        .inner
+                        .metrics
+                        .connection_active_duration
+                        .lock()
+                        .unwrap()
+                        .saturating_record($conn.inner.active_since.elapsed().as_micros() as u64);
                     exchange.available.push_back($conn.into());
                     if let Some(w) = exchange.waiting.pop() {
                         w.wake();
@@ -81,12 +104,32 @@ impl Future for Recycler {
             ($self:ident, $conn:ident) => {
                 if $conn.inner.stream.is_none() || $conn.inner.disconnected {
                     // drop unestablished connection
+                    $self
+                        .inner
+                        .metrics
+                        .discarded_unestablished_connection
+                        .fetch_add(1, Ordering::Relaxed);
                     $self.discard.push(futures_util::future::ok(()).boxed());
                 } else if $conn.inner.tx_status != TxStatus::None || $conn.has_pending_result() {
+                    $self
+                        .inner
+                        .metrics
+                        .dirty_connection_return
+                        .fetch_add(1, Ordering::Relaxed);
                     $self.cleaning.push($conn.cleanup_for_pool().boxed());
                 } else if $conn.expired() || close {
+                    $self
+                        .inner
+                        .metrics
+                        .discarded_expired_connection
+                        .fetch_add(1, Ordering::Relaxed);
                     $self.discard.push($conn.close_conn().boxed());
                 } else if $conn.inner.reset_upon_returning_to_a_pool {
+                    $self
+                        .inner
+                        .metrics
+                        .resetting_connection
+                        .fetch_add(1, Ordering::Relaxed);
                     $self.reset.push($conn.reset_for_pool().boxed());
                 } else {
                     conn_return!($self, $conn, false);
@@ -142,6 +185,10 @@ impl Future for Recycler {
                     // anything that comes through .dropped we know has .pool.is_none().
                     // therefore, dropping the conn won't decrement .exist, so we need to do that.
                     self.discarded += 1;
+                    self.inner
+                        .metrics
+                        .discarded_error_during_cleanup
+                        .fetch_add(1, Ordering::Relaxed);
                     // NOTE: we're discarding the error here
                     let _ = e;
                 }
@@ -157,6 +204,10 @@ impl Future for Recycler {
                     // an error during reset.
                     // replace with a new connection
                     self.discarded += 1;
+                    self.inner
+                        .metrics
+                        .discarded_error_during_cleanup
+                        .fetch_add(1, Ordering::Relaxed);
                     // NOTE: we're discarding the error here
                     let _ = e;
                 }
@@ -177,6 +228,10 @@ impl Future for Recycler {
                     // an error occurred while closing a connection.
                     // what do we do? we still replace it with a new connection..
                     self.discarded += 1;
+                    self.inner
+                        .metrics
+                        .discarded_error_during_cleanup
+                        .fetch_add(1, Ordering::Relaxed);
                     // NOTE: we're discarding the error here
                     let _ = e;
                 }
@@ -184,6 +239,11 @@ impl Future for Recycler {
         }
 
         if self.discarded != 0 {
+            self.inner
+                .metrics
+                .connection_count
+                .fetch_sub(self.discarded, Ordering::Relaxed);
+
             // we need to open up slots for new connctions to be established!
             let mut exchange = self.inner.exchange.lock().unwrap();
             exchange.exist -= self.discarded;
