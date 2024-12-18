@@ -214,6 +214,7 @@ pub struct SslOpts {
     #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     client_identity: Option<ClientIdentity>,
     root_certs: Vec<PathOrBuf<'static>>,
+    disable_built_in_roots: bool,
     skip_domain_validation: bool,
     accept_invalid_certs: bool,
     tls_hostname_override: Option<Cow<'static, str>>,
@@ -233,6 +234,13 @@ impl SslOpts {
     /// All the elements in `root_certs` will be merged.
     pub fn with_root_certs(mut self, root_certs: Vec<PathOrBuf<'static>>) -> Self {
         self.root_certs = root_certs;
+        self
+    }
+
+    /// If `true`, use only the root certificates configured via `with_root_certs`,
+    /// not any system or built-in certs.
+    pub fn with_disable_built_in_roots(mut self, disable_built_in_roots: bool) -> Self {
+        self.disable_built_in_roots = disable_built_in_roots;
         self
     }
 
@@ -269,6 +277,10 @@ impl SslOpts {
 
     pub fn root_certs(&self) -> &[PathOrBuf<'static>] {
         &self.root_certs
+    }
+
+    pub fn disable_built_in_roots(&self) -> bool {
+        self.disable_built_in_roots
     }
 
     pub fn skip_domain_validation(&self) -> bool {
