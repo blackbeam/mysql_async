@@ -42,13 +42,15 @@ use std::{
 use crate::{
     buffer_pool::PooledBuf,
     error::IoError,
-    opts::{HostPortOrUrl, SslOpts, DEFAULT_PORT},
+    opts::{HostPortOrUrl, DEFAULT_PORT},
 };
 
 #[cfg(unix)]
 use crate::io::socket::Socket;
 
 mod tls;
+
+pub(crate) use self::tls::TlsConnector;
 
 macro_rules! with_interrupted {
     ($e:expr) => {
@@ -191,18 +193,6 @@ impl Endpoint {
     #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     pub fn is_secure(&self) -> bool {
         matches!(self, Endpoint::Secure(_))
-    }
-
-    #[cfg(all(not(feature = "native-tls-tls"), not(feature = "rustls")))]
-    pub async fn make_secure(
-        &mut self,
-        _domain: String,
-        _ssl_opts: crate::SslOpts,
-    ) -> crate::error::Result<()> {
-        panic!(
-            "Client had asked for TLS connection but TLS support is disabled. \
-            Please enable one of the following features: [\"native-tls-tls\", \"rustls-tls\"]"
-        )
     }
 
     pub fn set_tcp_nodelay(&self, val: bool) -> io::Result<()> {
@@ -415,11 +405,11 @@ impl Stream {
     pub(crate) async fn make_secure(
         &mut self,
         domain: String,
-        ssl_opts: SslOpts,
+        tls_connector: &TlsConnector,
     ) -> crate::error::Result<()> {
         let codec = self.codec.take().unwrap();
         let FramedParts { mut io, codec, .. } = codec.into_parts();
-        io.make_secure(domain, ssl_opts).await?;
+        io.make_secure(domain, tls_connector).await?;
         let codec = Framed::new(io, codec);
         self.codec = Some(Box::new(codec));
         Ok(())
