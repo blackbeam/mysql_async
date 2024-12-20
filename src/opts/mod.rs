@@ -237,22 +237,61 @@ impl SslOpts {
         self
     }
 
-    /// If `true`, use only the root certificates configured via `with_root_certs`,
-    /// not any system or built-in certs.
+    /// If `true`, use only the root certificates configured via [`SslOpts::with_root_certs`],
+    /// not any system or built-in certs. By default system built-in certs _will be_ used.
+    ///
+    /// # Connection URL
+    ///
+    /// Use `built_in_roots` URL parameter to set this value:
+    ///
+    /// ```
+    /// # use mysql_async::*;
+    /// # use std::time::Duration;
+    /// # fn main() -> Result<()> {
+    /// let opts = Opts::from_url("mysql://localhost/db?require_ssl=true&built_in_roots=false")?;
+    /// assert_eq!(opts.ssl_opts().unwrap().disable_built_in_roots(), true);
+    /// # Ok(()) }
+    /// ```
     pub fn with_disable_built_in_roots(mut self, disable_built_in_roots: bool) -> Self {
         self.disable_built_in_roots = disable_built_in_roots;
         self
     }
 
-    /// The way to not validate the server's domain
-    /// name against its certificate (defaults to `false`).
+    /// The way to not validate the server's domain name against its certificate.
+    /// By default domain name _will be_ validated.
+    ///
+    /// # Connection URL
+    ///
+    /// Use `built_in_roots` URL parameter to set this value:
+    ///
+    /// ```
+    /// # use mysql_async::*;
+    /// # use std::time::Duration;
+    /// # fn main() -> Result<()> {
+    /// let opts = Opts::from_url("mysql://localhost/db?require_ssl=true&verify_identity=false")?;
+    /// assert_eq!(opts.ssl_opts().unwrap().skip_domain_validation(), true);
+    /// # Ok(()) }
+    /// ```
     pub fn with_danger_skip_domain_validation(mut self, value: bool) -> Self {
         self.skip_domain_validation = value;
         self
     }
 
-    /// If `true` then client will accept invalid certificate (expired, not trusted, ..)
-    /// (defaults to `false`).
+    /// If `true` then client will accept invalid certificate (expired, not trusted, ..).
+    /// Invalid certificates _won't get_ accepted by default.
+    ///
+    /// # Connection URL
+    ///
+    /// Use `verify_ca` URL parameter to set this value:
+    ///
+    /// ```
+    /// # use mysql_async::*;
+    /// # use std::time::Duration;
+    /// # fn main() -> Result<()> {
+    /// let opts = Opts::from_url("mysql://localhost/db?require_ssl=true&verify_ca=false")?;
+    /// assert_eq!(opts.ssl_opts().unwrap().accept_invalid_certs(), true);
+    /// # Ok(()) }
+    /// ```
     pub fn with_danger_accept_invalid_certs(mut self, value: bool) -> Self {
         self.accept_invalid_certs = value;
         self
@@ -1596,6 +1635,7 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
 
     let mut skip_domain_validation = false;
     let mut accept_invalid_certs = false;
+    let mut disable_built_in_roots = false;
 
     for (key, value) in query_pairs {
         if key == "pool_min" {
@@ -1696,10 +1736,7 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
             }
         } else if key == "max_allowed_packet" {
             match usize::from_str(&value) {
-                Ok(value) => {
-                    opts.max_allowed_packet =
-                        Some(std::cmp::max(1024, std::cmp::min(1073741824, value)))
-                }
+                Ok(value) => opts.max_allowed_packet = Some(value.clamp(1024, 1073741824)),
                 _ => {
                     return Err(UrlError::InvalidParamValue {
                         param: "max_allowed_packet".into(),
@@ -1851,6 +1888,18 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                     });
                 }
             }
+        } else if key == "built_in_roots" {
+            match bool::from_str(&value) {
+                Ok(x) => {
+                    disable_built_in_roots = !x;
+                }
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "built_in_roots".into(),
+                        value,
+                    });
+                }
+            }
         } else {
             return Err(UrlError::UnknownParameter { param: key });
         }
@@ -1868,6 +1917,7 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
     if let Some(ref mut ssl_opts) = opts.ssl_opts.as_mut() {
         ssl_opts.accept_invalid_certs = accept_invalid_certs;
         ssl_opts.skip_domain_validation = skip_domain_validation;
+        ssl_opts.disable_built_in_roots = disable_built_in_roots;
     }
 
     Ok(opts)
@@ -1985,7 +2035,7 @@ mod test {
         );
 
         const URL4: &str =
-            "mysql://localhost/foo?require_ssl=true&verify_ca=false&verify_identity=false";
+            "mysql://localhost/foo?require_ssl=true&verify_ca=false&verify_identity=false&built_in_roots=false";
         let opts = Opts::from_url(URL4).unwrap();
         assert_eq!(
             opts.ssl_opts(),
@@ -1993,6 +2043,7 @@ mod test {
                 &SslOpts::default()
                     .with_danger_accept_invalid_certs(true)
                     .with_danger_skip_domain_validation(true)
+                    .with_disable_built_in_roots(true)
             )
         );
 
