@@ -116,6 +116,7 @@ struct ConnInner {
     auth_plugin: AuthPlugin<'static>,
     auth_switched: bool,
     server_key: Option<Vec<u8>>,
+    active_since: Instant,
     /// Connection is already disconnected.
     pub(crate) disconnected: bool,
     /// One-time connection-level infile handler.
@@ -169,6 +170,7 @@ impl ConnInner {
             server_key: None,
             infile_handler: None,
             reset_upon_returning_to_a_pool: false,
+            active_since: Instant::now(),
         }
     }
 
