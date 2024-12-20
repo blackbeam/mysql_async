@@ -46,7 +46,9 @@ impl Endpoint {
         }
 
         let mut root_store = RootCertStore::empty();
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().map(|x| x.to_owned()));
+        if !ssl_opts.disable_built_in_roots() {
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().map(|x| x.to_owned()));
+        }
 
         for cert in ssl_opts.load_root_certs().await? {
             root_store.add(cert)?;
