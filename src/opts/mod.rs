@@ -262,7 +262,7 @@ impl SslOpts {
     ///
     /// # Connection URL
     ///
-    /// Use `built_in_roots` URL parameter to set this value:
+    /// Use `verify_identity` URL parameter to set this value:
     ///
     /// ```
     /// # use mysql_async::*;
