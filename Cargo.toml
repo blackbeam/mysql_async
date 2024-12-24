@@ -77,16 +77,7 @@ socket2 = { version = "0.5.2", features = ["all"] }
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread"] }
 
 [features]
-default = [
-    "flate2/zlib",
-    "bigdecimal",
-    "rust_decimal",
-    "time",
-    "frunk",
-    "derive",
-    "native-tls-tls",
-    "binlog",
-]
+default = ["flate2/zlib", "derive"]
 
 default-rustls = ["default-rustls-no-provider", "aws-lc-rs"]
 
@@ -94,13 +85,8 @@ default-rustls-ring = ["default-rustls-no-provider", "ring"]
 
 default-rustls-no-provider = [
     "flate2/rust_backend",
-    "bigdecimal",
-    "rust_decimal",
-    "time",
-    "frunk",
     "derive",
     "rustls-tls",
-    "binlog",
     "tls12",
 ]
 
