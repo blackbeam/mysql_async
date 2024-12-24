@@ -36,6 +36,7 @@ impl Endpoint {
         }
         builder.danger_accept_invalid_hostnames(ssl_opts.skip_domain_validation());
         builder.danger_accept_invalid_certs(ssl_opts.accept_invalid_certs());
+        builder.disable_built_in_roots(ssl_opts.disable_built_in_roots());
         let tls_connector: tokio_native_tls::TlsConnector = builder.build()?.into();
 
         *self = match self {
