@@ -43,13 +43,13 @@ jobs:
           SSL=false COMPRESS=false cargo test
           SSL=true COMPRESS=false cargo test --features native-tls-tls
           SSL=false COMPRESS=true cargo test
-          SSL=true COMPRESS=true cargo test --features rustls-tls
+          SSL=true COMPRESS=true cargo test --features rustls-tls,ring
 
           SSL=true COMPRESS=false cargo check --no-default-features --features default-rustls
           SSL=true COMPRESS=false cargo check --no-default-features --features default-rustls-ring
           SSL=true COMPRESS=false cargo check --no-default-features --features minimal
           SSL=true COMPRESS=false cargo check --no-default-features --features minimal-rust
-          SSL=true COMPRESS=false cargo check --no-default-features --features tracing
+          SSL=true COMPRESS=false cargo check --no-default-features --features minimal,tracing
         env:
           RUST_BACKTRACE: 1
           DATABASE_URL: mysql://root:root@127.0.0.1:3306/mysql

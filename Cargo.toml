@@ -55,6 +55,7 @@ optional = true
 [dependencies.rustls]
 version = "0.23"
 default-features = false
+features = ["std"]
 optional = true
 
 [dependencies.rustls-pemfile]

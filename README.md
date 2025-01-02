@@ -65,7 +65,16 @@ By default there are only two features enabled:
 
     ```toml
     [dependencies]
-    mysql_async = { version = "*", default-features = false, features = ["native-tls-tls"] }
+    mysql_async = { version = "*", default-features = false, features = ["minimal", "native-tls-tls"] }
+
+*   `rustls-tls` - enables rustls TLS backend with no provider. You should enable one
+    of existing providers using `aws-lc-rs` or `ring` features:
+
+    **Example:**
+
+    ```toml
+    [dependencies]
+    mysql_async = { version = "*", default-features = false, features = ["minimal-rust", "rustls-tls", "ring"] }
 
 *   `tracing` – enables instrumentation via `tracing` package.
 
