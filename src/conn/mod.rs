@@ -504,10 +504,7 @@ impl Conn {
         self.inner.capabilities = handshake.capabilities() & self.inner.opts.get_capabilities();
         self.inner.version = handshake
             .maria_db_server_version_parsed()
-            .map(|version| {
-                self.inner.is_mariadb = true;
-                version
-            })
+            .inspect(|_| self.inner.is_mariadb = true)
             .or_else(|| handshake.server_version_parsed())
             .unwrap_or((0, 0, 0));
         self.inner.id = handshake.connection_id();
@@ -982,7 +979,7 @@ impl Conn {
     /// Configures the connection based on server settings. In particular:
     ///
     /// * It reads and stores socket address inside the connection unless if socket address is
-    /// already in [`Opts`] or if `prefer_socket` is `false`.
+    ///   already in [`Opts`] or if `prefer_socket` is `false`.
     ///
     /// * It reads and stores `max_allowed_packet` in the connection unless it's already in [`Opts`]
     ///
@@ -1420,7 +1417,7 @@ mod test {
         for (plug, val, pass) in variants {
             dbg!((plug, val, pass, conn.inner.version));
 
-            if plug == "mysql_native_password" && conn.inner.version >= (9, 0, 0) {
+            if plug == "mysql_native_password" && conn.inner.version >= (8, 4, 0) {
                 continue;
             }
 
@@ -1429,7 +1426,7 @@ mod test {
             let query = format!("CREATE USER 'test_user'@'%' IDENTIFIED WITH {}", plug);
             conn.query_drop(query).await.unwrap();
 
-            if conn.inner.version <= (8, 0, 11) {
+            if conn.inner.version < (8, 0, 11) {
                 conn.query_drop(format!("SET old_passwords = {}", val))
                     .await
                     .unwrap();
@@ -1572,7 +1569,7 @@ mod test {
         };
 
         for (i, plugin) in plugins.iter().enumerate() {
-            if *plugin == "mysql_native_password" && conn.server_version() >= (9, 0, 0) {
+            if *plugin == "mysql_native_password" && conn.server_version() >= (8, 4, 0) {
                 continue;
             }
 

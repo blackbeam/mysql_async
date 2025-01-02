@@ -1376,8 +1376,7 @@ impl OptsBuilder {
     /// Note that it'll saturate to proper minimum and maximum values
     /// for this parameter (see MySql documentation).
     pub fn max_allowed_packet(mut self, max_allowed_packet: Option<usize>) -> Self {
-        self.opts.max_allowed_packet =
-            max_allowed_packet.map(|x| std::cmp::max(1024, std::cmp::min(1073741824, x)));
+        self.opts.max_allowed_packet = max_allowed_packet.map(|x| x.clamp(1024, 1073741824));
         self
     }
 
@@ -1931,7 +1930,7 @@ impl FromStr for Opts {
     }
 }
 
-impl<'a> TryFrom<&'a str> for Opts {
+impl TryFrom<&str> for Opts {
     type Error = UrlError;
 
     fn try_from(s: &str) -> std::result::Result<Self, UrlError> {
@@ -1991,13 +1990,15 @@ mod test {
 
     #[test]
     fn should_convert_url_into_opts() {
-        let url = "mysql://usr:pw@192.168.1.1:3309/dbname";
-        let parsed_url = Url::parse("mysql://usr:pw@192.168.1.1:3309/dbname").unwrap();
+        let url = "mysql://usr:pw@192.168.1.1:3309/dbname?prefer_socket=true";
+        let parsed_url =
+            Url::parse("mysql://usr:pw@192.168.1.1:3309/dbname?prefer_socket=true").unwrap();
 
         let mysql_opts = MysqlOpts {
             user: Some("usr".to_string()),
             pass: Some("pw".to_string()),
             db_name: Some("dbname".to_string()),
+            prefer_socket: true,
             ..MysqlOpts::default()
         };
         let host = HostPortOrUrl::Url(parsed_url);

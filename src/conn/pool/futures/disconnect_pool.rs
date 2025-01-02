@@ -60,7 +60,8 @@ impl Future for DisconnectPool {
                 Some(drop) => match drop.send(None) {
                     Ok(_) => {
                         // Recycler is alive. Waiting for it to finish.
-                        Poll::Ready(Ok(ready!(Box::pin(drop.closed()).as_mut().poll(cx))))
+                        ready!(Box::pin(drop.closed()).as_mut().poll(cx));
+                        Poll::Ready(Ok(()))
                     }
                     Err(_) => {
                         // Recycler seem dead. No one will wake us.

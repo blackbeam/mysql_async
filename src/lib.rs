@@ -19,8 +19,10 @@
 //!
 //! # Crate Features
 //!
-//! Default feature set is wide – it includes all default [`mysql_common` features][myslqcommonfeatures]
-//! as well as `native-tls`-based TLS support.
+//! By default there are only two features enabled:
+//!
+//! *   `flate2/zlib` — choosing flate2 backend is mandatory
+//! *   `derive` — see ["Derive Macros" section in `mysql_common` docs][mysqlcommonderive]
 //!
 //! ## List Of Features
 //!
@@ -36,21 +38,18 @@
 //!     mysql_async = { version = "*", default-features = false, features = ["minimal"]}
 //!     ```
 //!
-//! *   `minimal-rust` - same as `minimal` but rust-based flate2 backend is chosen. Enables:
+//! *   `minimal-rust` - same as `minimal` but with rust-based flate2 backend. Enables:
 //!
 //!     -    `flate2/rust_backend`
 //!
 //! *   `default` – enables the following set of features:
 //!
-//!     -   `minimal`
-//!     -   `native-tls-tls`
-//!     -   `bigdecimal`
-//!     -   `rust_decimal`
-//!     -   `time`
-//!     -   `frunk`
-//!     -   `binlog`
+//!     -   `flate2/zlib`
+//!     -   `derive`
 //!
-//! *   `default-rustls` – same as default but with `rustls-tls` instead of `native-tls-tls`.
+//! *   `default-rustls` – default set of features with TLS via `rustls/aws-lc-rs`
+//!
+//! *   `default-rustls-ring` – default set of features with TLS via `rustls/ring`
 //!
 //!     **Example:**
 //!
@@ -59,21 +58,22 @@
 //!     mysql_async = { version = "*", default-features = false, features = ["default-rustls"] }
 //!     ```
 //!
-//! *   `native-tls-tls` – enables `native-tls`-based TLS support _(conflicts with `rustls-tls`)_
+//! *   `native-tls-tls` – enables TLS via `native-tls`
 //!
 //!     **Example:**
 //!
 //!     ```toml
 //!     [dependencies]
-//!     mysql_async = { version = "*", default-features = false, features = ["native-tls-tls"] }
+//!     mysql_async = { version = "*", default-features = false, features = ["minimal", "native-tls-tls"] }
 //!
-//! *   `rustls-tls` – enables `native-tls`-based TLS support _(conflicts with `native-tls-tls`)_
+//! *   `rustls-tls` - enables rustls TLS backend with no provider. You should enable one
+//!     of existing providers using `aws-lc-rs` or `ring` features:
 //!
 //!     **Example:**
 //!
 //!     ```toml
 //!     [dependencies]
-//!     mysql_async = { version = "*", default-features = false, features = ["rustls-tls"] }
+//!     mysql_async = { version = "*", default-features = false, features = ["minimal-rust", "rustls-tls", "ring"] }
 //!
 //! *   `tracing` – enables instrumentation via `tracing` package.
 //!
@@ -93,7 +93,7 @@
 //!
 //!     -   `mysql_common/binlog"
 //!
-//! ### Proxied features
+//! ### Proxied features (see [`mysql_common`` fatures][myslqcommonfeatures])
 //!
 //! *   `derive` – enables `mysql_common/derive` feature
 //! *   `chrono` = enables `mysql_common/chrono` feature
@@ -103,6 +103,7 @@
 //! *   `frunk` = enables `mysql_common/frunk` feature
 //!
 //! [myslqcommonfeatures]: https://github.com/blackbeam/rust_mysql_common#crate-features
+//! [mysqlcommonderive]: https://github.com/blackbeam/rust_mysql_common?tab=readme-ov-file#derive-macros
 //!
 //! # TLS/SSL Support
 //!

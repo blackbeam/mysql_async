@@ -21,7 +21,7 @@ futures-util = "0.3"
 futures-sink = "0.3"
 keyed_priority_queue = "0.4"
 lru = "0.12.0"
-mysql_common = { version = "0.33", default-features = false }
+mysql_common = { version = "0.34", default-features = false }
 pem = "3.0"
 percent-encoding = "2.1.0"
 pin-project = "1.0.2"
@@ -35,7 +35,7 @@ tokio-util = { version = "0.7.2", features = ["codec", "io"] }
 tracing = { version = "0.1.37", default-features = false, features = [
     "attributes",
 ], optional = true }
-twox-hash = "2"
+twox-hash = { version = "2", default-features = false, features = ["xxhash64"] }
 url = "2.1"
 hdrhistogram = { version = "7.5", optional = true }
 
@@ -55,6 +55,7 @@ optional = true
 [dependencies.rustls]
 version = "0.23"
 default-features = false
+features = ["std"]
 optional = true
 
 [dependencies.rustls-pemfile]
@@ -77,36 +78,16 @@ socket2 = { version = "0.5.2", features = ["all"] }
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread"] }
 
 [features]
-default = [
-    "flate2/zlib",
-    "bigdecimal",
-    "rust_decimal",
-    "time",
-    "frunk",
-    "derive",
-    "native-tls-tls",
-    "binlog",
-]
+default = ["flate2/zlib", "derive"]
 
-default-rustls = [
-    "default-rustls-no-provider",
-    "aws-lc-rs",
-]
+default-rustls = ["default-rustls-no-provider", "aws-lc-rs"]
 
-default-rustls-ring = [
-    "default-rustls-no-provider",
-    "ring",
-]
+default-rustls-ring = ["default-rustls-no-provider", "ring"]
 
 default-rustls-no-provider = [
     "flate2/rust_backend",
-    "bigdecimal",
-    "rust_decimal",
-    "time",
-    "frunk",
     "derive",
     "rustls-tls",
-    "binlog",
     "tls12",
 ]
 
