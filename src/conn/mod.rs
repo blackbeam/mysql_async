@@ -1417,7 +1417,7 @@ mod test {
         for (plug, val, pass) in variants {
             dbg!((plug, val, pass, conn.inner.version));
 
-            if plug == "mysql_native_password" && conn.inner.version >= (9, 0, 0) {
+            if plug == "mysql_native_password" && conn.inner.version >= (8, 4, 0) {
                 continue;
             }
 
@@ -1569,7 +1569,7 @@ mod test {
         };
 
         for (i, plugin) in plugins.iter().enumerate() {
-            if *plugin == "mysql_native_password" && conn.server_version() >= (9, 0, 0) {
+            if *plugin == "mysql_native_password" && conn.server_version() >= (8, 4, 0) {
                 continue;
             }
 
