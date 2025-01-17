@@ -555,7 +555,7 @@ pub use self::conn::pool::Metrics;
 
 /// Futures used in this crate
 pub mod futures {
-    pub use crate::conn::pool::futures::{DisconnectPool, GetConn};
+    pub use crate::conn::pool::futures::DisconnectPool;
 }
 
 /// Traits used in this crate
