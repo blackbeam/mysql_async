@@ -21,6 +21,10 @@ use std::{io, result};
 /// Result type alias for this library.
 pub type Result<T> = result::Result<T, Error>;
 
+/// The maximum number of bind variables supported by MySQL.
+/// https://stackoverflow.com/questions/4922345/how-many-bind-variables-can-i-use-in-a-sql-query-in-mysql-5#comment136409462_11131824
+pub(crate) const MAX_STATEMENT_PARAMS: usize = u16::MAX as usize;
+
 /// This type enumerates library errors.
 #[derive(Debug, Error)]
 pub enum Error {
@@ -135,7 +139,14 @@ pub enum DriverError {
         required,
         supplied
     )]
-    StmtParamsMismatch { required: u16, supplied: u16 },
+    StmtParamsMismatch { required: u16, supplied: usize },
+
+    #[error(
+        "MySQL supports up to {} parameters but {} was supplied.",
+        MAX_STATEMENT_PARAMS,
+        supplied
+    )]
+    StmtParamsNumberExceedsLimit { supplied: usize },
 
     #[error("Unexpected packet.")]
     UnexpectedPacket { payload: Vec<u8> },
