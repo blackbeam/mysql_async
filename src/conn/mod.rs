@@ -629,6 +629,9 @@ impl Conn {
                         return Err(DriverError::CleartextPluginDisabled.into());
                     }
                 }
+                x @ AuthPlugin::Ed25519 => {
+                    x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
+                }
                 x @ AuthPlugin::Other(_) => x.gen_data(self.inner.opts.pass(), &self.inner.nonce),
             };
 
@@ -667,6 +670,10 @@ impl Conn {
                         Err(DriverError::CleartextPluginDisabled.into())
                     }
                 }
+                AuthPlugin::Ed25519 => {
+                    self.continue_ed25519_auth().await?;
+                    Ok(())
+                }
                 AuthPlugin::Other(ref name) => Err(DriverError::UnknownAuthPlugin {
                     name: String::from_utf8_lossy(name.as_ref()).to_string(),
                 }
@@ -687,6 +694,19 @@ impl Conn {
             }
         }
         Ok(())
+    }
+
+    async fn continue_ed25519_auth(&mut self) -> Result<()> {
+        let packet = self.read_packet().await?;
+        match packet.first() {
+            Some(0x00) => {
+                // ok packet for empty password
+                Ok(())
+            },
+            _ => Err(DriverError::UnexpectedPacket {
+                payload: packet.to_vec(),
+            }.into()),
+        }
     }
 
     async fn continue_caching_sha2_password_auth(&mut self) -> Result<()> {
