@@ -703,6 +703,10 @@ impl Conn {
                 // ok packet for empty password
                 Ok(())
             },
+            Some(0xfe) if !self.inner.auth_switched => {
+                let auth_switch_request = ParseBuf(&packet).parse::<AuthSwitchRequest>(())?;
+                self.perform_auth_switch(auth_switch_request).await
+            },
             _ => Err(DriverError::UnexpectedPacket {
                 payload: packet.to_vec(),
             }.into()),
