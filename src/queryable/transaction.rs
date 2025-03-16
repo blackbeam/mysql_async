@@ -187,11 +187,11 @@ impl<'a> Transaction<'a> {
     pub async fn commit(mut self) -> Result<()> {
         match self.try_commit().await {
             Ok(..) => Ok(()),
-            Err(e) =>  {
+            Err(e) => {
                 self.0.query_drop("ROLLBACK").await.unwrap_or(());
                 self.0.set_tx_status(TxStatus::None);
                 Err(e)
-            },
+            }
         }
     }
 
