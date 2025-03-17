@@ -30,7 +30,7 @@ serde = "1"
 serde_json = "1"
 socket2 = "0.5.2"
 thiserror = "2"
-tokio = { version = "1.0", features = ["io-util", "fs", "net", "time", "rt"] }
+tokio = { version = "1.0", features = ["io-util", "fs", "net", "time", "rt", "sync"] }
 tokio-util = { version = "0.7.2", features = ["codec", "io"] }
 tracing = { version = "0.1.37", default-features = false, features = [
     "attributes",
