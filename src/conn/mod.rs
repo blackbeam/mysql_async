@@ -1205,7 +1205,7 @@ impl Conn {
     }
 
     /// Requires that `self.inner.tx_status != TxStatus::None`
-    async fn rollback_transaction(&mut self) -> Result<()> {
+    pub(crate) async fn rollback_transaction(&mut self) -> Result<()> {
         debug_assert_ne!(self.inner.tx_status, TxStatus::None);
         self.inner.tx_status = TxStatus::None;
         self.query_drop("ROLLBACK").await
