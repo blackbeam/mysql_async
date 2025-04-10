@@ -70,6 +70,10 @@ impl TtlCheckInterval {
                 }
             }
             exchange.available = kept_available;
+            self.inner
+                .metrics
+                .connections_in_pool
+                .store(exchange.available.len(), Ordering::Relaxed);
             to_be_dropped
         };
 
@@ -79,6 +83,10 @@ impl TtlCheckInterval {
             tokio::spawn(idling_conn.conn.disconnect().then(move |_| {
                 let mut exchange = inner.exchange.lock().unwrap();
                 exchange.exist -= 1;
+                inner
+                    .metrics
+                    .connection_count
+                    .store(exchange.exist, Ordering::Relaxed);
                 ok::<_, ()>(())
             }));
         }
