@@ -183,6 +183,7 @@ jobs:
           git checkout 901a7de
         displayName: Clone rust-mysql-simple (for ssl certs)
       - bash: |
+          if [[ "11.6.2" == "$(DB_VERSION)" ]]; then ARG=" --plugin-load-add=auth_ed25519"; fi
           docker run --rm -d \
               --name container \
               -v `pwd`:/root \
@@ -197,7 +198,9 @@ jobs:
                   --ssl \
                   --ssl-ca=/root/rust-mysql-simple/tests/ca.crt \
                   --ssl-cert=/root/rust-mysql-simple/tests/server.crt \
-                  --ssl-key=/root/rust-mysql-simple/tests/server-key.pem &
+                  --ssl-key=/root/rust-mysql-simple/tests/server-key.pem \
+                  --secure-auth=OFF \
+                  $ARG &
           while ! nc -W 1 localhost 3307 | grep -q -P '.+'; do sleep 1; done
         displayName: Run MariaDb in Docker
       - bash: |
@@ -206,11 +209,12 @@ jobs:
           docker exec container bash -l -c "curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable"
         displayName: Install Rust in docker
       - bash: |
-          docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL cargo test"
-          docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL COMPRESS=true cargo test"
-          docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true cargo test --features native-tls-tls"
-          docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true COMPRESS=true cargo test"
-          if [[ "10.1" != "$(DB_VERSION)" ]]; then docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true cargo test --no-default-features --features default-rustls"; fi
+          if [[ "11.6.2" == "$(DB_VERSION)" ]]; then FEATURES="client_ed25519"; fi
+          docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL cargo test --features $FEATURES"
+          docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL COMPRESS=true cargo test --features $FEATURES"
+          docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true cargo test --features native-tls-tls,$FEATURES"
+          docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true COMPRESS=true cargo test --features $FEATURES"
+          if [[ "10.1" != "$(DB_VERSION)" ]]; then docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true cargo test --no-default-features --features default-rustls,$FEATURES"; fi
         env:
           RUST_BACKTRACE: 1
           DATABASE_URL: mysql://root:password@127.0.0.1/mysql
