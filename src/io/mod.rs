@@ -447,7 +447,7 @@ impl Stream {
         self.closed = true;
         if let Some(mut codec) = self.codec {
             use futures_sink::Sink;
-            futures_util::future::poll_fn(|cx| match Pin::new(&mut *codec).poll_close(cx) {
+            std::future::poll_fn(|cx| match Pin::new(&mut *codec).poll_close(cx) {
                 Poll::Ready(Err(IoError::Io(err))) if err.kind() == NotConnected => {
                     Poll::Ready(Ok(()))
                 }
