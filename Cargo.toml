@@ -20,7 +20,7 @@ futures-core = "0.3"
 futures-util = "0.3"
 futures-sink = "0.3"
 keyed_priority_queue = "0.4"
-lru = "0.12.0"
+lru = "0.13.0"
 mysql_common = { version = "0.34", default-features = false }
 pem = "3.0"
 percent-encoding = "2.1.0"
