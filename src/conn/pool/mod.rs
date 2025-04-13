@@ -304,6 +304,10 @@ impl Pool {
             .metrics
             .create_failed
             .fetch_add(1, atomic::Ordering::Relaxed);
+        self.inner
+            .metrics
+            .connection_count
+            .store(exchange.exist, atomic::Ordering::Relaxed);
         // we just enabled the creation of a new connection!
         if let Some(w) = exchange.waiting.pop() {
             w.wake();
@@ -347,11 +351,6 @@ impl Pool {
 
         #[allow(unused_variables)] // `since` is only used when `hdrhistogram` is enabled
         while let Some(IdlingConn { mut conn, since }) = exchange.available.pop_back() {
-            self.inner
-                .metrics
-                .connections_in_pool
-                .fetch_sub(1, atomic::Ordering::Relaxed);
-
             if !conn.expired() {
                 #[cfg(feature = "hdrhistogram")]
                 self.inner
@@ -383,6 +382,11 @@ impl Pool {
             }
         }
 
+        self.inner
+            .metrics
+            .connections_in_pool
+            .store(exchange.available.len(), atomic::Ordering::Relaxed);
+
         // we didn't _immediately_ get one -- try to make one
         // we first try to just do a load so we don't do an unnecessary add then sub
         if exchange.exist < self.opts.pool_opts().constraints().max() {
@@ -392,7 +396,7 @@ impl Pool {
             self.inner
                 .metrics
                 .connection_count
-                .fetch_add(1, atomic::Ordering::Relaxed);
+                .store(exchange.exist, atomic::Ordering::Relaxed);
 
             let opts = self.opts.clone();
             #[cfg(feature = "hdrhistogram")]
