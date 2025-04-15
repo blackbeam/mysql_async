@@ -569,6 +569,8 @@ pub mod prelude {
     #[doc(inline)]
     pub use crate::queryable::Queryable;
     #[doc(inline)]
+    pub use crate::connection_like::{Connection, ToConnection, ToConnectionResult};
+    #[doc(inline)]
     pub use mysql_common::prelude::ColumnIndex;
     #[doc(inline)]
     pub use mysql_common::prelude::FromRow;
@@ -595,17 +597,6 @@ pub mod prelude {
     /// ```
     pub trait StatementLike: crate::queryable::stmt::StatementLike {}
     impl<T: crate::queryable::stmt::StatementLike> StatementLike for T {}
-
-    /// Everything that is a connection.
-    ///
-    /// Note that you could obtain a `'static` connection by giving away `Conn` or `Pool`.
-    pub trait ToConnection<'a, 't: 'a>: crate::connection_like::ToConnection<'a, 't> {}
-    // explicitly implemented because of rusdoc
-    impl<'a> ToConnection<'a, 'static> for &'a crate::Pool {}
-    impl ToConnection<'static, 'static> for crate::Pool {}
-    impl ToConnection<'static, 'static> for crate::Conn {}
-    impl<'a> ToConnection<'a, 'static> for &'a mut crate::Conn {}
-    impl<'a, 't> ToConnection<'a, 't> for &'a mut crate::Transaction<'t> {}
 
     /// Trait for protocol markers [`crate::TextProtocol`] and [`crate::BinaryProtocol`].
     pub trait Protocol: crate::queryable::Protocol {}
