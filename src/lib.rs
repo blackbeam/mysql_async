@@ -561,6 +561,8 @@ pub mod futures {
 /// Traits used in this crate
 pub mod prelude {
     #[doc(inline)]
+    pub use crate::connection_like::{Connection, ToConnection, ToConnectionResult};
+    #[doc(inline)]
     pub use crate::local_infile_handler::GlobalHandler;
     #[doc(inline)]
     pub use crate::query::AsQuery;
@@ -568,8 +570,6 @@ pub mod prelude {
     pub use crate::query::{BatchQuery, Query, WithParams};
     #[doc(inline)]
     pub use crate::queryable::Queryable;
-    #[doc(inline)]
-    pub use crate::connection_like::{Connection, ToConnection, ToConnectionResult};
     #[doc(inline)]
     pub use mysql_common::prelude::ColumnIndex;
     #[doc(inline)]
