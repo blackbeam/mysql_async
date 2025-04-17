@@ -6,9 +6,9 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use std::{fmt, ops::Deref};
-
 use crate::{connection_like::Connection, error::*, queryable::Queryable, Conn};
+use std::ops::DerefMut;
+use std::{fmt, ops::Deref};
 
 /// Transaction status.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -207,6 +207,12 @@ impl Deref for Transaction<'_> {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl DerefMut for Transaction<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
