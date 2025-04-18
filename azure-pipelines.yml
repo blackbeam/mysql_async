@@ -183,6 +183,7 @@ jobs:
           git checkout 901a7de
         displayName: Clone rust-mysql-simple (for ssl certs)
       - bash: |
+          if [[ "11.6.2" == "$(DB_VERSION)" ]]; then ARG=" --plugin-load-add=auth_ed25519"; fi
           docker run --rm -d \
               --name container \
               -v `pwd`:/root \
@@ -197,7 +198,8 @@ jobs:
                   --ssl \
                   --ssl-ca=/root/rust-mysql-simple/tests/ca.crt \
                   --ssl-cert=/root/rust-mysql-simple/tests/server.crt \
-                  --ssl-key=/root/rust-mysql-simple/tests/server-key.pem &
+                  --ssl-key=/root/rust-mysql-simple/tests/server-key.pem \
+                  $ARG &
           while ! nc -W 1 localhost 3307 | grep -q -P '.+'; do sleep 1; done
         displayName: Run MariaDb in Docker
       - bash: |
