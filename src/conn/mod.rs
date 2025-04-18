@@ -549,12 +549,16 @@ impl Conn {
             );
             self.write_struct(&ssl_request).await?;
             let conn = self;
-            let ssl_opts = conn.opts().ssl_opts().cloned().expect("unreachable");
+            let ssl_opts = conn.opts().ssl_opts_and_connector().expect("unreachable");
             let domain = ssl_opts
+                .ssl_opts()
                 .tls_hostname_override()
                 .unwrap_or_else(|| conn.opts().ip_or_hostname())
                 .into();
-            conn.stream_mut()?.make_secure(domain, ssl_opts).await?;
+            let tls_connector = ssl_opts.build_tls_connector().await?;
+            conn.stream_mut()?
+                .make_secure(domain, &tls_connector)
+                .await?;
             Ok(())
         } else {
             Ok(())
@@ -1224,7 +1228,7 @@ impl Conn {
     }
 
     /// Requires that `self.inner.tx_status != TxStatus::None`
-    async fn rollback_transaction(&mut self) -> Result<()> {
+    pub(crate) async fn rollback_transaction(&mut self) -> Result<()> {
         debug_assert_ne!(self.inner.tx_status, TxStatus::None);
         self.inner.tx_status = TxStatus::None;
         self.query_drop("ROLLBACK").await
