@@ -7,7 +7,6 @@
 // modified, or distributed except according to those terms.
 
 use futures_util::future::{ok, FutureExt};
-use pin_project::pin_project;
 use tokio::time::{self, Interval};
 
 use std::{
@@ -26,10 +25,8 @@ use std::pin::Pin;
 /// The purpose of this interval is to remove idling connections that both:
 /// * overflows min bound of the pool;
 /// * idles longer then `inactive_connection_ttl`.
-#[pin_project]
 pub(crate) struct TtlCheckInterval {
     inner: Arc<Inner>,
-    #[pin]
     interval: Interval,
     pool_opts: PoolOpts,
 }
@@ -90,7 +87,7 @@ impl Future for TtlCheckInterval {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
-            let _ = futures_core::ready!(self.as_mut().project().interval.poll_tick(cx));
+            let _ = futures_core::ready!(Pin::new(&mut self.interval).poll_tick(cx));
             let close = self.inner.close.load(Ordering::Acquire);
 
             if !close {
