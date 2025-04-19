@@ -85,7 +85,7 @@ impl Endpoint {
                 let stream = stream.take().unwrap();
 
                 let server_name = ServerName::try_from(domain.as_str())
-                    .map_err(|_| webpki::InvalidDnsNameError)?
+                    .map_err(TlsError::InvalidDnsName)?
                     .to_owned();
                 let connection = tls_connector.connect(server_name, stream).await?;
 
