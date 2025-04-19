@@ -11,7 +11,6 @@ pub use self::{read_packet::ReadPacket, write_packet::WritePacket};
 use bytes::BytesMut;
 use futures_core::{ready, stream};
 use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
-use pin_project::pin_project;
 #[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 use tokio::{
@@ -116,16 +115,15 @@ impl Encoder<PooledBuf> for PacketCodec {
     }
 }
 
-#[pin_project(project = EndpointProj)]
 #[derive(Debug)]
 pub(crate) enum Endpoint {
     Plain(Option<TcpStream>),
     #[cfg(feature = "native-tls-tls")]
-    Secure(#[pin] tokio_native_tls::TlsStream<TcpStream>),
+    Secure(tokio_native_tls::TlsStream<TcpStream>),
     #[cfg(feature = "rustls-tls")]
-    Secure(#[pin] tokio_rustls::client::TlsStream<tokio::net::TcpStream>),
+    Secure(tokio_rustls::client::TlsStream<tokio::net::TcpStream>),
     #[cfg(unix)]
-    Socket(#[pin] Socket),
+    Socket(Socket),
 }
 
 /// This future will check that TcpStream is live.
@@ -243,17 +241,17 @@ impl AsyncRead for Endpoint {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::result::Result<(), tokio::io::Error>> {
-        let mut this = self.project();
+        let this = self.get_mut();
         with_interrupted!(match this {
-            EndpointProj::Plain(ref mut stream) => {
+            Self::Plain(stream) => {
                 Pin::new(stream.as_mut().unwrap()).poll_read(cx, buf)
             }
             #[cfg(feature = "native-tls-tls")]
-            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_read(cx, buf),
+            Self::Secure(stream) => Pin::new(stream).poll_read(cx, buf),
             #[cfg(feature = "rustls-tls")]
-            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_read(cx, buf),
+            Self::Secure(stream) => Pin::new(stream).poll_read(cx, buf),
             #[cfg(unix)]
-            EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_read(cx, buf),
+            Self::Socket(stream) => Pin::new(stream).poll_read(cx, buf),
         })
     }
 }
@@ -264,17 +262,17 @@ impl AsyncWrite for Endpoint {
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<std::result::Result<usize, tokio::io::Error>> {
-        let mut this = self.project();
+        let this = self.get_mut();
         with_interrupted!(match this {
-            EndpointProj::Plain(ref mut stream) => {
+            Self::Plain(stream) => {
                 Pin::new(stream.as_mut().unwrap()).poll_write(cx, buf)
             }
             #[cfg(feature = "native-tls-tls")]
-            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_write(cx, buf),
+            Self::Secure(stream) => Pin::new(stream).poll_write(cx, buf),
             #[cfg(feature = "rustls-tls")]
-            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_write(cx, buf),
+            Self::Secure(stream) => Pin::new(stream).poll_write(cx, buf),
             #[cfg(unix)]
-            EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_write(cx, buf),
+            Self::Socket(stream) => Pin::new(stream).poll_write(cx, buf),
         })
     }
 
@@ -282,17 +280,17 @@ impl AsyncWrite for Endpoint {
         self: Pin<&mut Self>,
         cx: &mut Context,
     ) -> Poll<std::result::Result<(), tokio::io::Error>> {
-        let mut this = self.project();
+        let this = self.get_mut();
         with_interrupted!(match this {
-            EndpointProj::Plain(ref mut stream) => {
+            Self::Plain(stream) => {
                 Pin::new(stream.as_mut().unwrap()).poll_flush(cx)
             }
             #[cfg(feature = "native-tls-tls")]
-            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_flush(cx),
+            Self::Secure(stream) => Pin::new(stream).poll_flush(cx),
             #[cfg(feature = "rustls-tls")]
-            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_flush(cx),
+            Self::Secure(stream) => Pin::new(stream).poll_flush(cx),
             #[cfg(unix)]
-            EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_flush(cx),
+            Self::Socket(stream) => Pin::new(stream).poll_flush(cx),
         })
     }
 
@@ -300,17 +298,17 @@ impl AsyncWrite for Endpoint {
         self: Pin<&mut Self>,
         cx: &mut Context,
     ) -> Poll<std::result::Result<(), tokio::io::Error>> {
-        let mut this = self.project();
+        let this = self.get_mut();
         with_interrupted!(match this {
-            EndpointProj::Plain(ref mut stream) => {
+            Self::Plain(stream) => {
                 Pin::new(stream.as_mut().unwrap()).poll_shutdown(cx)
             }
             #[cfg(feature = "native-tls-tls")]
-            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_shutdown(cx),
+            Self::Secure(stream) => Pin::new(stream).poll_shutdown(cx),
             #[cfg(feature = "rustls-tls")]
-            EndpointProj::Secure(ref mut stream) => stream.as_mut().poll_shutdown(cx),
+            Self::Secure(stream) => Pin::new(stream).poll_shutdown(cx),
             #[cfg(unix)]
-            EndpointProj::Socket(ref mut stream) => stream.as_mut().poll_shutdown(cx),
+            Self::Socket(stream) => Pin::new(stream).poll_shutdown(cx),
         })
     }
 }

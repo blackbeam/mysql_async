@@ -8,7 +8,6 @@
 
 #![cfg(unix)]
 
-use pin_project::pin_project;
 use tokio::io::{Error, ErrorKind::Interrupted, ReadBuf};
 
 use std::{
@@ -20,10 +19,8 @@ use std::{
 use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Unix domain socket connection on unix, or named pipe connection on windows.
-#[pin_project]
 #[derive(Debug)]
 pub(crate) struct Socket {
-    #[pin]
     #[cfg(unix)]
     inner: tokio::net::UnixStream,
 }
@@ -40,32 +37,28 @@ impl Socket {
 
 impl AsyncRead for Socket {
     fn poll_read(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<Result<(), Error>> {
-        let mut this = self.project();
-        with_interrupted!(this.inner.as_mut().poll_read(cx, buf))
+        with_interrupted!(Pin::new(&mut self.inner).poll_read(cx, buf))
     }
 }
 
 impl AsyncWrite for Socket {
     fn poll_write(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<Result<usize, Error>> {
-        let mut this = self.project();
-        with_interrupted!(this.inner.as_mut().poll_write(cx, buf))
+        with_interrupted!(Pin::new(&mut self.inner).poll_write(cx, buf))
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
-        let mut this = self.project();
-        with_interrupted!(this.inner.as_mut().poll_flush(cx))
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
+        with_interrupted!(Pin::new(&mut self.inner).poll_flush(cx))
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
-        let mut this = self.project();
-        with_interrupted!(this.inner.as_mut().poll_shutdown(cx))
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
+        with_interrupted!(Pin::new(&mut self.inner).poll_shutdown(cx))
     }
 }
