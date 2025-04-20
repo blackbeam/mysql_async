@@ -6,7 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use crossbeam::queue::ArrayQueue;
+use crossbeam_queue::ArrayQueue;
 use std::{mem::take, ops::Deref, sync::Arc};
 
 #[derive(Debug)]
