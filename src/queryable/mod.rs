@@ -96,8 +96,7 @@ impl Conn {
     pub(crate) async fn clean_dirty(&mut self) -> Result<()> {
         self.drop_result().await?;
         if self.get_tx_status() == TxStatus::RequiresRollback {
-            self.set_tx_status(TxStatus::None);
-            self.exec_drop("ROLLBACK", ()).await?;
+            self.rollback_transaction().await?;
         }
         Ok(())
     }

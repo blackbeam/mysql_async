@@ -143,6 +143,8 @@ impl<'a> Transaction<'a> {
 
         let mut conn = conn.into();
 
+        conn.clean_dirty().await?;
+
         if conn.get_tx_status() != TxStatus::None {
             return Err(DriverError::NestedTransaction.into());
         }
@@ -175,20 +177,28 @@ impl<'a> Transaction<'a> {
         Ok(Transaction(conn))
     }
 
-    /// Performs `COMMIT` query.
-    pub async fn commit(mut self) -> Result<()> {
+    /// Performs `COMMIT` query or returns an error
+    async fn try_commit(&mut self) -> Result<()> {
         let result = self.0.query_iter("COMMIT").await?;
         result.drop_result().await?;
         self.0.set_tx_status(TxStatus::None);
         Ok(())
     }
 
+    /// Performs `COMMIT` query or rollbacks when any error occurs and returns the original error.
+    pub async fn commit(mut self) -> Result<()> {
+        match self.try_commit().await {
+            Ok(..) => Ok(()),
+            Err(e) => {
+                self.0.rollback_transaction().await.unwrap_or(());
+                Err(e)
+            }
+        }
+    }
+
     /// Performs `ROLLBACK` query.
     pub async fn rollback(mut self) -> Result<()> {
-        let result = self.0.query_iter("ROLLBACK").await?;
-        result.drop_result().await?;
-        self.0.set_tx_status(TxStatus::None);
-        Ok(())
+        self.0.rollback_transaction().await
     }
 }
 

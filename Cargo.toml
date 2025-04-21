@@ -3,7 +3,7 @@ authors = ["blackbeam <aikorsky@gmail.com>"]
 description = "Tokio based asynchronous MySql client library."
 documentation = "https://docs.rs/mysql_async"
 keywords = ["mysql", "database", "asynchronous", "async"]
-license = "MIT/Apache-2.0"
+license = "MIT OR Apache-2.0"
 name = "mysql_async"
 readme = "README.md"
 repository = "https://github.com/blackbeam/mysql_async"
@@ -20,7 +20,7 @@ futures-core = "0.3"
 futures-util = "0.3"
 futures-sink = "0.3"
 keyed_priority_queue = "0.4"
-lru = "0.12.0"
+lru = "0.14.0"
 mysql_common = { version = "0.35", default-features = false }
 pem = "3.0"
 percent-encoding = "2.1.0"
@@ -30,7 +30,7 @@ serde = "1"
 serde_json = "1"
 socket2 = "0.5.2"
 thiserror = "2"
-tokio = { version = "1.0", features = ["io-util", "fs", "net", "time", "rt"] }
+tokio = { version = "1.0", features = ["io-util", "fs", "net", "time", "rt", "sync"] }
 tokio-util = { version = "0.7.2", features = ["codec", "io"] }
 tracing = { version = "0.1.37", default-features = false, features = [
     "attributes",
