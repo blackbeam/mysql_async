@@ -14,7 +14,7 @@ categories = ["asynchronous", "database"]
 
 [dependencies]
 bytes = "1.4"
-crossbeam = "0.8.1"
+crossbeam-queue = "0.3"
 flate2 = { version = "1.0", default-features = false }
 futures-core = "0.3"
 futures-util = "0.3"
