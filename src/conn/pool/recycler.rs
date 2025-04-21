@@ -79,11 +79,6 @@ impl Future for Recycler {
                         .metrics
                         .connection_returned_to_pool
                         .fetch_add(1, Ordering::Relaxed);
-                    $self
-                        .inner
-                        .metrics
-                        .connections_in_pool
-                        .fetch_add(1, Ordering::Relaxed);
                     #[cfg(feature = "hdrhistogram")]
                     $self
                         .inner
@@ -93,6 +88,11 @@ impl Future for Recycler {
                         .unwrap()
                         .saturating_record($conn.inner.active_since.elapsed().as_micros() as u64);
                     exchange.available.push_back($conn.into());
+                    $self
+                        .inner
+                        .metrics
+                        .connections_in_pool
+                        .store(exchange.available.len(), Ordering::Relaxed);
                     if let Some(w) = exchange.waiting.pop() {
                         w.wake();
                     }
@@ -239,14 +239,13 @@ impl Future for Recycler {
         }
 
         if self.discarded != 0 {
-            self.inner
-                .metrics
-                .connection_count
-                .fetch_sub(self.discarded, Ordering::Relaxed);
-
             // we need to open up slots for new connctions to be established!
             let mut exchange = self.inner.exchange.lock().unwrap();
             exchange.exist -= self.discarded;
+            self.inner
+                .metrics
+                .connection_count
+                .store(exchange.exist, Ordering::Relaxed);
             for _ in 0..self.discarded {
                 if let Some(w) = exchange.waiting.pop() {
                     w.wake();
