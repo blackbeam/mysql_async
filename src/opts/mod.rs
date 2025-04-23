@@ -451,7 +451,7 @@ impl PoolOpts {
     pub(crate) fn new_connection_ttl_deadline(&self) -> Option<Instant> {
         if let Some(ttl) = self.abs_conn_ttl {
             let jitter = if let Some(jitter) = self.abs_conn_ttl_jitter {
-                Duration::from_secs(rand::thread_rng().gen_range(0..=jitter.as_secs()))
+                Duration::from_secs(rand::rng().random_range(0..=jitter.as_secs()))
             } else {
                 Duration::ZERO
             };

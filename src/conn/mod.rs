@@ -1310,7 +1310,7 @@ mod test {
     use bytes::Bytes;
     use futures_util::stream::{self, StreamExt};
     use mysql_common::constants::MAX_PAYLOAD_LEN;
-    use rand::Fill;
+    use rand::Rng;
     use tokio::{io::AsyncWriteExt, net::TcpListener};
 
     use crate::{
@@ -1645,9 +1645,8 @@ mod test {
         ];
 
         fn random_pass() -> String {
-            let mut rng = rand::thread_rng();
-            let mut pass = [0u8; 10];
-            pass.try_fill(&mut rng).unwrap();
+            let mut rng = rand::rng();
+            let pass: [u8; 10] = rng.gen();
 
             IntoIterator::into_iter(pass)
                 .map(|x| ((x % (123 - 97)) + 97) as char)
