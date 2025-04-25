@@ -110,6 +110,7 @@ struct Waitlist {
 }
 
 impl Waitlist {
+    /// Returns `true` if pushed.
     fn push(&mut self, waker: Waker, queue_id: QueueId) -> bool {
         // The documentation of Future::poll says:
         //   Note that on multiple calls to poll, only the Waker from
@@ -122,10 +123,9 @@ impl Waitlist {
         //
         // This means we have to remove first to have the most recent
         // waker in the queue.
-        self.remove(queue_id);
-        self.queue
-            .push(QueuedWaker { queue_id, waker }, queue_id)
-            .is_none()
+        let occupied = self.remove(queue_id);
+        self.queue.push(QueuedWaker { queue_id, waker }, queue_id);
+        !occupied
     }
 
     fn pop(&mut self) -> Option<Waker> {
@@ -135,6 +135,7 @@ impl Waitlist {
         }
     }
 
+    /// Returns `true` if removed.
     fn remove(&mut self, id: QueueId) -> bool {
         self.queue.remove(&id).is_some()
     }
@@ -1016,6 +1017,13 @@ mod test {
         drop(only_conn);
 
         assert_eq!(0, pool.inner.exchange.lock().unwrap().waiting.queue.len());
+        // metrics should catch up with waiting queue (see #335)
+        assert_eq!(
+            0,
+            pool.metrics()
+                .active_wait_requests
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
     }
 
     #[tokio::test]
