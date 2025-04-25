@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 name = "mysql_async"
 readme = "README.md"
 repository = "https://github.com/blackbeam/mysql_async"
-version = "0.35.1"
+version = "0.36.0"
 exclude = ["test/*"]
 edition = "2021"
 categories = ["asynchronous", "database"]
@@ -21,7 +21,7 @@ futures-util = "0.3"
 futures-sink = "0.3"
 keyed_priority_queue = "0.4"
 lru = "0.14.0"
-mysql_common = { version = "0.35", default-features = false }
+mysql_common = { version = "0.35.3", default-features = false }
 pem = "3.0"
 percent-encoding = "2.1.0"
 rand = "0.9"

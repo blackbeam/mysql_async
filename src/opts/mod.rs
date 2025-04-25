@@ -43,7 +43,8 @@ pub const DEFAULT_POOL_CONSTRAINTS: PoolConstraints = PoolConstraints { min: 10,
 //
 const_assert!(
     _DEFAULT_POOL_CONSTRAINTS_ARE_CORRECT,
-    DEFAULT_POOL_CONSTRAINTS.min <= DEFAULT_POOL_CONSTRAINTS.max,
+    DEFAULT_POOL_CONSTRAINTS.min <= DEFAULT_POOL_CONSTRAINTS.max
+        && 0 < DEFAULT_POOL_CONSTRAINTS.max,
 );
 
 /// Each connection will cache up to this number of statements by default.
@@ -1210,8 +1211,8 @@ impl PoolConstraints {
     /// assert_eq!(opts.pool_opts().constraints(), PoolConstraints::new(0, 151).unwrap());
     /// # Ok(()) }
     /// ```
-    pub fn new(min: usize, max: usize) -> Option<PoolConstraints> {
-        if min <= max {
+    pub const fn new(min: usize, max: usize) -> Option<PoolConstraints> {
+        if min <= max && max > 0 {
             Some(PoolConstraints { min, max })
         } else {
             None

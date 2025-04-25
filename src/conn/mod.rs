@@ -1646,7 +1646,7 @@ mod test {
 
         fn random_pass() -> String {
             let mut rng = rand::rng();
-            let pass: [u8; 10] = rng.gen();
+            let pass: [u8; 10] = rng.random();
 
             IntoIterator::into_iter(pass)
                 .map(|x| ((x % (123 - 97)) + 97) as char)
