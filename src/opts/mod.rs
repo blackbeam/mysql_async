@@ -1212,7 +1212,7 @@ impl PoolConstraints {
     /// # Ok(()) }
     /// ```
     pub const fn new(min: usize, max: usize) -> Option<PoolConstraints> {
-        if min <= max && 0 < max {
+        if min <= max && max > 0 {
             Some(PoolConstraints { min, max })
         } else {
             None
