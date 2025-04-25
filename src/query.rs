@@ -11,7 +11,6 @@ use std::borrow::Cow;
 use futures_util::FutureExt;
 
 use crate::{
-    connection_like::ToConnectionResult,
     from_row,
     prelude::{FromRow, StatementLike, ToConnection},
     tracing_utils::LevelInfo,
@@ -217,11 +216,8 @@ impl<Q: AsQuery> Query for Q {
         C: ToConnection<'a, 't> + 'a,
     {
         async move {
-            let mut conn = match conn.to_connection() {
-                ToConnectionResult::Immediate(conn) => conn,
-                ToConnectionResult::Mediate(fut) => fut.await?,
-            };
-            conn.raw_query::<'_, _, LevelInfo>(self).await?;
+            let mut conn = conn.to_connection().resolve().await?;
+            conn.as_mut().raw_query::<'_, _, LevelInfo>(self).await?;
             Ok(QueryResult::new(conn))
         }
         .boxed()
@@ -264,14 +260,12 @@ where
         C: ToConnection<'a, 't> + 'a,
     {
         async move {
-            let mut conn = match conn.to_connection() {
-                ToConnectionResult::Immediate(conn) => conn,
-                ToConnectionResult::Mediate(fut) => fut.await?,
-            };
+            let mut conn = conn.to_connection().resolve().await?;
 
-            let statement = conn.get_statement(self.query).await?;
+            let statement = conn.as_mut().get_statement(self.query).await?;
 
-            conn.execute_statement(&statement, self.params.into())
+            conn.as_mut()
+                .execute_statement(&statement, self.params.into())
                 .await?;
 
             Ok(QueryResult::new(conn))
@@ -324,15 +318,12 @@ where
         C: ToConnection<'a, 't> + 'a,
     {
         async move {
-            let mut conn = match conn.to_connection() {
-                ToConnectionResult::Immediate(conn) => conn,
-                ToConnectionResult::Mediate(fut) => fut.await?,
-            };
+            let mut conn = conn.to_connection().resolve().await?;
 
-            let statement = conn.get_statement(self.query).await?;
+            let statement = conn.as_mut().get_statement(self.query).await?;
 
             for params in self.params {
-                conn.execute_statement(&statement, params).await?;
+                conn.as_mut().execute_statement(&statement, params).await?;
             }
 
             Ok(())

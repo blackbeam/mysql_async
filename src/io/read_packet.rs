@@ -37,7 +37,7 @@ impl Future for ReadPacket<'_, '_> {
     type Output = std::result::Result<PooledBuf, IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let packet_opt = match self.0.stream_mut() {
+        let packet_opt = match self.0.as_mut().stream_mut() {
             Ok(stream) => ready!(Pin::new(stream).poll_next(cx)).transpose()?,
             // `ConnectionClosed` error.
             Err(_) => None,
@@ -45,7 +45,7 @@ impl Future for ReadPacket<'_, '_> {
 
         match packet_opt {
             Some(packet) => {
-                self.0.touch();
+                self.0.as_mut().touch();
                 Poll::Ready(Ok(packet))
             }
             None => Poll::Ready(Err(Error::new(
