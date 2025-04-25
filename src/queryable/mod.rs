@@ -31,7 +31,7 @@ use crate::{
     query::AsQuery,
     queryable::query_result::ResultSetMeta,
     tracing_utils::{LevelInfo, LevelTrace, TracingLevel},
-    BoxFuture, Column, Conn, Params, ResultSetStream, Row,
+    BoxFuture, Column, Conn, Connection, Params, ResultSetStream, Row,
 };
 
 pub mod query_result;
@@ -537,7 +537,7 @@ impl Queryable for Conn {
 
 impl Queryable for Transaction<'_> {
     fn ping(&mut self) -> BoxFuture<'_, ()> {
-        self.0.ping()
+        self.0.as_mut().ping()
     }
 
     fn query_iter<'a, Q>(
@@ -547,18 +547,18 @@ impl Queryable for Transaction<'_> {
     where
         Q: AsQuery + 'a,
     {
-        self.0.query_iter(query)
+        self.0.as_mut().query_iter(query)
     }
 
     fn prep<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Statement>
     where
         Q: AsQuery + 'a,
     {
-        self.0.prep(query)
+        self.0.as_mut().prep(query)
     }
 
     fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()> {
-        self.0.close(stmt)
+        self.0.as_mut().close(stmt)
     }
 
     fn exec_iter<'a: 's, 's, Q, P>(
@@ -570,7 +570,7 @@ impl Queryable for Transaction<'_> {
         Q: StatementLike + 'a,
         P: Into<Params>,
     {
-        self.0.exec_iter(stmt, params)
+        self.0.as_mut().exec_iter(stmt, params)
     }
 
     fn exec_batch<'a: 'b, 'b, S, P, I>(&'a mut self, stmt: S, params_iter: I) -> BoxFuture<'b, ()>
@@ -580,7 +580,58 @@ impl Queryable for Transaction<'_> {
         I::IntoIter: Send,
         P: Into<Params> + Send,
     {
-        self.0.exec_batch(stmt, params_iter)
+        self.0.as_mut().exec_batch(stmt, params_iter)
+    }
+}
+
+impl<'c, 't: 'c> Queryable for Connection<'c, 't> {
+    #[inline]
+    fn ping(&mut self) -> BoxFuture<'_, ()> {
+        self.as_mut().ping()
+    }
+
+    #[inline]
+    fn query_iter<'a, Q>(
+        &'a mut self,
+        query: Q,
+    ) -> BoxFuture<'a, QueryResult<'a, 'static, TextProtocol>>
+    where
+        Q: AsQuery + 'a,
+    {
+        self.as_mut().query_iter(query)
+    }
+
+    fn prep<'a, Q>(&'a mut self, query: Q) -> BoxFuture<'a, Statement>
+    where
+        Q: AsQuery + 'a,
+    {
+        self.as_mut().prep(query)
+    }
+
+    fn close(&mut self, stmt: Statement) -> BoxFuture<'_, ()> {
+        self.as_mut().close(stmt)
+    }
+
+    fn exec_iter<'a: 's, 's, Q, P>(
+        &'a mut self,
+        stmt: Q,
+        params: P,
+    ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
+    where
+        Q: StatementLike + 'a,
+        P: Into<Params>,
+    {
+        self.as_mut().exec_iter(stmt, params)
+    }
+
+    fn exec_batch<'a: 'b, 'b, S, P, I>(&'a mut self, stmt: S, params_iter: I) -> BoxFuture<'b, ()>
+    where
+        S: StatementLike + 'b,
+        I: IntoIterator<Item = P> + Send + 'b,
+        I::IntoIter: Send,
+        P: Into<Params> + Send,
+    {
+        self.as_mut().exec_batch(stmt, params_iter)
     }
 }
 

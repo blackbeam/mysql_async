@@ -553,6 +553,9 @@ pub use self::queryable::stmt::Statement;
 #[doc(inline)]
 pub use self::conn::pool::Metrics;
 
+#[doc(inline)]
+pub use crate::connection_like::{Connection, ToConnectionResult};
+
 /// Futures used in this crate
 pub mod futures {
     pub use crate::conn::pool::futures::{DisconnectPool, GetConn};
@@ -561,7 +564,7 @@ pub mod futures {
 /// Traits used in this crate
 pub mod prelude {
     #[doc(inline)]
-    pub use crate::connection_like::{Connection, ToConnection, ToConnectionResult};
+    pub use crate::connection_like::ToConnection;
     #[doc(inline)]
     pub use crate::local_infile_handler::GlobalHandler;
     #[doc(inline)]

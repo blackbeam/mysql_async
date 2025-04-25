@@ -44,7 +44,7 @@ impl Future for WritePacket<'_, '_> {
             ref mut data,
         } = *self;
 
-        match conn.stream_mut() {
+        match conn.as_mut().stream_mut() {
             Ok(stream) => {
                 if data.is_some() {
                     let codec = Pin::new(stream.codec.as_mut().expect("must be here"));
