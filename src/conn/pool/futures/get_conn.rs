@@ -58,20 +58,25 @@ impl fmt::Debug for GetConnInner {
 /// This future will take connection from a pool and resolve to [`Conn`].
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct GetConn {
-    pub(crate) queue_id: QueueId,
-    pub(crate) pool: Option<Pool>,
-    pub(crate) inner: GetConnInner,
+struct GetConn {
+    queue_id: QueueId,
+    pool: Option<Pool>,
+    inner: GetConnInner,
     reset_upon_returning_to_a_pool: bool,
     #[cfg(feature = "tracing")]
     span: Arc<Span>,
 }
 
+pub(crate) async fn get_conn(pool: Pool) -> Result<Conn> {
+    let reset_connection = pool.opts.pool_opts().reset_connection();
+    GetConn::new(pool, reset_connection).await
+}
+
 impl GetConn {
-    pub(crate) fn new(pool: &Pool, reset_upon_returning_to_a_pool: bool) -> GetConn {
+    fn new(pool: Pool, reset_upon_returning_to_a_pool: bool) -> GetConn {
         GetConn {
             queue_id: QueueId::next(),
-            pool: Some(pool.clone()),
+            pool: Some(pool),
             inner: GetConnInner::New,
             reset_upon_returning_to_a_pool,
             #[cfg(feature = "tracing")]
