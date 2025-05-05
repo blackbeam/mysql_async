@@ -24,7 +24,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{connection_like::Connection, queryable::Queryable};
+use crate::{connection_like::ConnectionInner, queryable::Queryable};
 use crate::{error::DriverError, io::ReadPacket, Conn, Error, IoError, Result};
 
 use self::request::BinlogStreamRequest;
@@ -94,10 +94,10 @@ impl BinlogStream {
     /// Closes the stream's `Conn`. Additionally, the connection is dropped, so its associated
     /// pool (if any) will regain a connection slot.
     pub async fn close(self) -> Result<()> {
-        match self.read_packet.0 {
+        match self.read_packet.0.inner {
             // `close_conn` requires ownership of `Conn`. That's okay, because
             // `BinLogStream`'s connection is always owned.
-            Connection::Conn(conn) => {
+            ConnectionInner::Conn(conn) => {
                 if let Err(Error::Io(IoError::Io(ref error))) = conn.close_conn().await {
                     // If the binlog was requested with the flag BINLOG_DUMP_NON_BLOCK,
                     // the connection's file handler will already have been closed (EOF).
@@ -106,8 +106,8 @@ impl BinlogStream {
                     }
                 }
             }
-            Connection::ConnMut(_) => {}
-            Connection::Tx(_) => {}
+            ConnectionInner::ConnMut(_) => {}
+            ConnectionInner::Tx(_) => {}
         }
 
         Ok(())
