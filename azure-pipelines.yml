@@ -40,7 +40,7 @@ jobs:
         displayName: cargo fmt
       - bash: |
           cargo +nightly build -Zfeatures=dev_dep
-          SSL=false COMPRESS=false cargo test
+          SSL=false COMPRESS=false cargo test --features binlog,derive,chrono,time,bigdecimal,rust_decimal,frunk,client_ed25519,tracing
           SSL=true COMPRESS=false cargo test --features native-tls-tls
           SSL=false COMPRESS=true cargo test
           SSL=true COMPRESS=true cargo test --features rustls-tls,ring
