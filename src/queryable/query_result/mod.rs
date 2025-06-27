@@ -100,8 +100,8 @@ where
         self.conn
             .get_pending_result()
             .map(|pending_result| match pending_result {
-                Some(PendingResult::Pending(meta)) => meta.columns().len() > 0,
-                Some(PendingResult::Taken(meta)) => meta.columns().len() > 0,
+                Some(PendingResult::Pending(meta)) => !meta.columns().is_empty(),
+                Some(PendingResult::Taken(meta)) => !meta.columns().is_empty(),
                 None => false,
             })
             .unwrap_or(false)
