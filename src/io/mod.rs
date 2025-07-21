@@ -472,13 +472,16 @@ impl stream::Stream for Stream {
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     #[cfg(unix)] // no sane way to retrieve current keepalive value on windows
     #[tokio::test]
     async fn should_connect_with_keepalive() {
         use crate::{test_misc::get_opts, Conn};
 
+        let duration = Duration::from_millis(42_000);
         let opts = get_opts()
-            .tcp_keepalive(Some(42_000_u32))
+            .tcp_keepalive(Some(duration))
             .prefer_socket(false);
         let mut conn: Conn = Conn::new(opts).await.unwrap();
         let stream = conn.stream_mut().unwrap();
@@ -497,10 +500,7 @@ mod test {
             socket2::Socket::from_raw_fd(raw)
         };
 
-        assert_eq!(
-            sock.keepalive_time().unwrap(),
-            std::time::Duration::from_millis(42_000),
-        );
+        assert_eq!(sock.keepalive_time().unwrap(), duration);
 
         std::mem::forget(sock);
 
