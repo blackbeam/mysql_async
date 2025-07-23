@@ -271,7 +271,8 @@ impl Pool {
                     .connection_idle_duration
                     .lock()
                     .unwrap()
-                    .saturating_record(since.elapsed().as_micros() as u64);
+                    .record(since.elapsed().as_micros() as u64)
+                    .ok();
                 #[cfg(feature = "hdrhistogram")]
                 let metrics = self.metrics();
                 conn.inner.active_since = Instant::now();
@@ -283,9 +284,8 @@ impl Pool {
                             .check_duration
                             .lock()
                             .unwrap()
-                            .saturating_record(
-                                conn.inner.active_since.elapsed().as_micros() as u64
-                            );
+                            .record(conn.inner.active_since.elapsed().as_micros() as u64)
+                            .ok();
                         Ok(conn)
                     }
                     .boxed(),
@@ -324,9 +324,8 @@ impl Pool {
                             .connect_duration
                             .lock()
                             .unwrap()
-                            .saturating_record(
-                                conn.inner.active_since.elapsed().as_micros() as u64
-                            );
+                            .record(conn.inner.active_since.elapsed().as_micros() as u64)
+                            .ok();
                     }
                     conn
                 }
@@ -1104,6 +1103,24 @@ mod test {
 
         // It is OK to await it.
         fut3.await;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "hdrhistogram")]
+    #[tokio::test]
+    async fn metrics() -> super::Result<()> {
+        let pool = pool_with_one_connection();
+
+        let metrics = pool.metrics();
+        let conn = pool.get_conn().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(conn);
+        pool.get_conn().await.unwrap();
+
+        let max = metrics.connection_active_duration.lock().unwrap().max();
+        // We slept for 100 miliseconds holding a conneciton.
+        assert!(max > 100_000);
 
         Ok(())
     }
