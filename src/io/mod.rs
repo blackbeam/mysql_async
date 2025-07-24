@@ -26,7 +26,7 @@ use std::{
     future::Future,
     io::{
         self,
-        ErrorKind::{BrokenPipe, NotConnected, Other},
+        ErrorKind::{BrokenPipe, NotConnected},
     },
     mem::replace,
     net::SocketAddr,
@@ -141,7 +141,7 @@ impl Future for CheckTcpStream<'_> {
                 let mut buf = [0_u8; 1];
                 match self.0.try_read(&mut buf) {
                     Ok(0) => Poll::Ready(Err(io::Error::new(BrokenPipe, "broken pipe"))),
-                    Ok(_) => Poll::Ready(Err(io::Error::new(Other, "stream should be empty"))),
+                    Ok(_) => Poll::Ready(Err(io::Error::other("stream should be empty"))),
                     Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Ready(Ok(())),
                     Err(err) => Poll::Ready(Err(err)),
                 }
