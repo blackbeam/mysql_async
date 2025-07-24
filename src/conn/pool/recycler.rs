@@ -165,9 +165,12 @@ impl Future for Recycler {
 
         // if we've been asked to close, reclaim any idle connections
         if close || self.eof {
-            while let Some(IdlingConn { conn, .. }) =
-                self.inner.exchange.lock().unwrap().available.pop_front()
-            {
+            loop {
+                let Some(IdlingConn { conn, .. }) =
+                    self.inner.exchange.lock().unwrap().available.pop_front()
+                else {
+                    break;
+                };
                 assert!(conn.inner.pool.is_none());
                 conn_decision!(self, conn);
             }
