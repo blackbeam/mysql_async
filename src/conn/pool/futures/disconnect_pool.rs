@@ -16,7 +16,7 @@ use futures_core::ready;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    conn::pool::{Inner, Pool, QUEUE_END_ID},
+    conn::pool::{waitlist::QUEUE_END_ID, Inner, Pool},
     error::Error,
     Conn,
 };

@@ -7,17 +7,13 @@
 // modified, or distributed except according to those terms.
 
 use futures_util::FutureExt;
-use keyed_priority_queue::KeyedPriorityQueue;
 use tokio::sync::mpsc;
 
 use std::{
-    borrow::Borrow,
-    cmp::Reverse,
     collections::VecDeque,
-    hash::{Hash, Hasher},
     str::FromStr,
     sync::{atomic, Arc, Mutex},
-    task::{Context, Poll, Waker},
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
@@ -29,12 +25,14 @@ use crate::{
 };
 
 pub use metrics::Metrics;
+use waitlist::{QueueId, Waitlist};
 
 mod recycler;
 // this is a really unfortunate name for a module
 pub mod futures;
 mod metrics;
 mod ttl_check_inerval;
+mod waitlist;
 
 /// Connection that is idling in the pool.
 #[derive(Debug)]
@@ -104,103 +102,6 @@ impl Exchange {
     }
 }
 
-#[derive(Default, Debug)]
-struct Waitlist {
-    queue: KeyedPriorityQueue<QueuedWaker, QueueId>,
-    metrics: Arc<Metrics>,
-}
-
-impl Waitlist {
-    /// Returns `true` if pushed.
-    fn push(&mut self, waker: Waker, queue_id: QueueId) -> bool {
-        // The documentation of Future::poll says:
-        //   Note that on multiple calls to poll, only the Waker from
-        //   the Context passed to the most recent call should be
-        //   scheduled to receive a wakeup.
-        //
-        // But the the documentation of KeyedPriorityQueue::push says:
-        //   Adds new element to queue if missing key or replace its
-        //   priority if key exists. In second case doesn’t replace key.
-        //
-        // This means we have to remove first to have the most recent
-        // waker in the queue.
-        let occupied = self.remove(queue_id);
-        self.queue.push(QueuedWaker { queue_id, waker }, queue_id);
-
-        self.metrics
-            .active_wait_requests
-            .fetch_add(1, atomic::Ordering::Relaxed);
-
-        !occupied
-    }
-
-    fn pop(&mut self) -> Option<Waker> {
-        match self.queue.pop() {
-            Some((qw, _)) => {
-                self.metrics
-                    .active_wait_requests
-                    .fetch_sub(1, atomic::Ordering::Relaxed);
-                Some(qw.waker)
-            }
-            None => None,
-        }
-    }
-
-    /// Returns `true` if removed.
-    fn remove(&mut self, id: QueueId) -> bool {
-        let is_removed = self.queue.remove(&id).is_some();
-        if is_removed {
-            self.metrics
-                .active_wait_requests
-                .fetch_sub(1, atomic::Ordering::Relaxed);
-        }
-
-        is_removed
-    }
-
-    fn peek_id(&mut self) -> Option<QueueId> {
-        self.queue.peek().map(|(qw, _)| qw.queue_id)
-    }
-}
-
-const QUEUE_END_ID: QueueId = QueueId(Reverse(u64::MAX));
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub(crate) struct QueueId(Reverse<u64>);
-
-impl QueueId {
-    fn next() -> Self {
-        static NEXT_QUEUE_ID: atomic::AtomicU64 = atomic::AtomicU64::new(0);
-        let id = NEXT_QUEUE_ID.fetch_add(1, atomic::Ordering::SeqCst);
-        QueueId(Reverse(id))
-    }
-}
-
-#[derive(Debug)]
-struct QueuedWaker {
-    queue_id: QueueId,
-    waker: Waker,
-}
-
-impl Eq for QueuedWaker {}
-
-impl Borrow<QueueId> for QueuedWaker {
-    fn borrow(&self) -> &QueueId {
-        &self.queue_id
-    }
-}
-
-impl PartialEq for QueuedWaker {
-    fn eq(&self, other: &Self) -> bool {
-        self.queue_id == other.queue_id
-    }
-}
-
-impl Hash for QueuedWaker {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.queue_id.hash(state)
-    }
-}
-
 /// Connection pool data.
 #[derive(Debug)]
 pub struct Inner {
@@ -248,10 +149,7 @@ impl Pool {
                 metrics: metrics.clone(),
                 exchange: Mutex::new(Exchange {
                     available: VecDeque::with_capacity(pool_opts.constraints().max()),
-                    waiting: Waitlist {
-                        queue: KeyedPriorityQueue::default(),
-                        metrics,
-                    },
+                    waiting: Waitlist::new(metrics),
                     exist: 0,
                     recycler: Some((rx, pool_opts)),
                 }),
@@ -480,20 +378,16 @@ mod test {
     use waker_fn::waker_fn;
 
     use std::{
-        cmp::Reverse,
         future::Future,
         pin::pin,
         sync::{Arc, OnceLock},
-        task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+        task::{Context, Poll},
         time::Duration,
     };
 
     use crate::{
-        conn::pool::{Pool, QueueId, Waitlist, QUEUE_END_ID},
-        opts::PoolOpts,
-        prelude::*,
-        test_misc::get_opts,
-        PoolConstraints, Row, TxOpts, Value,
+        conn::pool::Pool, opts::PoolOpts, prelude::*, test_misc::get_opts, PoolConstraints, Row,
+        TxOpts, Value,
     };
 
     macro_rules! conn_ex_field {
@@ -1022,7 +916,7 @@ mod test {
         }
         drop(only_conn);
 
-        assert_eq!(0, pool.inner.exchange.lock().unwrap().waiting.queue.len());
+        assert_eq!(0, pool.inner.exchange.lock().unwrap().waiting.len());
         // metrics should catch up with waiting queue (see #335)
         assert_eq!(
             0,
@@ -1074,40 +968,6 @@ mod test {
             sleep(Duration::from_millis(100)).await;
         }
         Ok(())
-    }
-
-    #[test]
-    fn waitlist_integrity() {
-        const DATA: *const () = &();
-        const NOOP_CLONE_FN: unsafe fn(*const ()) -> RawWaker = |_| RawWaker::new(DATA, &RW_VTABLE);
-        const NOOP_FN: unsafe fn(*const ()) = |_| {};
-        static RW_VTABLE: RawWakerVTable =
-            RawWakerVTable::new(NOOP_CLONE_FN, NOOP_FN, NOOP_FN, NOOP_FN);
-        let w = unsafe { Waker::from_raw(RawWaker::new(DATA, &RW_VTABLE)) };
-
-        let mut waitlist = Waitlist::default();
-        assert_eq!(0, waitlist.queue.len());
-
-        waitlist.push(w.clone(), QueueId(Reverse(4)));
-        waitlist.push(w.clone(), QueueId(Reverse(2)));
-        waitlist.push(w.clone(), QueueId(Reverse(8)));
-        waitlist.push(w.clone(), QUEUE_END_ID);
-        waitlist.push(w.clone(), QueueId(Reverse(10)));
-
-        waitlist.remove(QueueId(Reverse(8)));
-
-        assert_eq!(4, waitlist.queue.len());
-
-        let (_, id) = waitlist.queue.pop().unwrap();
-        assert_eq!(2, id.0 .0);
-        let (_, id) = waitlist.queue.pop().unwrap();
-        assert_eq!(4, id.0 .0);
-        let (_, id) = waitlist.queue.pop().unwrap();
-        assert_eq!(10, id.0 .0);
-        let (_, id) = waitlist.queue.pop().unwrap();
-        assert_eq!(QUEUE_END_ID, id);
-
-        assert_eq!(0, waitlist.queue.len());
     }
 
     #[tokio::test]
@@ -1191,7 +1051,7 @@ mod test {
 
         let queue_len = || {
             let exchange = pool.inner.exchange.lock().unwrap();
-            exchange.waiting.queue.len()
+            exchange.waiting.len()
         };
 
         // Get a connection, so we know the next futures will be
