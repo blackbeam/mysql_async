@@ -77,7 +77,7 @@ impl From<Conn> for IdlingConn {
 #[derive(Debug)]
 struct Exchange {
     waiting: Waitlist,
-    available: VecDeque<IdlingConn>,
+    available: InPoolConnections,
     exist: usize,
     // only used to spawn the recycler the first time we're in async context
     recycler: Option<(mpsc::UnboundedReceiver<Option<Conn>>, PoolOpts)>,
@@ -101,6 +101,47 @@ impl Exchange {
                 tokio::spawn(TtlCheckInterval::new(pool_opts, inner.clone()));
             }
         }
+    }
+}
+
+#[derive(Default, Debug)]
+struct InPoolConnections {
+    connections: VecDeque<IdlingConn>,
+    metrics: Arc<Metrics>,
+}
+
+impl InPoolConnections {
+    fn push_back(&mut self, conn: IdlingConn) {
+        self.metrics
+            .connections_in_pool
+            .fetch_add(1, atomic::Ordering::Relaxed);
+        self.connections.push_back(conn);
+    }
+
+    fn pop_back(&mut self) -> Option<IdlingConn> {
+        let res = self.connections.pop_back();
+        if res.is_some() {
+            self.metrics
+                .connections_in_pool
+                .fetch_sub(1, atomic::Ordering::Relaxed);
+        }
+
+        res
+    }
+
+    fn pop_front(&mut self) -> Option<IdlingConn> {
+        let res = self.connections.pop_front();
+        if res.is_some() {
+            self.metrics
+                .connections_in_pool
+                .fetch_sub(1, atomic::Ordering::Relaxed);
+        }
+
+        res
+    }
+
+    fn len(&self) -> usize {
+        self.connections.len()
     }
 }
 
@@ -222,14 +263,18 @@ impl Pool {
         let opts = Opts::try_from(opts).unwrap();
         let pool_opts = opts.pool_opts().clone();
         let (tx, rx) = mpsc::unbounded_channel();
+        let metrics = Arc::new(Metrics::default());
         Pool {
             opts,
             inner: Arc::new(Inner {
                 close: false.into(),
                 closed: false.into(),
-                metrics: Arc::new(Metrics::default()),
+                metrics: metrics.clone(),
                 exchange: Mutex::new(Exchange {
-                    available: VecDeque::with_capacity(pool_opts.constraints().max()),
+                    available: InPoolConnections {
+                        connections: VecDeque::with_capacity(pool_opts.constraints().max()),
+                        metrics,
+                    },
                     waiting: Waitlist::default(),
                     exist: 0,
                     recycler: Some((rx, pool_opts)),
@@ -382,11 +427,6 @@ impl Pool {
                 self.send_to_recycler(conn);
             }
         }
-
-        self.inner
-            .metrics
-            .connections_in_pool
-            .store(exchange.available.len(), atomic::Ordering::Relaxed);
 
         // we didn't _immediately_ get one -- try to make one
         // we first try to just do a load so we don't do an unnecessary add then sub
