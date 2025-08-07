@@ -5,12 +5,14 @@ use serde::Serialize;
 #[derive(Default, Debug, Serialize)]
 #[non_exhaustive]
 pub struct Metrics {
-    /// Guage of active connections to the database server, this includes both connections that have belong
+    /// Gauge of active connections to the database server, this includes both connections that have belong
     /// to the pool, and connections currently owned by the application.
     pub connection_count: AtomicUsize,
-    /// Guage of active connections that currently belong to the pool.
+    /// Gauge of active connections that currently belong to the pool.
     pub connections_in_pool: AtomicUsize,
-    /// Guage of GetConn requests that are currently active.
+    /// Gauge of active connections that are currently in use by the application (and not in the pool).
+    pub connections_in_use: AtomicUsize,
+    /// Gauge of GetConn requests that are currently active.
     pub active_wait_requests: AtomicUsize,
     /// Counter of connections that failed to be created.
     pub create_failed: AtomicUsize,
