@@ -107,6 +107,7 @@ impl Exchange {
 #[derive(Default, Debug)]
 struct Waitlist {
     queue: KeyedPriorityQueue<QueuedWaker, QueueId>,
+    metrics: Arc<Metrics>,
 }
 
 impl Waitlist {
@@ -125,19 +126,36 @@ impl Waitlist {
         // waker in the queue.
         let occupied = self.remove(queue_id);
         self.queue.push(QueuedWaker { queue_id, waker }, queue_id);
+
+        self.metrics
+            .active_wait_requests
+            .fetch_add(1, atomic::Ordering::Relaxed);
+
         !occupied
     }
 
     fn pop(&mut self) -> Option<Waker> {
         match self.queue.pop() {
-            Some((qw, _)) => Some(qw.waker),
+            Some((qw, _)) => {
+                self.metrics
+                    .active_wait_requests
+                    .fetch_sub(1, atomic::Ordering::Relaxed);
+                Some(qw.waker)
+            }
             None => None,
         }
     }
 
     /// Returns `true` if removed.
     fn remove(&mut self, id: QueueId) -> bool {
-        self.queue.remove(&id).is_some()
+        let is_removed = self.queue.remove(&id).is_some();
+        if is_removed {
+            self.metrics
+                .active_wait_requests
+                .fetch_sub(1, atomic::Ordering::Relaxed);
+        }
+
+        is_removed
     }
 
     fn peek_id(&mut self) -> Option<QueueId> {
@@ -146,7 +164,6 @@ impl Waitlist {
 }
 
 const QUEUE_END_ID: QueueId = QueueId(Reverse(u64::MAX));
-
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct QueueId(Reverse<u64>);
 
@@ -221,16 +238,20 @@ impl Pool {
     {
         let opts = Opts::try_from(opts).unwrap();
         let pool_opts = opts.pool_opts().clone();
+        let metrics = Arc::new(Metrics::default());
         let (tx, rx) = mpsc::unbounded_channel();
         Pool {
             opts,
             inner: Arc::new(Inner {
                 close: false.into(),
                 closed: false.into(),
-                metrics: Arc::new(Metrics::default()),
+                metrics: metrics.clone(),
                 exchange: Mutex::new(Exchange {
                     available: VecDeque::with_capacity(pool_opts.constraints().max()),
-                    waiting: Waitlist::default(),
+                    waiting: Waitlist {
+                        queue: KeyedPriorityQueue::default(),
+                        metrics,
+                    },
                     exist: 0,
                     recycler: Some((rx, pool_opts)),
                 }),
@@ -341,12 +362,7 @@ impl Pool {
 
         // If we are not, just queue
         if !highest {
-            if exchange.waiting.push(cx.waker().clone(), queue_id) {
-                self.inner
-                    .metrics
-                    .active_wait_requests
-                    .fetch_add(1, atomic::Ordering::Relaxed);
-            }
+            exchange.waiting.push(cx.waker().clone(), queue_id);
             return Poll::Pending;
         }
 
@@ -423,23 +439,13 @@ impl Pool {
         }
 
         // Polled, but no conn available? Back into the queue.
-        if exchange.waiting.push(cx.waker().clone(), queue_id) {
-            self.inner
-                .metrics
-                .active_wait_requests
-                .fetch_add(1, atomic::Ordering::Relaxed);
-        }
+        exchange.waiting.push(cx.waker().clone(), queue_id);
         Poll::Pending
     }
 
     fn unqueue(&self, queue_id: QueueId) {
         let mut exchange = self.inner.exchange.lock().unwrap();
-        if exchange.waiting.remove(queue_id) {
-            self.inner
-                .metrics
-                .active_wait_requests
-                .fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        exchange.waiting.remove(queue_id);
     }
 }
 
