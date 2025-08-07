@@ -15,7 +15,7 @@ use std::{
     sync::{atomic::Ordering, Arc},
 };
 
-use super::Inner;
+use super::{InPoolConnections, Inner};
 use crate::PoolOpts;
 use futures_core::task::{Context, Poll};
 use std::pin::Pin;
@@ -53,8 +53,10 @@ impl TtlCheckInterval {
                 .saturating_sub(self.pool_opts.constraints().min());
 
             let mut to_be_dropped = Vec::<_>::with_capacity(exchange.available.len());
-            let mut kept_available =
-                VecDeque::<_>::with_capacity(self.pool_opts.constraints().max());
+            let mut kept_available = InPoolConnections {
+                connections: VecDeque::<_>::with_capacity(self.pool_opts.constraints().max()),
+                metrics: self.inner.metrics.clone(),
+            };
 
             while let Some(conn) = exchange.available.pop_front() {
                 if conn.expired()
@@ -67,10 +69,6 @@ impl TtlCheckInterval {
                 }
             }
             exchange.available = kept_available;
-            self.inner
-                .metrics
-                .connections_in_pool
-                .store(exchange.available.len(), Ordering::Relaxed);
             to_be_dropped
         };
 
