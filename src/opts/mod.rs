@@ -149,7 +149,7 @@ pub enum PathOrBuf<'a> {
 
 impl<'a> PathOrBuf<'a> {
     /// Will either read data from disk or return the buffered data.
-    pub async fn read(&self) -> io::Result<Cow<[u8]>> {
+    pub async fn read(&self) -> io::Result<Cow<'_, [u8]>> {
         match self {
             PathOrBuf::Path(x) => tokio::fs::read(x.as_ref()).await.map(Cow::Owned),
             PathOrBuf::Buf(x) => Ok(Cow::Borrowed(x.as_ref())),
