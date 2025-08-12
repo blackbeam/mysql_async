@@ -81,9 +81,7 @@ impl Recycler {
                 .metrics
                 .connections_in_pool
                 .store(exchange.available.len(), Ordering::Relaxed);
-            if let Some(w) = exchange.waiting.pop() {
-                w.wake();
-            }
+            exchange.waiting.wake();
         }
     }
 }
@@ -244,9 +242,7 @@ impl Future for Recycler {
                 .connection_count
                 .store(exchange.exist, Ordering::Relaxed);
             for _ in 0..self.discarded {
-                if let Some(w) = exchange.waiting.pop() {
-                    w.wake();
-                }
+                exchange.waiting.wake();
             }
             drop(exchange);
             self.discarded = 0;
@@ -282,9 +278,7 @@ impl Future for Recycler {
         if self.inner.closed.load(Ordering::Acquire) {
             // `DisconnectPool` might still wait to be woken up.
             let mut exchange = self.inner.exchange.lock().unwrap();
-            while let Some(w) = exchange.waiting.pop() {
-                w.wake();
-            }
+            while exchange.waiting.wake() {}
             // we're about to exit, so there better be no outstanding connections
             assert_eq!(exchange.exist, 0);
             assert_eq!(exchange.available.len(), 0);

@@ -48,15 +48,17 @@ impl Waitlist {
         !occupied
     }
 
-    pub(crate) fn pop(&mut self) -> Option<Waker> {
+    /// Returns `true` if anyone was awaken
+    pub(crate) fn wake(&mut self) -> bool {
         match self.queue.pop() {
             Some((qw, _)) => {
                 self.metrics
                     .active_wait_requests
                     .fetch_sub(1, atomic::Ordering::Relaxed);
-                Some(qw.waker)
+                qw.waker.wake();
+                true
             }
-            None => None,
+            None => false,
         }
     }
 

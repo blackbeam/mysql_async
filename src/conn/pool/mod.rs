@@ -229,9 +229,7 @@ impl Pool {
             .connection_count
             .store(exchange.exist, atomic::Ordering::Relaxed);
         // we just enabled the creation of a new connection!
-        if let Some(w) = exchange.waiting.pop() {
-            w.wake();
-        }
+        exchange.waiting.wake();
     }
 
     /// Poll the pool for an available connection.
