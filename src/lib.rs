@@ -558,7 +558,7 @@ pub use crate::connection_like::{Connection, ToConnectionResult};
 
 /// Futures used in this crate
 pub mod futures {
-    pub use crate::conn::pool::futures::{DisconnectPool, GetConn};
+    pub use crate::conn::pool::futures::GetConn;
 }
 
 /// Traits used in this crate
