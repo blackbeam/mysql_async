@@ -29,13 +29,13 @@ use std::sync::{atomic, Arc};
 /// are dropped or disonnected. Also all pending and new `GetConn`'s will resolve to error.
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct DisconnectPool {
+struct DisconnectPool {
     pool_inner: Arc<Inner>,
     drop: Option<UnboundedSender<Option<Conn>>>,
 }
 
 impl DisconnectPool {
-    pub(crate) fn new(pool: Pool) -> Self {
+    fn new(pool: Pool) -> Self {
         Self {
             pool_inner: pool.inner,
             drop: Some(pool.drop),
@@ -72,4 +72,8 @@ impl Future for DisconnectPool {
             }
         }
     }
+}
+
+pub(crate) async fn disconnect_pool(pool: Pool) -> Result<(), Error> {
+    DisconnectPool::new(pool).await
 }
