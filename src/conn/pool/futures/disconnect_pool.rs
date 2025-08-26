@@ -7,73 +7,38 @@
 // modified, or distributed except according to those terms.
 
 use std::{
-    future::Future,
-    pin::Pin,
+    future::poll_fn,
+    sync::atomic,
     task::{Context, Poll},
 };
 
-use futures_core::ready;
-use tokio::sync::mpsc::UnboundedSender;
-
 use crate::{
-    conn::pool::{waitlist::QUEUE_END_ID, Inner, Pool},
+    conn::pool::{waitlist::QUEUE_END_ID, Pool},
     error::Error,
-    Conn,
 };
 
-use std::sync::{atomic, Arc};
-
-/// Future that disconnects this pool from a server and resolves to `()`.
+/// Disconnect this pool from a server and resolves to `()`.
 ///
-/// **Note:** This Future won't resolve until all active connections, taken from it,
+/// **Note:** This won't resolve until all active connections, taken from the poll,
 /// are dropped or disonnected. Also all pending and new `GetConn`'s will resolve to error.
-#[derive(Debug)]
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-struct DisconnectPool {
-    pool_inner: Arc<Inner>,
-    drop: Option<UnboundedSender<Option<Conn>>>,
-}
-
-impl DisconnectPool {
-    fn new(pool: Pool) -> Self {
-        Self {
-            pool_inner: pool.inner,
-            drop: Some(pool.drop),
-        }
-    }
-}
-
-impl Future for DisconnectPool {
-    type Output = Result<(), Error>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.pool_inner.close.store(true, atomic::Ordering::Release);
-        let mut exchange = self.pool_inner.exchange.lock().unwrap();
-        exchange.spawn_futures_if_needed(&self.pool_inner);
-        exchange.waiting.push(cx.waker().clone(), QUEUE_END_ID);
-        drop(exchange);
-
-        if self.pool_inner.closed.load(atomic::Ordering::Acquire) {
-            Poll::Ready(Ok(()))
-        } else {
-            match self.drop.take() {
-                Some(drop) => match drop.send(None) {
-                    Ok(_) => {
-                        // Recycler is alive. Waiting for it to finish.
-                        ready!(Box::pin(drop.closed()).as_mut().poll(cx));
-                        Poll::Ready(Ok(()))
-                    }
-                    Err(_) => {
-                        // Recycler seem dead. No one will wake us.
-                        Poll::Ready(Ok(()))
-                    }
-                },
-                None => Poll::Pending,
-            }
-        }
-    }
-}
-
 pub(crate) async fn disconnect_pool(pool: Pool) -> Result<(), Error> {
-    DisconnectPool::new(pool).await
+    let inner = pool.inner;
+    let drop = pool.drop;
+
+    inner.close.store(true, atomic::Ordering::Release);
+
+    let f = |cx: &mut Context| {
+        let mut exchange = inner.exchange.lock().unwrap();
+        exchange.spawn_futures_if_needed(&inner);
+        exchange.waiting.push(cx.waker().clone(), QUEUE_END_ID);
+        Poll::Ready(())
+    };
+    poll_fn(f).await;
+
+    if !inner.closed.load(atomic::Ordering::Acquire) && drop.send(None).is_ok() {
+        // Recycler is alive. Wait for it to finish.
+        drop.closed().await;
+    }
+
+    Ok(())
 }
