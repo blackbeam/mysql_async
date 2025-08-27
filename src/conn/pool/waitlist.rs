@@ -59,16 +59,12 @@ impl Waitlist {
         }
     }
 
-    /// Returns `true` if removed.
-    pub(crate) fn remove(&mut self, id: QueueId) -> bool {
-        let is_removed = self.queue.remove(&id).is_some();
-        if is_removed {
+    pub(crate) fn remove(&mut self, id: QueueId) {
+        if self.queue.remove(&id).is_some() {
             self.metrics
                 .active_wait_requests
                 .fetch_sub(1, atomic::Ordering::Relaxed);
         }
-
-        is_removed
     }
 
     pub(crate) fn peek_id(&mut self) -> Option<QueueId> {
