@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use std::{
     collections::VecDeque,
+    future::poll_fn,
     future::Future,
     str::FromStr,
     sync::{atomic, Arc, Mutex},
@@ -232,19 +233,41 @@ impl Pool {
         exchange.waiting.wake();
     }
 
-    /// Poll the pool for an available connection.
-    fn poll_new_conn(
-        &mut self,
-        cx: &mut Context<'_>,
-        queue_id: QueueId,
-    ) -> Poll<Result<GetConnInner>> {
+    fn queue(&mut self, cx: &mut Context<'_>, queue_id: QueueId) -> Poll<()> {
+        let mut exchange = self.inner.exchange.lock().unwrap();
+        exchange.waiting.push(cx.waker().clone(), queue_id);
+        Poll::Ready(())
+    }
+
+    fn poll_higher_priority(&mut self, cx: &mut Context<'_>, queue_id: QueueId) -> Poll<()> {
+        let mut exchange = self.inner.exchange.lock().unwrap();
+        let highest = if let Some(cur) = exchange.waiting.peek_id() {
+            queue_id > cur
+        } else {
+            true
+        };
+        if highest {
+            Poll::Ready(())
+        } else {
+            // to make sure the waker is updated
+            exchange.waiting.push(cx.waker().clone(), queue_id);
+            Poll::Pending
+        }
+    }
+
+    async fn queue_and_wait(&mut self, queue_id: QueueId) {
+        poll_fn(|cx| self.queue(cx, queue_id)).await;
+        poll_fn(|cx| self.poll_higher_priority(cx, queue_id)).await;
+    }
+
+    fn try_new_conn(&mut self, queue_id: QueueId) -> Result<Option<GetConnInner>> {
         let mut exchange = self.inner.exchange.lock().unwrap();
 
         // NOTE: this load must happen while we hold the lock,
         // otherwise the recycler may choose to exit, see that .exist == 0, and then exit,
         // and then we decide to create a new connection, which would then never be torn down.
         if self.inner.close.load(atomic::Ordering::Acquire) {
-            return Err(Error::Driver(DriverError::PoolDisconnected)).into();
+            return Err(Error::Driver(DriverError::PoolDisconnected));
         }
 
         exchange.spawn_futures_if_needed(&self.inner);
@@ -258,8 +281,7 @@ impl Pool {
 
         // If we are not, just queue
         if !highest {
-            exchange.waiting.push(cx.waker().clone(), queue_id);
-            return Poll::Pending;
+            return Ok(None);
         }
 
         #[allow(unused_variables)] // `since` is only used when `hdrhistogram` is enabled
@@ -275,7 +297,7 @@ impl Pool {
                 #[cfg(feature = "hdrhistogram")]
                 let metrics = self.metrics();
                 conn.inner.active_since = Instant::now();
-                return Poll::Ready(Ok(GetConnInner::Checking(
+                return Ok(Some(GetConnInner::Checking(
                     async move {
                         conn.stream_mut()?.check().await?;
                         #[cfg(feature = "hdrhistogram")]
@@ -315,7 +337,7 @@ impl Pool {
             #[cfg(feature = "hdrhistogram")]
             let metrics = self.metrics();
 
-            return Poll::Ready(Ok(GetConnInner::Connecting(
+            return Ok(Some(GetConnInner::Connecting(
                 async move {
                     let conn = Conn::new(opts).await;
                     #[cfg(feature = "hdrhistogram")]
@@ -333,10 +355,17 @@ impl Pool {
                 .boxed(),
             )));
         }
+        Ok(None)
+    }
 
-        // Polled, but no conn available? Back into the queue.
-        exchange.waiting.push(cx.waker().clone(), queue_id);
-        Poll::Pending
+    /// Get a new connection from the pool.
+    async fn new_conn(&mut self, queue_id: QueueId) -> Result<GetConnInner> {
+        loop {
+            if let Some(conn) = self.try_new_conn(queue_id)? {
+                return Ok(conn);
+            }
+            self.queue_and_wait(queue_id).await;
+        }
     }
 
     fn unqueue(&self, queue_id: QueueId) {

@@ -6,7 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use std::{fmt, future::poll_fn, task::Context};
+use std::fmt;
 
 use crate::{
     conn::{
@@ -79,8 +79,7 @@ pub(crate) async fn get_conn(pool: Pool) -> Result<Conn> {
         match state.inner {
             GetConnInner::New => {
                 let pool = state.pool_mut();
-                let poll_new = |cx: &mut Context<'_>| pool.poll_new_conn(cx, queue_id);
-                let next = poll_fn(poll_new).await?;
+                let next = pool.new_conn(queue_id).await?;
                 match next {
                     GetConnInner::Connecting(conn_fut) => {
                         state.inner = GetConnInner::Connecting(conn_fut);
