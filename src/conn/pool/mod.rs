@@ -1004,6 +1004,43 @@ mod test {
     }
 
     #[tokio::test]
+    async fn fifo() {
+        // This documents a bug causing connections to not served in a
+        // FIFO order.
+
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        let pool = pool_with_one_connection();
+
+        // Get a connection, so we know the next future will be
+        // queued.
+        let conn = pool.get_conn().await.unwrap();
+
+        // Try getting a second connection and check that the future
+        // is pending.
+        let mut fut2 = pin!(pool.get_conn());
+        let p = fut2.as_mut().poll(&mut context);
+        assert!(matches!(p, Poll::Pending));
+
+        let queue_len = || pool.inner.exchange.lock().unwrap().waiting.queue.len();
+        // The second future is now queued
+        assert_eq!(1, queue_len());
+
+        // Drop the first connection and wait for the queue to clear.
+        drop(conn);
+        while queue_len() != 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // Create a third future waiting for a connection.
+        let mut fut3 = pin!(pool.get_conn());
+
+        // If the runtime polls fut3 now it is resolved before fut2.
+        let p = fut3.as_mut().poll(&mut context);
+        assert!(matches!(p, Poll::Ready(_)));
+    }
+
+    #[tokio::test]
     async fn save_last_waker() {
         // Test that if passed multiple wakers, we call the last one.
 
