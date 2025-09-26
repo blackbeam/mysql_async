@@ -1094,9 +1094,7 @@ impl Opts {
     }
 
     /// Connection attributes to send to the server, if any.
-    pub fn connect_attributes(
-        &self,
-    ) -> Option<&std::collections::HashMap<String, String>> {
+    pub fn connect_attributes(&self) -> Option<&std::collections::HashMap<String, String>> {
         self.inner.mysql_opts.connect_attributes.as_ref()
     }
 
@@ -1498,20 +1496,13 @@ impl OptsBuilder {
     }
 
     /// Replaces connection attributes with the given map. See [`Opts::connect_attributes`].
-    pub fn connect_attributes(
-        mut self,
-        attrs: std::collections::HashMap<String, String>,
-    ) -> Self {
+    pub fn connect_attributes(mut self, attrs: std::collections::HashMap<String, String>) -> Self {
         self.opts.connect_attributes = Some(attrs);
         self
     }
 
     /// Adds or updates a single connection attribute key-value pair.
-    pub fn connect_attribute<K: Into<String>, V: Into<String>>(
-        mut self,
-        key: K,
-        value: V,
-    ) -> Self {
+    pub fn connect_attribute<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
         let map = self
             .opts
             .connect_attributes
