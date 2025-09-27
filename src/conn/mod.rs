@@ -1230,8 +1230,13 @@ impl Conn {
     /// Requires that `self.inner.tx_status != TxStatus::None`
     pub(crate) async fn rollback_transaction(&mut self) -> Result<()> {
         debug_assert_ne!(self.inner.tx_status, TxStatus::None);
-        self.inner.tx_status = TxStatus::None;
-        self.query_drop("ROLLBACK").await
+        let tx_status = mem::replace(&mut self.inner.tx_status, TxStatus::None);
+        if let Err(e) = self.query_drop("ROLLBACK").await {
+            // Reset tx_status if ROLLBACK fails so that the connection is considered dirty
+            self.inner.tx_status = tx_status;
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Returns `true` if `SERVER_MORE_RESULTS_EXISTS` flag is contained
@@ -1282,23 +1287,22 @@ impl Conn {
     /// The purpose of this function, is to cleanup the connection while returning it to a [`Pool`].
     async fn cleanup_for_pool(mut self) -> Result<Self> {
         loop {
-            let result = if self.has_pending_result() {
-                self.drop_result().await
+            if self.has_pending_result() {
+                // The connection was dropped and we assume that it was dropped intentionally,
+                // so we'll ignore non-fatal errors during cleanup (also there is no direct caller
+                // to return this error to).
+                if let Err(err) = self.drop_result().await {
+                    if err.is_fatal() {
+                        // This means that connection is completely broken
+                        // and shouldn't return to a pool.
+                        return Err(err);
+                    }
+                }
             } else if self.inner.tx_status != TxStatus::None {
-                self.rollback_transaction().await
+                // If an error occurs during rollback, don't reuse the connection.
+                self.rollback_transaction().await?;
             } else {
                 break;
-            };
-
-            // The connection was dropped and we assume that it was dropped intentionally,
-            // so we'll ignore non-fatal errors during cleanup (also there is no direct caller
-            // to return this error to).
-            if let Err(err) = result {
-                if err.is_fatal() {
-                    // This means that connection is completely broken
-                    // and shouldn't return to a pool.
-                    return Err(err);
-                }
             }
         }
         Ok(self)
