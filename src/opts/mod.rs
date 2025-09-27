@@ -668,6 +668,12 @@ pub(crate) struct MysqlOpts {
     /// Sending passwords as cleartext may be a security problem in some configurations. Please
     /// consider using TLS or encrypted tunnels for server connection.
     enable_cleartext_plugin: bool,
+
+    /// Connection attributes to send in handshake and COM_CHANGE_USER (defaults to `None`).
+    ///
+    /// When set, the client will advertise `CLIENT_CONNECT_ATTRS` and send the provided
+    /// key-value attributes to the server.
+    connect_attributes: Option<std::collections::HashMap<String, String>>,
 }
 
 /// Mysql connection options.
@@ -1087,6 +1093,11 @@ impl Opts {
         self.inner.mysql_opts.enable_cleartext_plugin
     }
 
+    /// Connection attributes to send to the server, if any.
+    pub fn connect_attributes(&self) -> Option<&std::collections::HashMap<String, String>> {
+        self.inner.mysql_opts.connect_attributes.as_ref()
+    }
+
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
         let mut out = CapabilityFlags::CLIENT_PROTOCOL_41
             | CapabilityFlags::CLIENT_SECURE_CONNECTION
@@ -1143,6 +1154,7 @@ impl Default for MysqlOpts {
             secure_auth: true,
             client_found_rows: false,
             enable_cleartext_plugin: false,
+            connect_attributes: None,
         }
     }
 }
@@ -1480,6 +1492,22 @@ impl OptsBuilder {
     /// ```
     pub fn enable_cleartext_plugin(mut self, enable_cleartext_plugin: bool) -> Self {
         self.opts.enable_cleartext_plugin = enable_cleartext_plugin;
+        self
+    }
+
+    /// Replaces connection attributes with the given map. See [`Opts::connect_attributes`].
+    pub fn connect_attributes(mut self, attrs: std::collections::HashMap<String, String>) -> Self {
+        self.opts.connect_attributes = Some(attrs);
+        self
+    }
+
+    /// Adds or updates a single connection attribute key-value pair.
+    pub fn connect_attribute<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
+        let map = self
+            .opts
+            .connect_attributes
+            .get_or_insert_with(Default::default);
+        map.insert(key.into(), value.into());
         self
     }
 }

@@ -578,7 +578,7 @@ impl Conn {
             self.inner.opts.db_name().map(|x| x.as_bytes()),
             Some(self.inner.auth_plugin.borrow()),
             self.capabilities(),
-            Default::default(), // TODO: Add support
+            self.inner.opts.connect_attributes().cloned(),
             self.inner
                 .opts
                 .max_allowed_packet()
