@@ -66,7 +66,7 @@ pub enum IoError {
 
 /// This type represents MySql server error.
 #[derive(Debug, Error, Clone, Eq, PartialEq)]
-#[error("ERROR {} ({}): {}", state, code, message)]
+#[error("ERROR {} ({}): {}", code, state, message)]
 pub struct ServerError {
     pub code: u16,
     pub message: String,
