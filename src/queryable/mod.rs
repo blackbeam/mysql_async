@@ -174,7 +174,7 @@ pub trait Queryable: Send {
         params: P,
     ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
     where
-        Q: StatementLike + 'a,
+        Q: StatementLike + 's,
         P: Into<Params>;
 
     /// Performs the given query and collects the first result set.
@@ -443,7 +443,7 @@ pub trait Queryable: Send {
     ) -> BoxFuture<'s, ResultSetStream<'a, 'a, 'static, T, BinaryProtocol>>
     where
         T: Unpin + FromRow + Send + 'static,
-        Q: StatementLike + 'a,
+        Q: StatementLike + 's,
         P: Into<Params> + Send + 's,
     {
         async move {
@@ -502,7 +502,7 @@ impl Queryable for Conn {
         params: P,
     ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
     where
-        Q: StatementLike + 'a,
+        Q: StatementLike + 's,
         P: Into<Params>,
     {
         let params = params.into();
@@ -567,7 +567,7 @@ impl Queryable for Transaction<'_> {
         params: P,
     ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
     where
-        Q: StatementLike + 'a,
+        Q: StatementLike + 's,
         P: Into<Params>,
     {
         self.0.as_mut().exec_iter(stmt, params)
@@ -618,7 +618,7 @@ impl<'c, 't: 'c> Queryable for Connection<'c, 't> {
         params: P,
     ) -> BoxFuture<'s, QueryResult<'a, 'static, BinaryProtocol>>
     where
-        Q: StatementLike + 'a,
+        Q: StatementLike + 's,
         P: Into<Params>,
     {
         self.as_mut().exec_iter(stmt, params)
