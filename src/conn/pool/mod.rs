@@ -10,6 +10,13 @@ use futures_util::FutureExt;
 use keyed_priority_queue::KeyedPriorityQueue;
 use tokio::sync::mpsc;
 
+use crate::{
+    conn::{pool::futures::*, Conn},
+    error::*,
+    opts::{Opts, PoolOpts},
+    queryable::transaction::{Transaction, TxOpts},
+};
+use std::sync::atomic::Ordering;
 use std::{
     borrow::Borrow,
     cmp::Reverse,
@@ -19,13 +26,6 @@ use std::{
     sync::{atomic, Arc, Mutex},
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
-};
-
-use crate::{
-    conn::{pool::futures::*, Conn},
-    error::*,
-    opts::{Opts, PoolOpts},
-    queryable::transaction::{Transaction, TxOpts},
 };
 
 pub use metrics::Metrics;
@@ -295,6 +295,10 @@ impl Pool {
     fn return_conn(&mut self, conn: Conn) {
         // NOTE: we're not in async context here, so we can't block or return NotReady
         // any and all cleanup work _has_ to be done in the spawned recycler
+        self.inner
+            .metrics
+            .connections_in_use
+            .fetch_sub(1, Ordering::Relaxed);
         self.send_to_recycler(conn);
     }
 
@@ -456,6 +460,10 @@ impl Drop for Conn {
         if std::thread::panicking() {
             // Try to decrease the number of existing connections.
             if let Some(pool) = self.inner.pool.take() {
+                pool.inner
+                    .metrics
+                    .connections_in_use
+                    .fetch_sub(1, Ordering::Relaxed);
                 pool.cancel_connection();
             }
 
@@ -1248,6 +1256,71 @@ mod test {
         fut3.await;
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn connection_in_use_metric() {
+        let pool = pool_with_one_connection();
+        let metrics = pool.metrics();
+
+        let conn = pool.get_conn().await.unwrap();
+        assert_eq!(
+            metrics
+                .connections_in_use
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
+        drop(conn);
+        assert_eq!(
+            metrics
+                .connections_in_use
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        loop {
+            if metrics
+                .connections_in_pool
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == 1
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // Ensure that we increase the connections in use metric when we get a connection from the pool
+        let conn = pool.get_conn().await.unwrap();
+        assert_eq!(
+            metrics
+                .connections_in_use
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            metrics
+                .connections_in_pool
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+
+        drop(conn);
+        assert_eq!(
+            metrics
+                .connections_in_use
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        loop {
+            if metrics
+                .connections_in_pool
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == 1
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     #[cfg(feature = "nightly")]

@@ -6,14 +6,14 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
+use futures_core::ready;
+use std::sync::atomic::Ordering;
 use std::{
     fmt,
     future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
-
-use futures_core::ready;
 #[cfg(feature = "tracing")]
 use {
     std::sync::Arc,
@@ -90,6 +90,19 @@ impl GetConn {
             .take()
             .expect("GetConn::poll polled after returning Async::Ready")
     }
+
+    fn ready_connection(&mut self, mut c: Conn) -> Poll<<GetConn as Future>::Output> {
+        let pool = self.pool_take();
+        pool.inner
+            .metrics
+            .connections_in_use
+            .fetch_add(1, Ordering::Relaxed);
+
+        c.inner.pool = Some(pool);
+        c.inner.reset_upon_returning_to_a_pool = self.reset_upon_returning_to_a_pool;
+
+        Poll::Ready(Ok(c))
+    }
 }
 
 // this manual implementation of Future may seem stupid, but we sort
@@ -127,18 +140,13 @@ impl Future for GetConn {
                 }
                 GetConnInner::Connecting(ref mut f) => {
                     let result = ready!(Pin::new(f).poll(cx));
-                    let pool = self.pool_take();
 
                     self.inner = GetConnInner::Done;
 
                     return match result {
-                        Ok(mut c) => {
-                            c.inner.pool = Some(pool);
-                            c.inner.reset_upon_returning_to_a_pool =
-                                self.reset_upon_returning_to_a_pool;
-                            Poll::Ready(Ok(c))
-                        }
+                        Ok(c) => self.ready_connection(c),
                         Err(e) => {
+                            let pool = self.pool_take();
                             pool.cancel_connection();
                             Poll::Ready(Err(e))
                         }
@@ -150,11 +158,7 @@ impl Future for GetConn {
                         Ok(mut c) => {
                             self.inner = GetConnInner::Done;
 
-                            let pool = self.pool_take();
-                            c.inner.pool = Some(pool);
-                            c.inner.reset_upon_returning_to_a_pool =
-                                self.reset_upon_returning_to_a_pool;
-                            return Poll::Ready(Ok(c));
+                            return self.ready_connection(c);
                         }
                         Err(_) => {
                             // Idling connection is broken. We'll drop it and try again.
