@@ -38,7 +38,7 @@ impl Routine<Arc<StmtInner>> for PrepareRoutine {
             // The statement may contain sensitive data. Restrict to DEBUG.
             span.record(
                 "mysql_async.query.sql",
-                String::from_utf8_lossy(&*self.query).as_ref(),
+                String::from_utf8_lossy(&self.query).as_ref(),
             );
         }
 

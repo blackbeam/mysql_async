@@ -315,14 +315,10 @@ impl From<PacketCodecError> for IoError {
     fn from(err: PacketCodecError) -> Self {
         match err {
             PacketCodecError::Io(err) => err.into(),
-            PacketCodecError::PacketTooLarge => {
-                io::Error::new(io::ErrorKind::Other, "packet too large").into()
-            }
-            PacketCodecError::PacketsOutOfSync => {
-                io::Error::new(io::ErrorKind::Other, "packet out of order").into()
-            }
+            PacketCodecError::PacketTooLarge => io::Error::other("packet too large").into(),
+            PacketCodecError::PacketsOutOfSync => io::Error::other("packet out of order").into(),
             PacketCodecError::BadCompressedPacketHeader => {
-                io::Error::new(io::ErrorKind::Other, "bad compressed packet header").into()
+                io::Error::other("bad compressed packet header").into()
             }
         }
     }
