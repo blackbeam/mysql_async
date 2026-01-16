@@ -1459,21 +1459,20 @@ mod test {
 
             let _ = conn.query_drop("DROP USER 'test_user'@'%'").await;
 
-            let query = format!("CREATE USER 'test_user'@'%' IDENTIFIED WITH {}", plug);
+            let query = format!("CREATE USER 'test_user'@'%' IDENTIFIED WITH {plug}");
             conn.query_drop(query).await.unwrap();
 
             if conn.inner.version < (8, 0, 11) {
-                conn.query_drop(format!("SET old_passwords = {}", val))
+                conn.query_drop(format!("SET old_passwords = {val}"))
                     .await
                     .unwrap();
                 conn.query_drop(format!(
-                    "SET PASSWORD FOR 'test_user'@'%' = PASSWORD('{}')",
-                    pass
+                    "SET PASSWORD FOR 'test_user'@'%' = PASSWORD('{pass}')"
                 ))
                 .await
                 .unwrap();
             } else {
-                conn.query_drop(format!("SET PASSWORD FOR 'test_user'@'%' = '{}'", pass))
+                conn.query_drop(format!("SET PASSWORD FOR 'test_user'@'%' = '{pass}'"))
                     .await
                     .unwrap();
             };
@@ -1490,11 +1489,11 @@ mod test {
         }
 
         if crate::test_misc::test_compression() {
-            assert!(format!("{:?}", conn).contains("Compression"));
+            assert!(format!("{conn:?}").contains("Compression"));
         }
 
         if crate::test_misc::test_ssl() {
-            assert!(format!("{:?}", conn).contains("Tls"));
+            assert!(format!("{conn:?}").contains("Tls"));
         }
 
         conn.disconnect().await?;
@@ -1790,9 +1789,8 @@ mod test {
         let mut conn = Conn::new(get_opts()).await?;
         for x in (MAX_PAYLOAD_LEN - 2)..=(MAX_PAYLOAD_LEN + 2) {
             let long_string = "A".repeat(x);
-            let result: Vec<(String, u8)> = conn
-                .query(format!(r"SELECT '{}', 231", long_string))
-                .await?;
+            let result: Vec<(String, u8)> =
+                conn.query(format!(r"SELECT '{long_string}', 231")).await?;
             assert_eq!((long_string, 231_u8), result[0]);
         }
         conn.disconnect().await?;
@@ -2327,7 +2325,7 @@ mod test {
             .tcp_port(listen_addr.port());
         let server_err = match Conn::new(opts).await {
             Err(Error::Server(server_err)) => server_err,
-            other => panic!("expected server error but got: {:?}", other),
+            other => panic!("expected server error but got: {other:?}"),
         };
         assert_eq!(
             server_err,
