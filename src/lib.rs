@@ -556,11 +556,6 @@ pub use self::conn::pool::Metrics;
 #[doc(inline)]
 pub use crate::connection_like::{Connection, ToConnectionResult};
 
-/// Futures used in this crate
-pub mod futures {
-    pub use crate::conn::pool::futures::GetConn;
-}
-
 /// Traits used in this crate
 pub mod prelude {
     #[doc(inline)]
