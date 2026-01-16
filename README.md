@@ -391,7 +391,7 @@ Tests uses followin environment variables:
 * `COMPRESS` – set to `1` or `true` to enable compression for tests
 * `SSL` – set to `1` or `true` to enable TLS for tests
 
-You can run a test server using doker. Please note that params related
+You can run a test server using docker. Please note that params related
 to max allowed packet, local-infile and binary logging are required
 to properly run tests (please refer to `azure-pipelines.yml`):
 
