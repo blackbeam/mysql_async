@@ -57,7 +57,7 @@ jobs:
 
   - job: "TestBasicWindows"
     pool:
-      vmImage: "windows-2019"
+      vmImage: "windows-latest"
     strategy:
       maxParallel: 10
       matrix:
