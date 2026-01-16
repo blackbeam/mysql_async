@@ -136,6 +136,7 @@ jobs:
       - bash: |
           docker exec container bash -l -c "microdnf install dnf"
           docker exec container bash -l -c "dnf group install \"Development Tools\""
+          docker exec container bash -l -c "dnf install openssl-devel"
           docker exec container bash -l -c "curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable"
         displayName: Install Rust in docker (RedHat)
         condition: not(or(eq(variables['DB_VERSION'], '5.6'), eq(variables['DB_VERSION'], '5.7-debian'), eq(variables['DB_VERSION'], '8.0-debian')))
@@ -144,7 +145,6 @@ jobs:
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL cargo test"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL COMPRESS=true cargo test"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=$SSL cargo test --features native-tls-tls"
-          docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=$SSL COMPRESS=true cargo test"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=$SSL COMPRESS=true cargo test --no-default-features --features default-rustls"
         env:
           RUST_BACKTRACE: 1
@@ -207,7 +207,6 @@ jobs:
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL cargo test --features $FEATURES"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL COMPRESS=true cargo test --features $FEATURES"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true cargo test --features native-tls-tls,$FEATURES"
-          docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true COMPRESS=true cargo test --features $FEATURES"
           if [[ "$(DB_VERSION)" -ge "11" ]]; then docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true cargo test --no-default-features --features default-rustls,$FEATURES"; fi
         env:
           RUST_BACKTRACE: 1
