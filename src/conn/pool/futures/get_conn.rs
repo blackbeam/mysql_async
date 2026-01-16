@@ -22,7 +22,7 @@ use {
 
 use crate::{
     conn::{
-        pool::{Pool, QueueId},
+        pool::{waitlist::QueueId, Pool},
         Conn,
     },
     error::*,
