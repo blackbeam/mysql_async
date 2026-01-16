@@ -962,9 +962,7 @@ impl Conn {
                 #[cfg(not(unix))]
                 return Err(crate::DriverError::NamedPipesDisabled.into());
             } else {
-                let keepalive = opts
-                    .tcp_keepalive()
-                    .map(|x| std::time::Duration::from_millis(x.into()));
+                let keepalive = opts.tcp_keepalive();
                 Stream::connect_tcp(opts.hostport_or_url(), keepalive).await?
             };
 

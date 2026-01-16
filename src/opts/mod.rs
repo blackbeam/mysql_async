@@ -575,8 +575,8 @@ pub(crate) struct MysqlOpts {
     /// Database name (defaults to `None`).
     db_name: Option<String>,
 
-    /// TCP keep alive timeout in milliseconds (defaults to `None`).
-    tcp_keepalive: Option<u32>,
+    /// TCP keep alive timeout (defaults to `None`).
+    tcp_keepalive: Option<Duration>,
 
     /// Whether to enable `TCP_NODELAY` (defaults to `true`).
     ///
@@ -807,10 +807,10 @@ impl Opts {
     /// # use mysql_async::*;
     /// # fn main() -> Result<()> {
     /// let opts = Opts::from_url("mysql://localhost/db?tcp_keepalive=10000")?;
-    /// assert_eq!(opts.tcp_keepalive(), Some(10_000));
+    /// assert_eq!(opts.tcp_keepalive(), Some(std::time::Duration::from_secs(10)));
     /// # Ok(()) }
     /// ```
-    pub fn tcp_keepalive(&self) -> Option<u32> {
+    pub fn tcp_keepalive(&self) -> Option<Duration> {
         self.inner.mysql_opts.tcp_keepalive
     }
 
@@ -1365,8 +1365,8 @@ impl OptsBuilder {
     }
 
     /// Defines `tcp_keepalive` option. See [`Opts::tcp_keepalive`].
-    pub fn tcp_keepalive<T: Into<u32>>(mut self, tcp_keepalive: Option<T>) -> Self {
-        self.opts.tcp_keepalive = tcp_keepalive.map(Into::into);
+    pub fn tcp_keepalive(mut self, tcp_keepalive: Option<Duration>) -> Self {
+        self.opts.tcp_keepalive = tcp_keepalive;
         self
     }
 
@@ -1801,7 +1801,7 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
             }
         } else if key == "tcp_keepalive" {
             match u32::from_str(&value) {
-                Ok(value) => opts.tcp_keepalive = Some(value),
+                Ok(value) => opts.tcp_keepalive = Some(Duration::from_millis(value.into())),
                 _ => {
                     return Err(UrlError::InvalidParamValue {
                         param: "tcp_keepalive_ms".into(),
