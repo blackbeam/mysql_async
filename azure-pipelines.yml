@@ -105,8 +105,6 @@ jobs:
           DB_VERSION: "8.4"
         v80:
           DB_VERSION: "8.0-debian"
-        v57:
-          DB_VERSION: "5.7-debian"
         v56:
           DB_VERSION: "5.6"
     steps:
@@ -159,16 +157,12 @@ jobs:
     strategy:
       maxParallel: 10
       matrix:
-        v1162:
-          DB_VERSION: "11.6.2"
-        v1152:
-          DB_VERSION: "11.5.2"
-        v1144:
-          DB_VERSION: "11.4.2"
-        v113:
-          DB_VERSION: "11.3.2"
-        v1011:
-          DB_VERSION: "10.11.10"
+        v12:
+          DB_VERSION: "12"
+        v11:
+          DB_VERSION: "11"
+        v10:
+          DB_VERSION: "10"
     steps:
       - bash: |
           sudo apt-get update
@@ -183,7 +177,7 @@ jobs:
           git checkout 901a7de
         displayName: Clone rust-mysql-simple (for ssl certs)
       - bash: |
-          if [[ "11.6.2" == "$(DB_VERSION)" ]]; then ARG=" --plugin-load-add=auth_ed25519"; fi
+          if [[ "$(DB_VERSION)" -ge "11" ]]; then ARG=" --plugin-load-add=auth_ed25519"; fi
           docker run --rm -d \
               --name container \
               -v `pwd`:/root \
@@ -209,12 +203,12 @@ jobs:
           docker exec container bash -l -c "curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable"
         displayName: Install Rust in docker
       - bash: |
-          if [[ "11.6.2" == "$(DB_VERSION)" ]]; then FEATURES="client_ed25519"; fi
+          if [[ "$(DB_VERSION)" -ge "11" ]]; then FEATURES="client_ed25519"; fi
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL cargo test --features $FEATURES"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL COMPRESS=true cargo test --features $FEATURES"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true cargo test --features native-tls-tls,$FEATURES"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true COMPRESS=true cargo test --features $FEATURES"
-          if [[ "10.1" != "$(DB_VERSION)" ]]; then docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true cargo test --no-default-features --features default-rustls,$FEATURES"; fi
+          if [[ "$(DB_VERSION)" -ge "11" ]]; then docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true cargo test --no-default-features --features default-rustls,$FEATURES"; fi
         env:
           RUST_BACKTRACE: 1
           DATABASE_URL: mysql://root:password@127.0.0.1/mysql
@@ -225,8 +219,8 @@ jobs:
       vmImage: "ubuntu-latest"
     strategy:
       matrix:
-        v8.5.0:
-          DB_VERSION: "v8.5.0"
+        v8.5.5:
+          DB_VERSION: "v8.5.5"
         v7.6.0:
           DB_VERSION: "v7.6.0"
         v6.6.0:
@@ -237,6 +231,7 @@ jobs:
       - bash: |
           curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
           source ~/.profile
+          source ~/.bash_profile
           tiup playground $(DB_VERSION) --db 1 --pd 1 --kv 1 &
           while ! nc -W 1 localhost 4000 | grep -q -P '.+'; do sleep 1; done
         displayName: Install and run TiDB
