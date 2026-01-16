@@ -25,8 +25,7 @@ impl Waitlist {
         }
     }
 
-    /// Returns `true` if pushed.
-    pub(crate) fn push(&mut self, waker: Waker, queue_id: QueueId) -> bool {
+    pub(crate) fn push(&mut self, waker: Waker, queue_id: QueueId) {
         // The documentation of Future::poll says:
         //   Note that on multiple calls to poll, only the Waker from
         //   the Context passed to the most recent call should be
@@ -38,14 +37,12 @@ impl Waitlist {
         //
         // This means we have to remove first to have the most recent
         // waker in the queue.
-        let occupied = self.remove(queue_id);
+        self.remove(queue_id);
         self.queue.push(QueuedWaker { queue_id, waker }, queue_id);
 
         self.metrics
             .active_wait_requests
             .fetch_add(1, atomic::Ordering::Relaxed);
-
-        !occupied
     }
 
     /// Returns `true` if anyone was awaken
@@ -62,16 +59,12 @@ impl Waitlist {
         }
     }
 
-    /// Returns `true` if removed.
-    pub(crate) fn remove(&mut self, id: QueueId) -> bool {
-        let is_removed = self.queue.remove(&id).is_some();
-        if is_removed {
+    pub(crate) fn remove(&mut self, id: QueueId) {
+        if self.queue.remove(&id).is_some() {
             self.metrics
                 .active_wait_requests
                 .fetch_sub(1, atomic::Ordering::Relaxed);
         }
-
-        is_removed
     }
 
     pub(crate) fn peek_id(&mut self) -> Option<QueueId> {
