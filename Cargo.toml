@@ -22,7 +22,7 @@ futures-sink = "0.3"
 keyed_priority_queue = "0.4"
 lru = "0.16.0"
 mysql_common = { version = "0.35.4", default-features = false }
-pem = "3.0"
+pem = { version = "3.0", optional = true}
 percent-encoding = "2.1.0"
 rand = "0.9"
 serde = "1"
@@ -91,7 +91,7 @@ minimal = ["flate2/zlib"]
 minimal-rust = ["flate2/rust_backend"]
 
 # native-tls based TLS support
-native-tls-tls = ["native-tls", "tokio-native-tls"]
+native-tls-tls = ["native-tls", "tokio-native-tls", "pem"]
 
 # rustls based TLS support
 rustls-tls = [
