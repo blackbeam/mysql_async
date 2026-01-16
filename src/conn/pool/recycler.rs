@@ -75,7 +75,8 @@ impl Recycler {
                 .connection_active_duration
                 .lock()
                 .unwrap()
-                .saturating_record(conn.inner.active_since.elapsed().as_micros() as u64);
+                .record(conn.inner.active_since.elapsed().as_micros() as u64)
+                .ok();
             exchange.available.push_back(conn.into());
             self.inner
                 .metrics
