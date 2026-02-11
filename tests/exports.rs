@@ -4,8 +4,8 @@ use mysql_async::{
     futures::GetConn,
     params,
     prelude::{
-        BatchQuery, FromRow, FromValue, GlobalHandler, Protocol, Query, Queryable, StatementLike,
-        ToValue,
+        BatchQuery, FromRow, FromValue, GlobalHandler, ParseIrOpt, Protocol, Query, Queryable,
+        StatementLike, ToValue,
     },
     BinaryProtocol, Column, Conn, Deserialized, DriverError, Error, FromRowError, FromValueError,
     GnoInterval, Gtids, IoError, IsolationLevel, OkPacket, Opts, OptsBuilder, Params, ParseError,
