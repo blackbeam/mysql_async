@@ -83,7 +83,8 @@ impl Routine<()> for ExecRoutine<'_> {
                         }
 
                         let named = mem::replace(&mut self.params, Params::Empty);
-                        self.params = named.into_positional(&self.stmt.named_params)?;
+                        self.params =
+                            Params::Positional(named.into_values(Some(&self.stmt.named_params))?);
 
                         continue;
                     }
