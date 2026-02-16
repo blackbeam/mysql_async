@@ -639,6 +639,8 @@ impl Conn {
                     }
                 }
                 x @ AuthPlugin::Ed25519 => x.gen_data(self.inner.opts.pass(), &self.inner.nonce),
+                // For parsec at this point we need to send an empty packet first
+                _x @ AuthPlugin::MariadbParsec { .. } => None,
                 x @ AuthPlugin::Other(_) => x.gen_data(self.inner.opts.pass(), &self.inner.nonce),
             };
 
@@ -681,6 +683,10 @@ impl Conn {
                     self.continue_ed25519_auth().await?;
                     Ok(())
                 }
+                AuthPlugin::MariadbParsec { .. } => {
+                    self.continue_parsec_auth().await?;
+                    Ok(())
+                }
                 AuthPlugin::Other(ref name) => Err(DriverError::UnknownAuthPlugin {
                     name: String::from_utf8_lossy(name.as_ref()).to_string(),
                 }
@@ -718,6 +724,48 @@ impl Conn {
                 payload: packet.to_vec(),
             }
             .into()),
+        }
+    }
+
+    async fn continue_parsec_auth(&mut self) -> Result<()> {
+        let packet = self.read_packet().await?;
+        // Noramally we need to skip escaping 0x01 byte. But in first parsec implementations, server did not send it.
+        let mut payload = &packet[1..];
+        if packet[0] != 0x01 {
+            payload = &packet;
+        }
+        // At this point in future, when it will be possible for parsec to be default authentication method,
+        // we can have authentication switch request. The other possibele option here(and for now the only option) -
+        // ext-salt packet.
+        match payload[0] {
+            0xfe => {
+                let auth_switch_request = ParseBuf(&payload).parse(())?;
+                self.perform_auth_switch(auth_switch_request).await
+            }
+            _ => {
+                // Letting parser function decide if all is fine with the packet
+                self.inner
+                    .auth_plugin
+                    .read_add_data(&payload)
+                    .ok_or_else(|| DriverError::InvalidParsecSalt)?;
+                // Now generating response.
+                let plugin_data = self
+                    .inner
+                    .auth_plugin
+                    .gen_data(self.inner.opts.pass(), &self.inner.nonce)
+                    .unwrap();
+
+                self.write_struct(&plugin_data.into_owned()).await?;
+                // After client response, server will send either ok or error.
+                let payload = self.read_packet().await?;
+                match payload.first() {
+                    Some(0x00) => Ok(()),
+                    _ => Err(DriverError::UnexpectedPacket {
+                        payload: payload.to_vec(),
+                    }
+                    .into()),
+                }
+            }
         }
     }
 
@@ -1585,7 +1633,7 @@ mod test {
         type CreateUserFn = fn(bool, (u16, u16, u16), &str) -> Vec<String>;
 
         #[allow(clippy::type_complexity)]
-        const TEST_MATRIX: [(&str, ShouldRunFn, CreateUserFn); 4] = [
+        const TEST_MATRIX: [(&str, ShouldRunFn, CreateUserFn); 5] = [
             (
                 "mysql_old_password",
                 |is_mariadb, version| is_mariadb || version < (5, 7, 0),
@@ -1648,6 +1696,15 @@ mod test {
                 |_is_mariadb, _version, pass| {
                     vec![format!(
                         "CREATE USER '__mats'@'%' IDENTIFIED WITH ed25519 AS PASSWORD('{pass}')"
+                    )]
+                },
+            ),
+            (
+                "parsec",
+                |is_mariadb, version| is_mariadb && version >= (11, 4, 1),
+                |_is_mariadb, _version, pass| {
+                    vec![format!(
+                        "CREATE USER '__mats'@'%' IDENTIFIED WITH parsec AS PASSWORD('{pass}')"
                     )]
                 },
             ),
@@ -2337,6 +2394,52 @@ mod test {
                 message: error_message.to_owned(),
             }
         );
+    }
+
+    #[cfg_attr(docsrs, doc(cfg(feature = "client_parsec")))]
+    #[tokio::test]
+    #[cfg(feature = "client_parsec")]
+    async fn parsec_connect() {
+        let mut conn = Conn::new(get_opts()).await.unwrap();
+        let is_mariadb = conn.inner.is_mariadb;
+        let version = conn.server_version();
+        if is_mariadb && version >= (11, 4, 1) {
+            // Creating random password so in case of test failure user won't have
+            // known password left behind.
+            let mut rng = rand::rng();
+            let mut pass_bytes = [0u8; 16];
+            rng.fill(&mut pass_bytes);
+            pass_bytes.iter_mut().for_each(|b| {
+                *b = match *b % 3 {
+                    0 => b'A' + (*b % 26),
+                    1 => b'a' + (*b % 26),
+                    _ => b'0' + (*b % 10),
+                }
+            });
+            let pass = String::from_utf8_lossy(&pass_bytes).to_string();
+
+            conn.query_drop("DROP USER IF EXISTS 'parsec_test_user'@'%'")
+                .await
+                .unwrap();
+            let create_user_query = format!(
+                "CREATE USER 'parsec_test_user'@'%' IDENTIFIED VIA 'parsec' USING PASSWORD('{}')",
+                pass
+            );
+            conn.query_drop(create_user_query).await.unwrap();
+            let mut conn_parsec = Conn::new(
+                get_opts()
+                    .user(Some("parsec_test_user"))
+                    .pass(Some(pass))
+                    .db_name(None::<String>)
+                    .init(vec![] as Vec<String>),
+            )
+            .await
+            .unwrap();
+            assert!(conn_parsec.ping().await.is_ok());
+            conn.query_drop("DROP USER 'parsec_test_user'@'%'")
+                .await
+                .unwrap();
+        }
     }
 
     #[cfg(feature = "nightly")]

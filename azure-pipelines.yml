@@ -40,7 +40,7 @@ jobs:
         displayName: cargo fmt
       - bash: |
           cargo +nightly build -Zfeatures=dev_dep
-          SSL=false COMPRESS=false cargo test --features binlog,derive,chrono,time,bigdecimal,rust_decimal,frunk,client_ed25519,tracing
+          SSL=false COMPRESS=false cargo test --features binlog,derive,chrono,time,bigdecimal,rust_decimal,frunk,client_ed25519,tracing,client_parsec
           SSL=true COMPRESS=false cargo test --features native-tls-tls
           SSL=false COMPRESS=true cargo test
           SSL=true COMPRESS=true cargo test --features rustls-tls,ring
@@ -177,7 +177,7 @@ jobs:
           git checkout 901a7de
         displayName: Clone rust-mysql-simple (for ssl certs)
       - bash: |
-          if [[ "$(DB_VERSION)" -ge "11" ]]; then ARG=" --plugin-load-add=auth_ed25519"; fi
+          if [[ "$(DB_VERSION)" -ge "11" ]]; then ARG=" --plugin-load-add=auth_ed25519 --plugin-load-add=auth_parsec"; fi
           docker run --rm -d \
               --name container \
               -v `pwd`:/root \
@@ -203,7 +203,7 @@ jobs:
           docker exec container bash -l -c "curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable"
         displayName: Install Rust in docker
       - bash: |
-          if [[ "$(DB_VERSION)" -ge "11" ]]; then FEATURES="client_ed25519"; fi
+          if [[ "$(DB_VERSION)" -ge "11" ]]; then FEATURES="client_ed25519,client_parsec"; fi
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL cargo test --features $FEATURES"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL COMPRESS=true cargo test --features $FEATURES"
           docker exec container bash -l -c "cd \$HOME && DATABASE_URL=$DATABASE_URL SSL=true cargo test --features native-tls-tls,$FEATURES"

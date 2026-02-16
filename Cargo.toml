@@ -21,7 +21,7 @@ futures-util = "0.3"
 futures-sink = "0.3"
 keyed_priority_queue = "0.4"
 lru = "0.16.0"
-mysql_common = { version = "0.35.4", default-features = false }
+mysql_common = { version = "0.36.2", default-features = false }
 pem = "3.0"
 percent-encoding = "2.1.0"
 rand = "0.9"
@@ -115,6 +115,7 @@ bigdecimal = ["mysql_common/bigdecimal"]
 rust_decimal = ["mysql_common/rust_decimal"]
 frunk = ["mysql_common/frunk"]
 client_ed25519 = ["mysql_common/client_ed25519"]
+client_parsec = ["mysql_common/client_parsec"]
 
 # other features
 tracing = ["dep:tracing"]
@@ -126,3 +127,6 @@ path = "src/lib.rs"
 
 [profile.bench]
 debug = true
+
+[patch.crates-io]
+mysql_common = { git = "https://github.com/lawrinn/rust_mysql_common", branch = "master" }

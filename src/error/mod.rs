@@ -177,6 +177,8 @@ pub enum DriverError {
 
     #[error("mysql_clear_password must be enabled on the client side")]
     CleartextPluginDisabled,
+    #[error("Invalid parsec ext-salt packet received from server")]
+    InvalidParsecSalt,
 }
 
 #[derive(Debug, Error)]
