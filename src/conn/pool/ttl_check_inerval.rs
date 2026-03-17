@@ -15,7 +15,7 @@ use std::{
     sync::{atomic::Ordering, Arc},
 };
 
-use super::{InPoolConnections, Inner};
+use super::{in_pool_connections::InPoolConnections, Inner};
 use crate::PoolOpts;
 use futures_core::task::{Context, Poll};
 use std::pin::Pin;
