@@ -1804,7 +1804,7 @@ fn mysqlopts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                 Ok(value) => opts.tcp_keepalive = Some(Duration::from_millis(value.into())),
                 _ => {
                     return Err(UrlError::InvalidParamValue {
-                        param: "tcp_keepalive_ms".into(),
+                        param: "tcp_keepalive".into(),
                         value,
                     });
                 }
