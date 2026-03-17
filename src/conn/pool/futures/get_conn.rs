@@ -6,19 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use std::{
-    fmt,
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
-};
-
-use futures_core::ready;
-#[cfg(feature = "tracing")]
-use {
-    std::sync::Arc,
-    tracing::{debug_span, Span},
-};
+use std::{fmt, future::poll_fn, task::Context};
 
 use crate::{
     conn::{
@@ -55,30 +43,14 @@ impl fmt::Debug for GetConnInner {
     }
 }
 
-/// This future will take connection from a pool and resolve to [`Conn`].
 #[derive(Debug)]
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct GetConn {
-    pub(crate) queue_id: QueueId,
-    pub(crate) pool: Option<Pool>,
-    pub(crate) inner: GetConnInner,
-    reset_upon_returning_to_a_pool: bool,
-    #[cfg(feature = "tracing")]
-    span: Arc<Span>,
+struct GetConnState {
+    queue_id: QueueId,
+    pool: Option<Pool>,
+    inner: GetConnInner,
 }
 
-impl GetConn {
-    pub(crate) fn new(pool: &Pool, reset_upon_returning_to_a_pool: bool) -> GetConn {
-        GetConn {
-            queue_id: QueueId::next(),
-            pool: Some(pool.clone()),
-            inner: GetConnInner::New,
-            reset_upon_returning_to_a_pool,
-            #[cfg(feature = "tracing")]
-            span: Arc::new(debug_span!("mysql_async::get_conn")),
-        }
-    }
-
+impl GetConnState {
     fn pool_mut(&mut self) -> &mut Pool {
         self.pool
             .as_mut()
@@ -92,78 +64,76 @@ impl GetConn {
     }
 }
 
-// this manual implementation of Future may seem stupid, but we sort
-// of need it to get the dropping behavior we want.
-impl Future for GetConn {
-    type Output = Result<Conn>;
+/// This future will take connection from a pool and resolve to [`Conn`].
+#[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip_all))]
+pub(crate) async fn get_conn(pool: Pool) -> Result<Conn> {
+    let reset_upon_returning_to_a_pool = pool.opts.pool_opts().reset_connection();
+    let queue_id = QueueId::next();
+    let mut state = GetConnState {
+        queue_id,
+        pool: Some(pool),
+        inner: GetConnInner::New,
+    };
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        #[cfg(feature = "tracing")]
-        let span = self.span.clone();
-        #[cfg(feature = "tracing")]
-        let _span_guard = span.enter();
-        loop {
-            match self.inner {
-                GetConnInner::New => {
-                    let queue_id = self.queue_id;
-                    let next = ready!(self.pool_mut().poll_new_conn(cx, queue_id))?;
-                    match next {
-                        GetConnInner::Connecting(conn_fut) => {
-                            self.inner = GetConnInner::Connecting(conn_fut);
-                        }
-                        GetConnInner::Checking(conn_fut) => {
-                            self.inner = GetConnInner::Checking(conn_fut);
-                        }
-                        GetConnInner::Done => unreachable!(
-                            "Pool::poll_new_conn never gives out already-consumed GetConns"
-                        ),
-                        GetConnInner::New => {
-                            unreachable!("Pool::poll_new_conn never gives out GetConnInner::New")
-                        }
+    loop {
+        match state.inner {
+            GetConnInner::New => {
+                let pool = state.pool_mut();
+                let poll_new = |cx: &mut Context<'_>| pool.poll_new_conn(cx, queue_id);
+                let next = poll_fn(poll_new).await?;
+                match next {
+                    GetConnInner::Connecting(conn_fut) => {
+                        state.inner = GetConnInner::Connecting(conn_fut);
+                    }
+                    GetConnInner::Checking(conn_fut) => {
+                        state.inner = GetConnInner::Checking(conn_fut);
+                    }
+                    GetConnInner::Done => unreachable!(
+                        "Pool::poll_new_conn never gives out already-consumed GetConns"
+                    ),
+                    GetConnInner::New => {
+                        unreachable!("Pool::poll_new_conn never gives out GetConnInner::New")
                     }
                 }
-                GetConnInner::Done => {
-                    unreachable!("GetConn::poll polled after returning Async::Ready");
-                }
-                GetConnInner::Connecting(ref mut f) => {
-                    let result = ready!(Pin::new(f).poll(cx));
-                    let pool = self.pool_take();
+            }
+            GetConnInner::Done => {
+                unreachable!("GetConn::poll polled after returning Async::Ready");
+            }
+            GetConnInner::Connecting(ref mut f) => {
+                let result = f.await;
+                let pool = state.pool_take();
+                state.inner = GetConnInner::Done;
 
-                    self.inner = GetConnInner::Done;
+                return match result {
+                    Ok(mut c) => {
+                        c.inner.pool = Some(pool);
+                        c.inner.reset_upon_returning_to_a_pool = reset_upon_returning_to_a_pool;
+                        Ok(c)
+                    }
+                    Err(e) => {
+                        pool.cancel_connection();
+                        Err(e)
+                    }
+                };
+            }
+            GetConnInner::Checking(ref mut f) => {
+                let result = f.await;
+                match result {
+                    Ok(mut c) => {
+                        state.inner = GetConnInner::Done;
 
-                    return match result {
-                        Ok(mut c) => {
-                            c.inner.pool = Some(pool);
-                            c.inner.reset_upon_returning_to_a_pool =
-                                self.reset_upon_returning_to_a_pool;
-                            Poll::Ready(Ok(c))
-                        }
-                        Err(e) => {
-                            pool.cancel_connection();
-                            Poll::Ready(Err(e))
-                        }
-                    };
-                }
-                GetConnInner::Checking(ref mut f) => {
-                    let result = ready!(Pin::new(f).poll(cx));
-                    match result {
-                        Ok(mut c) => {
-                            self.inner = GetConnInner::Done;
+                        let pool = state.pool_take();
+                        c.inner.pool = Some(pool);
+                        c.inner.reset_upon_returning_to_a_pool = reset_upon_returning_to_a_pool;
+                        return Ok(c);
+                    }
+                    Err(_) => {
+                        // Idling connection is broken. We'll drop it and try again.
+                        state.inner = GetConnInner::New;
 
-                            let pool = self.pool_take();
-                            c.inner.pool = Some(pool);
-                            c.inner.reset_upon_returning_to_a_pool =
-                                self.reset_upon_returning_to_a_pool;
-                            return Poll::Ready(Ok(c));
-                        }
-                        Err(_) => {
-                            // Idling connection is broken. We'll drop it and try again.
-                            self.inner = GetConnInner::New;
-
-                            let pool = self.pool_mut();
-                            pool.cancel_connection();
-                            continue;
-                        }
+                        let pool = state.pool_mut();
+                        pool.cancel_connection();
+                        continue;
                     }
                 }
             }
@@ -171,7 +141,7 @@ impl Future for GetConn {
     }
 }
 
-impl Drop for GetConn {
+impl Drop for GetConnState {
     fn drop(&mut self) {
         // We drop a connection before it can be resolved, a.k.a. cancelling it.
         // Make sure we maintain the necessary invariants towards the pool.
