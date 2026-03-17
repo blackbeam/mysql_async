@@ -84,6 +84,37 @@ impl Recycler {
             exchange.waiting.wake();
         }
     }
+
+    fn conn_decision(&mut self, conn: Conn, close: bool) {
+        if conn.inner.stream.is_none() || conn.inner.disconnected {
+            // drop unestablished connection
+            self.inner
+                .metrics
+                .discarded_unestablished_connection
+                .fetch_add(1, Ordering::Relaxed);
+            self.discard.push(futures_util::future::ok(()).boxed());
+        } else if conn.inner.tx_status != TxStatus::None || conn.has_pending_result() {
+            self.inner
+                .metrics
+                .dirty_connection_return
+                .fetch_add(1, Ordering::Relaxed);
+            self.cleaning.push(conn.cleanup_for_pool().boxed());
+        } else if conn.expired() || close {
+            self.inner
+                .metrics
+                .discarded_expired_connection
+                .fetch_add(1, Ordering::Relaxed);
+            self.discard.push(conn.close_conn().boxed());
+        } else if conn.inner.reset_upon_returning_to_a_pool {
+            self.inner
+                .metrics
+                .resetting_connection
+                .fetch_add(1, Ordering::Relaxed);
+            self.reset.push(conn.reset_for_pool().boxed());
+        } else {
+            self.conn_return(conn, false);
+        }
+    }
 }
 
 impl Future for Recycler {
@@ -92,49 +123,12 @@ impl Future for Recycler {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut close = self.inner.close.load(Ordering::Acquire);
 
-        macro_rules! conn_decision {
-            ($self:ident, $conn:ident) => {
-                if $conn.inner.stream.is_none() || $conn.inner.disconnected {
-                    // drop unestablished connection
-                    $self
-                        .inner
-                        .metrics
-                        .discarded_unestablished_connection
-                        .fetch_add(1, Ordering::Relaxed);
-                    $self.discard.push(futures_util::future::ok(()).boxed());
-                } else if $conn.inner.tx_status != TxStatus::None || $conn.has_pending_result() {
-                    $self
-                        .inner
-                        .metrics
-                        .dirty_connection_return
-                        .fetch_add(1, Ordering::Relaxed);
-                    $self.cleaning.push($conn.cleanup_for_pool().boxed());
-                } else if $conn.expired() || close {
-                    $self
-                        .inner
-                        .metrics
-                        .discarded_expired_connection
-                        .fetch_add(1, Ordering::Relaxed);
-                    $self.discard.push($conn.close_conn().boxed());
-                } else if $conn.inner.reset_upon_returning_to_a_pool {
-                    $self
-                        .inner
-                        .metrics
-                        .resetting_connection
-                        .fetch_add(1, Ordering::Relaxed);
-                    $self.reset.push($conn.reset_for_pool().boxed());
-                } else {
-                    $self.conn_return($conn, false);
-                }
-            };
-        }
-
         while !self.eof {
             // see if there are more connections for us to recycle
             match Pin::new(&mut self.dropped).poll_recv(cx) {
                 Poll::Ready(Some(Some(conn))) => {
                     assert!(conn.inner.pool.is_none());
-                    conn_decision!(self, conn);
+                    self.conn_decision(conn, close);
                 }
                 Poll::Ready(Some(None)) => {
                     // someone signaled us that it's exit time
@@ -164,7 +158,7 @@ impl Future for Recycler {
                     break;
                 };
                 assert!(conn.inner.pool.is_none());
-                conn_decision!(self, conn);
+                self.conn_decision(conn, close);
             }
         }
 
@@ -172,7 +166,7 @@ impl Future for Recycler {
         loop {
             match Pin::new(&mut self.cleaning).poll_next(cx) {
                 Poll::Pending | Poll::Ready(None) => break,
-                Poll::Ready(Some(Ok(conn))) => conn_decision!(self, conn),
+                Poll::Ready(Some(Ok(conn))) => self.conn_decision(conn, close),
                 Poll::Ready(Some(Err(e))) => {
                     // an error occurred while cleaning a connection.
                     // what do we do? replace it with a new connection?
