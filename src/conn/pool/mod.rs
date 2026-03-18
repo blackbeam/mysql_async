@@ -10,7 +10,6 @@ use futures_util::FutureExt;
 use tokio::sync::mpsc;
 
 use std::{
-    collections::VecDeque,
     future::Future,
     str::FromStr,
     sync::{atomic, Arc, Mutex},
@@ -25,12 +24,14 @@ use crate::{
     queryable::transaction::{Transaction, TxOpts},
 };
 
+use in_pool_connections::InPoolConnections;
 pub use metrics::Metrics;
 use waitlist::{QueueId, Waitlist};
 
 mod recycler;
 // this is a really unfortunate name for a module
 pub mod futures;
+mod in_pool_connections;
 mod metrics;
 mod ttl_check_inerval;
 mod waitlist;
@@ -76,7 +77,7 @@ impl From<Conn> for IdlingConn {
 #[derive(Debug)]
 struct Exchange {
     waiting: Waitlist,
-    available: VecDeque<IdlingConn>,
+    available: in_pool_connections::InPoolConnections,
     exist: usize,
     // only used to spawn the recycler the first time we're in async context
     recycler: Option<(mpsc::UnboundedReceiver<Option<Conn>>, PoolOpts)>,
@@ -149,7 +150,10 @@ impl Pool {
                 closed: false.into(),
                 metrics: metrics.clone(),
                 exchange: Mutex::new(Exchange {
-                    available: VecDeque::with_capacity(pool_opts.constraints().max()),
+                    available: InPoolConnections::new(
+                        pool_opts.constraints().max(),
+                        metrics.clone(),
+                    ),
                     waiting: Waitlist::new(metrics),
                     exist: 0,
                     recycler: Some((rx, pool_opts)),
@@ -294,11 +298,6 @@ impl Pool {
                 self.send_to_recycler(conn);
             }
         }
-
-        self.inner
-            .metrics
-            .connections_in_pool
-            .store(exchange.available.len(), atomic::Ordering::Relaxed);
 
         // we didn't _immediately_ get one -- try to make one
         // we first try to just do a load so we don't do an unnecessary add then sub
