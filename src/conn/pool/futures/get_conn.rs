@@ -6,7 +6,7 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use std::{fmt, future::poll_fn, task::Context};
+use std::{fmt, future::poll_fn, sync::atomic::Ordering, task::Context};
 
 use crate::{
     conn::{
@@ -62,12 +62,24 @@ impl GetConnState {
             .take()
             .expect("GetConn::poll polled after returning Async::Ready")
     }
+
+    fn ready_connection(&mut self, mut c: Conn) -> Result<Conn> {
+        let pool = self.pool_take();
+        pool.inner
+            .metrics
+            .connections_in_use
+            .fetch_add(1, Ordering::Relaxed);
+
+        c.inner.reset_upon_returning_to_a_pool = pool.opts.pool_opts().reset_connection();
+        c.inner.pool = Some(pool);
+
+        Ok(c)
+    }
 }
 
 /// This future will take connection from a pool and resolve to [`Conn`].
 #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip_all))]
 pub(crate) async fn get_conn(pool: Pool) -> Result<Conn> {
-    let reset_upon_returning_to_a_pool = pool.opts.pool_opts().reset_connection();
     let queue_id = QueueId::next();
     let mut state = GetConnState {
         queue_id,
@@ -101,16 +113,12 @@ pub(crate) async fn get_conn(pool: Pool) -> Result<Conn> {
             }
             GetConnInner::Connecting(ref mut f) => {
                 let result = f.await;
-                let pool = state.pool_take();
                 state.inner = GetConnInner::Done;
 
                 return match result {
-                    Ok(mut c) => {
-                        c.inner.pool = Some(pool);
-                        c.inner.reset_upon_returning_to_a_pool = reset_upon_returning_to_a_pool;
-                        Ok(c)
-                    }
+                    Ok(c) => state.ready_connection(c),
                     Err(e) => {
+                        let pool = state.pool_take();
                         pool.cancel_connection();
                         Err(e)
                     }
@@ -119,13 +127,10 @@ pub(crate) async fn get_conn(pool: Pool) -> Result<Conn> {
             GetConnInner::Checking(ref mut f) => {
                 let result = f.await;
                 match result {
-                    Ok(mut c) => {
+                    Ok(c) => {
                         state.inner = GetConnInner::Done;
 
-                        let pool = state.pool_take();
-                        c.inner.pool = Some(pool);
-                        c.inner.reset_upon_returning_to_a_pool = reset_upon_returning_to_a_pool;
-                        return Ok(c);
+                        return state.ready_connection(c);
                     }
                     Err(_) => {
                         // Idling connection is broken. We'll drop it and try again.
