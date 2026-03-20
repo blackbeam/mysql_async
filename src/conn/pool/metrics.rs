@@ -68,7 +68,7 @@ impl MetricsHistogram {
 #[cfg(feature = "hdrhistogram")]
 impl Default for MetricsHistogram {
     fn default() -> Self {
-        let hdr = hdrhistogram::Histogram::new_with_bounds(1, 30 * 1_000_000, 2).unwrap();
+        let hdr = hdrhistogram::Histogram::new(2).unwrap();
         Self(std::sync::Mutex::new(hdr))
     }
 }
