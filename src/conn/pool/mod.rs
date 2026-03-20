@@ -9,27 +9,29 @@
 use futures_util::FutureExt;
 use tokio::sync::mpsc;
 
-use std::{
-    collections::VecDeque,
-    str::FromStr,
-    sync::{atomic, Arc, Mutex},
-    task::{Context, Poll},
-    time::{Duration, Instant},
-};
-
 use crate::{
     conn::{pool::futures::*, Conn},
     error::*,
     opts::{Opts, PoolOpts},
     queryable::transaction::{Transaction, TxOpts},
 };
+use std::sync::atomic::Ordering;
+use std::{
+    future::Future,
+    str::FromStr,
+    sync::{atomic, Arc, Mutex},
+    task::{Context, Poll},
+    time::{Duration, Instant},
+};
 
+use in_pool_connections::InPoolConnections;
 pub use metrics::Metrics;
 use waitlist::{QueueId, Waitlist};
 
 mod recycler;
 // this is a really unfortunate name for a module
 pub mod futures;
+mod in_pool_connections;
 mod metrics;
 mod ttl_check_inerval;
 mod waitlist;
@@ -75,7 +77,7 @@ impl From<Conn> for IdlingConn {
 #[derive(Debug)]
 struct Exchange {
     waiting: Waitlist,
-    available: VecDeque<IdlingConn>,
+    available: in_pool_connections::InPoolConnections,
     exist: usize,
     // only used to spawn the recycler the first time we're in async context
     recycler: Option<(mpsc::UnboundedReceiver<Option<Conn>>, PoolOpts)>,
@@ -148,7 +150,10 @@ impl Pool {
                 closed: false.into(),
                 metrics: metrics.clone(),
                 exchange: Mutex::new(Exchange {
-                    available: VecDeque::with_capacity(pool_opts.constraints().max()),
+                    available: InPoolConnections::new(
+                        pool_opts.constraints().max(),
+                        metrics.clone(),
+                    ),
                     waiting: Waitlist::new(metrics),
                     exist: 0,
                     recycler: Some((rx, pool_opts)),
@@ -170,9 +175,8 @@ impl Pool {
     }
 
     /// Async function that resolves to `Conn`.
-    pub fn get_conn(&self) -> GetConn {
-        let reset_connection = self.opts.pool_opts().reset_connection();
-        GetConn::new(self, reset_connection)
+    pub fn get_conn(&self) -> impl Future<Output = Result<Conn>> {
+        get_conn(self.clone())
     }
 
     /// Starts a new transaction.
@@ -184,7 +188,7 @@ impl Pool {
     /// Async function that disconnects this pool from the server and resolves to `()`.
     ///
     /// **Note:** This Future won't resolve until all active connections, taken from it,
-    /// are dropped or disonnected. Also all pending and new `GetConn`'s will resolve to error.
+    /// are dropped or disonnected. Also all pending and new `get_conn()`'s will resolve to error.
     pub async fn disconnect(self) -> Result<()> {
         disconnect_pool(self).await
     }
@@ -193,6 +197,10 @@ impl Pool {
     fn return_conn(&mut self, conn: Conn) {
         // NOTE: we're not in async context here, so we can't block or return NotReady
         // any and all cleanup work _has_ to be done in the spawned recycler
+        self.inner
+            .metrics
+            .connections_in_use
+            .fetch_sub(1, Ordering::Relaxed);
         self.send_to_recycler(conn);
     }
 
@@ -271,7 +279,8 @@ impl Pool {
                     .connection_idle_duration
                     .lock()
                     .unwrap()
-                    .saturating_record(since.elapsed().as_micros() as u64);
+                    .record(since.elapsed().as_micros() as u64)
+                    .ok();
                 #[cfg(feature = "hdrhistogram")]
                 let metrics = self.metrics();
                 conn.inner.active_since = Instant::now();
@@ -283,9 +292,8 @@ impl Pool {
                             .check_duration
                             .lock()
                             .unwrap()
-                            .saturating_record(
-                                conn.inner.active_since.elapsed().as_micros() as u64
-                            );
+                            .record(conn.inner.active_since.elapsed().as_micros() as u64)
+                            .ok();
                         Ok(conn)
                     }
                     .boxed(),
@@ -294,11 +302,6 @@ impl Pool {
                 self.send_to_recycler(conn);
             }
         }
-
-        self.inner
-            .metrics
-            .connections_in_pool
-            .store(exchange.available.len(), atomic::Ordering::Relaxed);
 
         // we didn't _immediately_ get one -- try to make one
         // we first try to just do a load so we don't do an unnecessary add then sub
@@ -324,9 +327,8 @@ impl Pool {
                             .connect_duration
                             .lock()
                             .unwrap()
-                            .saturating_record(
-                                conn.inner.active_since.elapsed().as_micros() as u64
-                            );
+                            .record(conn.inner.active_since.elapsed().as_micros() as u64)
+                            .ok();
                     }
                     conn
                 }
@@ -352,6 +354,10 @@ impl Drop for Conn {
         if std::thread::panicking() {
             // Try to decrease the number of existing connections.
             if let Some(pool) = self.inner.pool.take() {
+                pool.inner
+                    .metrics
+                    .connections_in_use
+                    .fetch_sub(1, Ordering::Relaxed);
                 pool.cancel_connection();
             }
 
@@ -1106,6 +1112,89 @@ mod test {
         fut3.await;
 
         Ok(())
+    }
+
+    #[cfg(feature = "hdrhistogram")]
+    #[tokio::test]
+    async fn metrics() -> super::Result<()> {
+        let pool = pool_with_one_connection();
+
+        let metrics = pool.metrics();
+        let conn = pool.get_conn().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(conn);
+        pool.get_conn().await.unwrap();
+
+        let max = metrics.connection_active_duration.lock().unwrap().max();
+        // We slept for 100 miliseconds holding a conneciton.
+        assert!(max > 100_000);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn connection_in_use_metric() {
+        let pool = pool_with_one_connection();
+        let metrics = pool.metrics();
+
+        let conn = pool.get_conn().await.unwrap();
+        assert_eq!(
+            metrics
+                .connections_in_use
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
+        drop(conn);
+        assert_eq!(
+            metrics
+                .connections_in_use
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        loop {
+            if metrics
+                .connections_in_pool
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == 1
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // Ensure that we increase the connections in use metric when we get a connection from the pool
+        let conn = pool.get_conn().await.unwrap();
+        assert_eq!(
+            metrics
+                .connections_in_use
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            metrics
+                .connections_in_pool
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+
+        drop(conn);
+        assert_eq!(
+            metrics
+                .connections_in_use
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        loop {
+            if metrics
+                .connections_in_pool
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == 1
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     #[cfg(feature = "nightly")]
