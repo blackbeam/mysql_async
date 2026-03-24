@@ -121,6 +121,12 @@ pub struct Inner {
 ///
 /// Note that you will probably want to await [`Pool::disconnect`] before dropping the runtime, as
 /// otherwise you may end up with a number of connections that are not cleanly terminated.
+///
+/// ## Multi-runtime environments
+///
+/// In multi-runtime environments such as actix-web, the pool's background tasks must
+/// be explicitly started on the long-lived root runtime before worker runtimes begin
+/// using the pool. See [`Pool::spawn_background_tasks`] for details.
 #[derive(Debug, Clone)]
 pub struct Pool {
     opts: Opts,
@@ -161,6 +167,38 @@ impl Pool {
             }),
             drop: tx,
         }
+    }
+
+    /// Explicitly spawns the pool's background tasks on the current Tokio runtime.
+    ///
+    /// In most applications this method is unnecessary — the background tasks are spawned
+    /// automatically on the first call to [`Pool::get_conn`].
+    ///
+    /// # When to use this
+    ///
+    /// In multi-runtime environments (e.g., [actix-web](https://actix.rs/)), the lazy
+    /// spawning may cause the background tasks to be bound to a short-lived worker runtime
+    /// rather than the application's long-lived root runtime. When that worker runtime shuts
+    /// down, the [`Recycler`] is dropped, setting the pool's close flag and causing all
+    /// subsequent [`Pool::get_conn`] calls to return [`DriverError::PoolDisconnected`].
+    ///
+    /// Call this method once during startup, from within the long-lived runtime, before any
+    /// worker runtimes call [`Pool::get_conn`].
+    ///
+    /// **This method must be called from within the Tokio runtime that should own the
+    /// background tasks.**
+    ///
+    /// # Idempotency
+    ///
+    /// This method is a no-op after the first successful call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside of a Tokio runtime context.
+    pub fn spawn_background_tasks(&self) {
+        let mut exchange = self.inner.exchange.lock().unwrap();
+
+        exchange.spawn_futures_if_needed(&self.inner);
     }
 
     /// Returns metrics for the connection pool.
