@@ -9,6 +9,7 @@
 mod native_tls_opts;
 mod rustls_opts;
 
+use mysql_common::constants::MariadbCapabilities;
 #[cfg(feature = "native-tls-tls")]
 pub use native_tls_opts::ClientIdentity;
 
@@ -16,7 +17,7 @@ pub use native_tls_opts::ClientIdentity;
 pub use rustls_opts::ClientIdentity;
 
 use percent_encoding::percent_decode;
-use rand::Rng;
+use rand::RngExt as _;
 use tokio::sync::OnceCell;
 use url::{Host, Url};
 
@@ -1124,6 +1125,11 @@ impl Opts {
         }
 
         out
+    }
+
+    pub(crate) fn get_mariadb_capabilities(&self) -> MariadbCapabilities {
+        MariadbCapabilities::MARIADB_CLIENT_STMT_BULK_OPERATIONS
+            | MariadbCapabilities::MARIADB_CLIENT_BULK_UNIT_RESULTS
     }
 
     pub(crate) fn ssl_opts_and_connector(&self) -> Option<&SslOptsAndCachedConnector> {

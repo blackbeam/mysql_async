@@ -16,5 +16,7 @@ mod helpers;
 
 /// Connection will be broken if this operation isn't finished.
 pub trait Routine<T> {
-    fn call<'a>(&'a mut self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<T>>;
+    fn call<'a>(self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<T>>
+    where
+        Self: 'a;
 }

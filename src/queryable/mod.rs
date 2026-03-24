@@ -8,7 +8,7 @@
 
 use futures_util::FutureExt;
 use mysql_common::{
-    constants::MAX_PAYLOAD_LEN,
+    constants::{MariadbCapabilities, MAX_PAYLOAD_LEN},
     io::ParseBuf,
     proto::{Binary, Text},
     row::RowDeserializer,
@@ -275,6 +275,15 @@ pub trait Queryable: Send {
     /// Executes the given statement for each item in the given params iterator.
     ///
     /// It'll prepare `stmt` (once), if necessary.
+    ///
+    /// # Note
+    ///
+    /// It will use `COM_STMT_BULK_EXECUTE` for MariaDb >= v10.2 if
+    /// `MARIADB_CLIENT_STMT_BULK_OPERATIONS` is enabled by the server. Practically
+    /// this means that the function will error with code 1295 (`ER_UNSUPPORTED_PS`)
+    /// for _non-bulk execution safe_ operations, namely for all operations
+    /// except UPDATE, multi-UPDATE, INSERT, DELETE and REPLACE. Consider not
+    /// using exec batch for operations outside of this list.
     fn exec_batch<'a: 'b, 'b, S, P, I>(&'a mut self, stmt: S, params_iter: I) -> BoxFuture<'b, ()>
     where
         S: StatementLike + 'b,
@@ -523,11 +532,18 @@ impl Queryable for Conn {
     {
         async move {
             let statement = self.get_statement(stmt).await?;
-            for params in params_iter {
-                self.execute_statement(&statement, params).await?;
-                QueryResult::<BinaryProtocol>::new(&mut *self)
-                    .drop_result()
-                    .await?;
+            if self
+                .has_mariadb_capabilities(MariadbCapabilities::MARIADB_CLIENT_STMT_BULK_OPERATIONS)
+                && statement.num_params() > 0
+            {
+                self.execute_bulk(&statement, params_iter).await?;
+            } else {
+                for params in params_iter {
+                    self.execute_statement(&statement, params).await?;
+                    QueryResult::<BinaryProtocol>::new(&mut *self)
+                        .drop_result()
+                        .await?;
+                }
             }
             Ok(())
         }
@@ -637,30 +653,35 @@ impl<'c, 't: 'c> Queryable for Connection<'c, 't> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{error::Result, prelude::*, test_misc::get_opts, Conn};
+    use crate::{prelude::*, test_misc::get_opts, Conn};
 
     #[tokio::test]
-    async fn should_prep() -> Result<()> {
+    async fn should_prep() {
         const NAMED: &str = "SELECT :foo, :bar, :foo";
         const POSITIONAL: &str = "SELECT ?, ?, ?";
 
-        let mut conn = Conn::new(get_opts()).await?;
+        let mut conn = Conn::new(get_opts()).await.unwrap();
 
-        let stmt_named = conn.prep(NAMED).await?;
-        let stmt_positional = conn.prep(POSITIONAL).await?;
+        let stmt_named = conn.prep(NAMED).await.unwrap();
+        let stmt_positional = conn.prep(POSITIONAL).await.unwrap();
 
         let result_stmt_named: Option<(String, u8, String)> = conn
             .exec_first(&stmt_named, params! { "foo" => "bar", "bar" => 42 })
-            .await?;
+            .await
+            .unwrap();
         let result_str_named: Option<(String, u8, String)> = conn
             .exec_first(NAMED, params! { "foo" => "bar", "bar" => 42 })
-            .await?;
+            .await
+            .unwrap();
 
         let result_stmt_positional: Option<(String, u8, String)> = conn
             .exec_first(&stmt_positional, ("bar", 42, "bar"))
-            .await?;
-        let result_str_positional: Option<(String, u8, String)> =
-            conn.exec_first(NAMED, ("bar", 42, "bar")).await?;
+            .await
+            .unwrap();
+        let result_str_positional: Option<(String, u8, String)> = conn
+            .exec_first(NAMED, params! { "foo" => "bar", "bar" => 42 })
+            .await
+            .unwrap();
 
         assert_eq!(
             Some(("bar".to_owned(), 42_u8, "bar".to_owned())),
@@ -670,8 +691,6 @@ mod tests {
         assert_eq!(result_str_named, result_stmt_positional);
         assert_eq!(result_stmt_positional, result_str_positional);
 
-        conn.disconnect().await?;
-
-        Ok(())
+        conn.disconnect().await.unwrap();
     }
 }

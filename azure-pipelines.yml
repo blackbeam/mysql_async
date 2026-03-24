@@ -98,9 +98,7 @@ jobs:
       maxParallel: 10
       matrix:
         v91:
-          DB_VERSION: "9.1"
-        v90:
-          DB_VERSION: "9.0"
+          DB_VERSION: "9.6"
         v84:
           DB_VERSION: "8.4"
         v80:

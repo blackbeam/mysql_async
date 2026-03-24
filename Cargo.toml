@@ -21,14 +21,21 @@ futures-util = "0.3"
 futures-sink = "0.3"
 keyed_priority_queue = "0.4"
 lru = "0.16.0"
-mysql_common = { version = "0.37.0", default-features = false }
-pem = { version = "3.0", optional = true}
+mysql_common = { version = "0.37.1", default-features = false }
+pem = { version = "3.0", optional = true }
 percent-encoding = "2.1.0"
-rand = "0.9"
+rand = "0.10"
 serde = "1"
-socket2 = "0.5.2"
+socket2 = "0.6"
 thiserror = "2"
-tokio = { version = "1.0", features = ["io-util", "fs", "net", "time", "rt", "sync"] }
+tokio = { version = "1.0", features = [
+    "io-util",
+    "fs",
+    "net",
+    "time",
+    "rt",
+    "sync",
+] }
 tokio-util = { version = "0.7.2", features = ["codec", "io"] }
 tracing = { version = "0.1.37", default-features = false, features = [
     "attributes",
@@ -61,13 +68,13 @@ version = "2.1.0"
 optional = true
 
 [dependencies.webpki-roots]
-version = "0.26.1"
+version = "1"
 optional = true
 
 [dev-dependencies]
 waker-fn = "1"
 tempfile = "3.1.0"
-socket2 = { version = "0.5.2", features = ["all"] }
+socket2 = { version = "0.6", features = ["all"] }
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread"] }
 
 [features]
@@ -93,12 +100,7 @@ minimal-rust = ["flate2/rust_backend"]
 native-tls-tls = ["native-tls", "tokio-native-tls", "pem"]
 
 # rustls based TLS support
-rustls-tls = [
-    "rustls",
-    "tokio-rustls",
-    "webpki-roots",
-    "rustls-pemfile",
-]
+rustls-tls = ["rustls", "tokio-rustls", "webpki-roots", "rustls-pemfile"]
 
 aws-lc-rs = ["rustls/aws_lc_rs", "tokio-rustls/aws_lc_rs"]
 ring = ["rustls/ring", "tokio-rustls/ring"]
