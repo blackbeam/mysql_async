@@ -13,7 +13,10 @@ use super::Routine;
 pub struct PingRoutine;
 
 impl Routine<()> for PingRoutine {
-    fn call<'a>(&'a mut self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<()>> {
+    fn call<'a>(self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<()>>
+    where
+        Self: 'a,
+    {
         #[cfg(feature = "tracing")]
         let span = debug_span!("mysql_async::ping", mysql_async.connection.id = conn.id());
 

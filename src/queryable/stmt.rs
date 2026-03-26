@@ -16,7 +16,7 @@ use mysql_common::{
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
-    conn::routines::{ExecRoutine, PrepareRoutine},
+    conn::routines::{ExecBulkRoutine, ExecRoutine, PrepareRoutine},
     consts::CapabilityFlags,
     error::*,
     Column, Params,
@@ -310,10 +310,7 @@ impl crate::Conn {
             .collect::<std::result::Result<Vec<Column>, _>>()
             .map_err(Error::from)?;
 
-        if !self
-            .capabilities()
-            .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
-        {
+        if !self.has_capabilities(CapabilityFlags::CLIENT_DEPRECATE_EOF) {
             self.read_packet().await?;
         }
 
@@ -354,6 +351,24 @@ impl crate::Conn {
         P: Into<Params>,
     {
         self.routine(ExecRoutine::new(statement, params.into()))
+            .await?;
+        Ok(())
+    }
+
+    /// Helper, that executes the given statement as a bulk operation
+    ///
+    /// Available in MariaDb with MARIADB_CLIENT_STMT_BULK_OPERATIONS capability.
+    pub(crate) async fn execute_bulk<P, I>(
+        &mut self,
+        statement: &Statement,
+        params: I,
+    ) -> Result<()>
+    where
+        P: Into<Params> + Send,
+        I: IntoIterator<Item = P> + Send,
+        I::IntoIter: Send,
+    {
+        self.routine(ExecBulkRoutine::new(statement, params))
             .await?;
         Ok(())
     }

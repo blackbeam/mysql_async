@@ -16,7 +16,10 @@ use super::Routine;
 pub struct ChangeUser;
 
 impl Routine<()> for ChangeUser {
-    fn call<'a>(&'a mut self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<()>> {
+    fn call<'a>(self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<()>>
+    where
+        Self: 'a,
+    {
         #[cfg(feature = "tracing")]
         let span = debug_span!(
             "mysql_async::change_user",

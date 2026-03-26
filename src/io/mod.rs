@@ -421,6 +421,14 @@ impl Stream {
         }
     }
 
+    pub(crate) fn get_max_allowed_packet(&self) -> usize {
+        if let Some(codec) = self.codec.as_ref() {
+            codec.codec().max_allowed_packet
+        } else {
+            unreachable!()
+        }
+    }
+
     pub(crate) fn set_max_allowed_packet(&mut self, max_allowed_packet: usize) {
         if let Some(codec) = self.codec.as_mut() {
             codec.codec_mut().max_allowed_packet = max_allowed_packet;
@@ -500,7 +508,7 @@ mod test {
             socket2::Socket::from_raw_fd(raw)
         };
 
-        assert_eq!(sock.keepalive_time().unwrap(), duration);
+        assert_eq!(sock.tcp_keepalive_time().unwrap(), duration);
 
         std::mem::forget(sock);
 

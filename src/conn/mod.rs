@@ -9,7 +9,9 @@
 use futures_util::FutureExt;
 
 use mysql_common::{
-    constants::{DEFAULT_MAX_ALLOWED_PACKET, UTF8MB4_GENERAL_CI, UTF8_GENERAL_CI},
+    constants::{
+        MariadbCapabilities, DEFAULT_MAX_ALLOWED_PACKET, UTF8MB4_GENERAL_CI, UTF8_GENERAL_CI,
+    },
     crypto,
     io::ParseBuf,
     packets::{
@@ -99,6 +101,7 @@ struct ConnInner {
     version: (u16, u16, u16),
     socket: Option<String>,
     capabilities: CapabilityFlags,
+    mariadb_capabilities: MariadbCapabilities,
     status: StatusFlags,
     last_ok_packet: Option<OkPacket<'static>>,
     last_err_packet: Option<mysql_common::packets::ServerError<'static>>,
@@ -136,6 +139,8 @@ impl fmt::Debug for ConnInner {
             .field("options", &self.opts)
             .field("server_key", &self.server_key)
             .field("auth_plugin", &self.auth_plugin)
+            .field("capabilities", &self.capabilities)
+            .field("mariadb_capabilities", &self.mariadb_capabilities)
             .finish()
     }
 }
@@ -145,7 +150,8 @@ impl ConnInner {
     fn empty(opts: Opts) -> ConnInner {
         let ttl_deadline = opts.pool_opts().new_connection_ttl_deadline();
         ConnInner {
-            capabilities: opts.get_capabilities(),
+            capabilities: CapabilityFlags::empty(),
+            mariadb_capabilities: MariadbCapabilities::empty(),
             status: StatusFlags::empty(),
             last_ok_packet: None,
             last_err_packet: None,
@@ -180,6 +186,12 @@ impl ConnInner {
     fn stream_mut(&mut self) -> Result<&mut Stream> {
         self.stream
             .as_mut()
+            .ok_or_else(|| DriverError::ConnectionClosed.into())
+    }
+
+    fn stream_ref(&self) -> Result<&Stream> {
+        self.stream
+            .as_ref()
             .ok_or_else(|| DriverError::ConnectionClosed.into())
     }
 }
@@ -251,12 +263,24 @@ impl Conn {
         self.inner.reset_upon_returning_to_a_pool = reset_connection;
     }
 
+    pub(crate) fn stream_ref(&self) -> Result<&Stream> {
+        self.inner.stream_ref()
+    }
+
     pub(crate) fn stream_mut(&mut self) -> Result<&mut Stream> {
         self.inner.stream_mut()
     }
 
     pub(crate) fn capabilities(&self) -> CapabilityFlags {
         self.inner.capabilities
+    }
+
+    pub(crate) fn has_capabilities(&self, c: CapabilityFlags) -> bool {
+        self.inner.capabilities.contains(c)
+    }
+
+    pub(crate) fn has_mariadb_capabilities(&self, c: MariadbCapabilities) -> bool {
+        self.inner.mariadb_capabilities.contains(c)
     }
 
     /// Will update last IO time for this connection.
@@ -374,7 +398,7 @@ impl Conn {
         self.inner.status
     }
 
-    pub(crate) async fn routine<'a, F, T>(&mut self, mut f: F) -> crate::Result<T>
+    pub(crate) async fn routine<'a, F, T>(&mut self, f: F) -> crate::Result<T>
     where
         F: Routine<T> + 'a,
     {
@@ -515,6 +539,13 @@ impl Conn {
         self.inner.id = handshake.connection_id();
         self.inner.status = handshake.status_flags();
 
+        // If we have a MariaDB server version, we are using mariadb extended capabilities from the handshake packet.
+        // MariaDB does not set the first standard capability flag bit to indicate that it supports extended capabilities.
+        if self.inner.is_mariadb && !self.has_capabilities(CapabilityFlags::CLIENT_LONG_PASSWORD) {
+            self.inner.mariadb_capabilities =
+                handshake.mariadb_ext_capabilities() & self.inner.opts.get_mariadb_capabilities();
+        }
+
         // Allow only CachingSha2Password and MysqlNativePassword here
         // because sha256_password is deprecated and other plugins won't
         // appear here.
@@ -533,11 +564,7 @@ impl Conn {
             .get_capabilities()
             .contains(CapabilityFlags::CLIENT_SSL)
         {
-            if !self
-                .inner
-                .capabilities
-                .contains(CapabilityFlags::CLIENT_SSL)
-            {
+            if !self.has_capabilities(CapabilityFlags::CLIENT_SSL) {
                 return Err(DriverError::NoClientSslFlagFromServer.into());
             }
 
@@ -551,7 +578,8 @@ impl Conn {
                 self.inner.capabilities,
                 DEFAULT_MAX_ALLOWED_PACKET as u32,
                 collation as u8,
-            );
+            )
+            .with_mariadb_capabilities(self.inner.mariadb_capabilities);
             self.write_struct(&ssl_request).await?;
             let conn = self;
             let ssl_opts = conn.opts().ssl_opts_and_connector().expect("unreachable");
@@ -588,7 +616,8 @@ impl Conn {
                 .opts
                 .max_allowed_packet()
                 .unwrap_or(DEFAULT_MAX_ALLOWED_PACKET) as u32,
-        );
+        )
+        .with_mariadb_ext_capabilities(self.inner.mariadb_capabilities);
 
         // Serialize here to satisfy borrow checker.
         let mut buf = crate::buffer_pool().get();
@@ -696,10 +725,7 @@ impl Conn {
     }
 
     fn switch_to_compression(&mut self) -> Result<()> {
-        if self
-            .capabilities()
-            .contains(CapabilityFlags::CLIENT_COMPRESS)
-        {
+        if self.has_capabilities(CapabilityFlags::CLIENT_COMPRESS) {
             if let Some(compression) = self.inner.opts.compression() {
                 if let Some(stream) = self.inner.stream.as_mut() {
                     stream.compress(compression);
@@ -847,10 +873,7 @@ impl Conn {
     /// Returns `true` for ProgressReport packet.
     fn handle_packet(&mut self, packet: &PooledBuf) -> Result<bool> {
         let ok_packet = if self.has_pending_result() {
-            if self
-                .capabilities()
-                .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF)
-            {
+            if self.has_capabilities(CapabilityFlags::CLIENT_DEPRECATE_EOF) {
                 ParseBuf(packet)
                     .parse::<OkPacketDeserializer<ResultSetTerminator>>(self.capabilities())
                     .map(|x| x.into_inner())
@@ -1361,8 +1384,8 @@ impl Conn {
 mod test {
     use bytes::Bytes;
     use futures_util::stream::{self, StreamExt};
-    use mysql_common::constants::MAX_PAYLOAD_LEN;
-    use rand::Rng;
+    use mysql_common::constants::{MariadbCapabilities, MAX_PAYLOAD_LEN};
+    use rand::RngExt as _;
     use tokio::{io::AsyncWriteExt, net::TcpListener};
 
     use crate::{
@@ -1780,6 +1803,162 @@ mod test {
             }
         }
 
+        Ok(())
+    }
+
+    // Test for exec_batch method.
+    #[tokio::test]
+    async fn test_exec_batch() {
+        let mut conn = Conn::new(get_opts()).await.unwrap();
+
+        conn.query_drop(
+            "CREATE TEMPORARY TABLE t_exec_batch (\
+                    id INT NOT NULL PRIMARY KEY,\
+                    val VARCHAR(32),\
+                    num BIGINT UNSIGNED)",
+        )
+        .await
+        .unwrap();
+
+        // Populating table with some data to verify that data still fetched correctly with cached metadata use
+        let insert_stmt = "INSERT INTO t_exec_batch (id,val,num) VALUES (?,?,?)";
+
+        let params = [
+            (1, Some("First"), None),
+            (3, None, Some(1)),
+            (4, Some("Third"), Some(u64::MAX)),
+        ];
+
+        conn.exec_batch(insert_stmt, params.iter().copied())
+            .await
+            .unwrap();
+
+        conn.exec_batch(insert_stmt, [(8, None::<String>, None::<u64>)])
+            .await
+            .unwrap();
+
+        let fetched_rows: Vec<(i32, Option<String>, Option<u64>)> = conn
+            .query_iter("SELECT id, val, num FROM t_exec_batch")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let expected_rows: Vec<(i32, Option<String>, Option<u64>)> = vec![
+            (1, Some("First".to_string()), None),
+            (3, None, Some(1)),
+            (4, Some("Third".to_string()), Some(u64::MAX)),
+            (8, None, None),
+        ];
+        assert_eq!(fetched_rows, expected_rows);
+
+        if conn.has_mariadb_capabilities(MariadbCapabilities::MARIADB_CLIENT_STMT_BULK_OPERATIONS) {
+            let select_stmt = "SELECT ?";
+            let err = conn
+                .exec_batch(select_stmt, [(1_u64,), (2_u64,), (3_u64,)])
+                .await
+                .unwrap_err();
+            assert!(matches!(err, crate::Error::Server(e) if e.code == 1295));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_exec_batch_large() {
+        const CLIENT_MAX_PACKET_SIZE: usize = 1024; // 1K
+        let opts = get_opts().max_allowed_packet(Some(CLIENT_MAX_PACKET_SIZE));
+        let mut conn = Conn::new(opts).await.unwrap();
+        conn.query_drop(
+            "CREATE TEMPORARY TABLE t_large_batch (id BIGINT NOT NULL PRIMARY KEY,
+                val VARCHAR(1024) NOT NULL)",
+        )
+        .await
+        .unwrap();
+
+        // Calculate a row size that will make the total packet size > max_allowed_packet
+        // Packet will have 4 byte header and 7 bytes COM_STMT_BULK_EXECUTE fields + 4 bytes for parameter types
+        // 8 bytes per row for id + 2 bytes for indicators + 3 bytes for length encoding of val.
+        let num_rows = 3;
+        let row_chunk_size = CLIENT_MAX_PACKET_SIZE / num_rows;
+        let mut row_data_1 = "a".repeat(row_chunk_size);
+        let row_data_2 = "b".repeat(row_chunk_size);
+        let row_data_3 = "c".repeat(row_chunk_size);
+
+        let evaluated_packet_len = 4 + 7 + 4 + (1 + 8 + 1 + 3 + row_chunk_size * num_rows);
+
+        assert!(
+            evaluated_packet_len > CLIENT_MAX_PACKET_SIZE,
+            "Data size must be greater than max packet size"
+        );
+
+        let params: Vec<(u64, &str)> = vec![
+            (1, &row_data_1[..]),
+            (7, &row_data_2[..]),
+            (22, &row_data_3[..]),
+        ];
+
+        let query = "INSERT INTO t_large_batch (id, val) VALUES (?,?)";
+        conn.exec_batch(query, params)
+            .await
+            .expect("Batch execution should succeed");
+
+        // MySql compression does not respect max_allowed_packet, so we're going to query
+        // one by one
+        let mut inserted_rows: Vec<(u64, String)> = vec![];
+        inserted_rows.extend(
+            conn.query("SELECT id, val FROM t_large_batch ORDER BY id LIMIT 1 OFFSET 0")
+                .await
+                .unwrap(),
+        );
+        inserted_rows.extend(
+            conn.query("SELECT id, val FROM t_large_batch ORDER BY id LIMIT 1 OFFSET 1")
+                .await
+                .unwrap(),
+        );
+        inserted_rows.extend(
+            conn.query("SELECT id, val FROM t_large_batch ORDER BY id LIMIT 65536 OFFSET 2")
+                .await
+                .unwrap(),
+        );
+
+        assert_eq!(
+            inserted_rows.len(),
+            num_rows,
+            "The number of inserted rows ({}) does not match the expected number ({})",
+            inserted_rows.len(),
+            num_rows
+        );
+
+        assert_eq!(inserted_rows[0], (1, row_data_1));
+        assert_eq!(inserted_rows[1], (7, row_data_2));
+        assert_eq!(inserted_rows[2], (22, row_data_3));
+
+        // Some corner cases: single row exceeding max_allowed_packet and
+        // empty batch
+        row_data_1 = "x".repeat(CLIENT_MAX_PACKET_SIZE);
+        let params: Vec<(u64, &str)> = vec![(33, &row_data_1[..])];
+        let result = conn.exec_batch(query, params).await;
+        assert!(
+            result.is_err(),
+            "Batch execution should fail due to packet size exceeding max_allowed_packet"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exec_batch_no_params() -> crate::Result<()> {
+        let mut conn = Conn::new(get_opts()).await.unwrap();
+        conn.query_drop("CREATE TEMPORARY TABLE t_counter (counter INTEGER NOT NULL)")
+            .await
+            .unwrap();
+        conn.query_drop("INSERT INTO t_counter (counter) VALUES (0)")
+            .await
+            .unwrap();
+
+        const COUNT: usize = 10;
+        conn.exec_batch("UPDATE t_counter SET counter = counter+1", vec![(); COUNT])
+            .await
+            .expect("Batch execution should succeed");
+        let rows: Vec<(usize,)> = conn.query("SELECT counter FROM t_counter").await.unwrap();
+        assert_eq!(rows, vec![(COUNT,)]);
         Ok(())
     }
 

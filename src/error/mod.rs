@@ -11,8 +11,12 @@ pub use url::ParseError;
 pub mod tls;
 
 use mysql_common::{
-    named_params::MixedParamsError, params::MissingNamedParameterError,
-    proto::codec::error::PacketCodecError, row::Row, value::Value,
+    named_params::MixedParamsError,
+    packets::{BulkExecuteRequestBuilderError, BulkExecuteRequestError},
+    params::{MissingNamedParameterError, ParamsError},
+    proto::codec::error::PacketCodecError,
+    row::Row,
+    value::Value,
 };
 use thiserror::Error;
 
@@ -113,14 +117,11 @@ pub enum DriverError {
     #[error("Error converting from mysql row.")]
     FromRow { row: Row },
 
-    #[error("Missing named parameter `{}'.", String::from_utf8_lossy(name))]
-    MissingNamedParam { name: Vec<u8> },
+    #[error(transparent)]
+    Params(ParamsError),
 
     #[error("Named and positional parameters mixed in one statement.")]
     MixedParams,
-
-    #[error("Named parameters supplied for positional query.")]
-    NamedParamsForPositionalQuery,
 
     #[error("Transactions couldn't be nested.")]
     NestedTransaction,
@@ -179,6 +180,24 @@ pub enum DriverError {
     CleartextPluginDisabled,
     #[error("Invalid parsec ext-salt packet received from server")]
     InvalidParsecSalt,
+
+    #[error("Bulk execute error: {}", _0)]
+    BulkExecute(BulkExecuteRequestError),
+}
+
+impl From<BulkExecuteRequestBuilderError> for DriverError {
+    fn from(value: BulkExecuteRequestBuilderError) -> Self {
+        match value {
+            BulkExecuteRequestBuilderError::Request(x) => Self::from(x),
+            BulkExecuteRequestBuilderError::Params(x) => Self::from(x),
+        }
+    }
+}
+
+impl From<BulkExecuteRequestError> for DriverError {
+    fn from(value: BulkExecuteRequestError) -> Self {
+        Self::BulkExecute(value)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -279,7 +298,7 @@ impl From<(Error, crate::io::Stream)> for Error {
 
 impl From<MissingNamedParameterError> for DriverError {
     fn from(err: MissingNamedParameterError) -> Self {
-        DriverError::MissingNamedParam { name: err.0 }
+        DriverError::Params(ParamsError::Missing(err))
     }
 }
 
@@ -298,6 +317,18 @@ impl From<MixedParamsError> for DriverError {
 impl From<MixedParamsError> for Error {
     fn from(err: MixedParamsError) -> Self {
         Error::Driver(err.into())
+    }
+}
+
+impl From<ParamsError> for DriverError {
+    fn from(value: ParamsError) -> Self {
+        Self::Params(value)
+    }
+}
+
+impl From<ParamsError> for Error {
+    fn from(value: ParamsError) -> Self {
+        DriverError::Params(value).into()
     }
 }
 
