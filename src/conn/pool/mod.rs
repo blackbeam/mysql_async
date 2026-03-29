@@ -121,6 +121,19 @@ pub struct Inner {
 ///
 /// Note that you will probably want to await [`Pool::disconnect`] before dropping the runtime, as
 /// otherwise you may end up with a number of connections that are not cleanly terminated.
+///
+/// ## Multi-runtime environments
+///
+/// `Pool` must not be shared across independent tokio runtimes. Each `tokio::net::TcpStream`
+/// inside a pooled connection is bound to the I/O driver of the runtime that established it;
+/// connections become invalid when that runtime shuts down. This is most likely to surface
+/// during graceful shutdown, when some runtimes exit before others while pooled connections
+/// are still in circulation. The pool's background tasks ([`Recycler`], TTL interval) are
+/// also spawned on the first runtime to call [`Pool::get_conn`] and do not survive that
+/// runtime's shutdown.
+///
+/// If your framework runs each worker on its own `current_thread` runtime (e.g. actix-server),
+/// create a separate `Pool` per worker rather than sharing one across all workers.
 #[derive(Debug, Clone)]
 pub struct Pool {
     opts: Opts,
