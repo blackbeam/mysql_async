@@ -20,7 +20,7 @@ futures-core = "0.3"
 futures-util = "0.3"
 futures-sink = "0.3"
 keyed_priority_queue = "0.4"
-lru = "0.14.0"
+lru = "0.16.3"
 mysql_common = { version = "0.35.4", default-features = false }
 pem = "3.0"
 percent-encoding = "2.1.0"
@@ -29,7 +29,14 @@ serde = "1"
 serde_json = "1"
 socket2 = "0.5.2"
 thiserror = "2"
-tokio = { version = "1.0", features = ["io-util", "fs", "net", "time", "rt", "sync"] }
+tokio = { version = "1.0", features = [
+    "io-util",
+    "fs",
+    "net",
+    "time",
+    "rt",
+    "sync",
+] }
 tokio-util = { version = "0.7.2", features = ["codec", "io"] }
 tracing = { version = "0.1.37", default-features = false, features = [
     "attributes",
@@ -94,12 +101,7 @@ minimal-rust = ["flate2/rust_backend"]
 native-tls-tls = ["native-tls", "tokio-native-tls"]
 
 # rustls based TLS support
-rustls-tls = [
-    "rustls",
-    "tokio-rustls",
-    "webpki-roots",
-    "rustls-pemfile",
-]
+rustls-tls = ["rustls", "tokio-rustls", "webpki-roots", "rustls-pemfile"]
 
 aws-lc-rs = ["rustls/aws_lc_rs", "tokio-rustls/aws_lc_rs"]
 ring = ["rustls/ring", "tokio-rustls/ring"]
