@@ -124,9 +124,16 @@ pub struct Inner {
 ///
 /// ## Multi-runtime environments
 ///
-/// In multi-runtime environments such as actix-web, the pool's background tasks must
-/// be explicitly started on the long-lived root runtime before worker runtimes begin
-/// using the pool. See [`Pool::spawn_background_tasks`] for details.
+/// `Pool` must not be shared across independent tokio runtimes. Each `tokio::net::TcpStream`
+/// inside a pooled connection is bound to the I/O driver of the runtime that established it;
+/// connections become invalid when that runtime shuts down. This is most likely to surface
+/// during graceful shutdown, when some runtimes exit before others while pooled connections
+/// are still in circulation. The pool's background tasks ([`Recycler`], TTL interval) are
+/// also spawned on the first runtime to call [`Pool::get_conn`] and do not survive that
+/// runtime's shutdown.
+///
+/// If your framework runs each worker on its own `current_thread` runtime (e.g. actix-server),
+/// create a separate `Pool` per worker rather than sharing one across all workers.
 #[derive(Debug, Clone)]
 pub struct Pool {
     opts: Opts,
@@ -167,38 +174,6 @@ impl Pool {
             }),
             drop: tx,
         }
-    }
-
-    /// Explicitly spawns the pool's background tasks on the current Tokio runtime.
-    ///
-    /// In most applications this method is unnecessary — the background tasks are spawned
-    /// automatically on the first call to [`Pool::get_conn`].
-    ///
-    /// # When to use this
-    ///
-    /// In multi-runtime environments (e.g., [actix-web](https://actix.rs/)), the lazy
-    /// spawning may cause the background tasks to be bound to a short-lived worker runtime
-    /// rather than the application's long-lived root runtime. When that worker runtime shuts
-    /// down, the [`Recycler`] is dropped, setting the pool's close flag and causing all
-    /// subsequent [`Pool::get_conn`] calls to return [`DriverError::PoolDisconnected`].
-    ///
-    /// Call this method once during startup, from within the long-lived runtime, before any
-    /// worker runtimes call [`Pool::get_conn`].
-    ///
-    /// **This method must be called from within the Tokio runtime that should own the
-    /// background tasks.**
-    ///
-    /// # Idempotency
-    ///
-    /// This method is a no-op after the first successful call.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called outside of a Tokio runtime context.
-    pub fn spawn_background_tasks(&self) {
-        let mut exchange = self.inner.exchange.lock().unwrap();
-
-        exchange.spawn_futures_if_needed(&self.inner);
     }
 
     /// Returns metrics for the connection pool.
