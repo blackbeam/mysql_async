@@ -997,6 +997,10 @@ impl Conn {
     }
 
     async fn run_init_commands(&mut self) -> Result<()> {
+        if let Some(callback) = self.inner.opts.after_connect() {
+            callback.clone()(self).await?;
+        }
+
         let mut init = self.inner.opts.init().to_vec();
 
         while let Some(query) = init.pop() {
@@ -1382,8 +1386,13 @@ impl Conn {
 
 #[cfg(test)]
 mod test {
+    use std::sync::Arc;
+
     use bytes::Bytes;
-    use futures_util::stream::{self, StreamExt};
+    use futures_util::{
+        stream::{self, StreamExt},
+        FutureExt,
+    };
     use mysql_common::constants::{MariadbCapabilities, MAX_PAYLOAD_LEN};
     use rand::RngExt as _;
     use tokio::{io::AsyncWriteExt, net::TcpListener};
@@ -1584,6 +1593,36 @@ mod test {
         let result: Vec<(u8, String)> = conn.query("SELECT @a, @b").await?;
         conn.disconnect().await?;
         assert_eq!(result, vec![(42, "foo".into())]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_execute_after_connect_callback_on_new_connection() -> super::Result<()> {
+        let opts = OptsBuilder::from_opts(get_opts()).after_connect(Arc::new(|conn| {
+            async move {
+                conn.query_drop("SET @a = 42").await?;
+                conn.query_drop("SET @b = 'foo'").await?;
+                Ok(())
+            }
+            .boxed()
+        }));
+        let mut conn = Conn::new(opts).await?;
+        let result: Vec<(u8, String)> = conn.query("SELECT @a, @b").await?;
+        conn.disconnect().await?;
+        assert_eq!(result, vec![(42, "foo".into())]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_propagate_after_connect_callback_error() -> super::Result<()> {
+        let opts = OptsBuilder::from_opts(get_opts()).after_connect(Arc::new(|_conn| {
+            async move { Err(Error::Other("rejected".into())) }.boxed()
+        }));
+        let e = Conn::new(opts).await.unwrap_err();
+        match e {
+            Error::Other(e) => assert_eq!(e.to_string(), "rejected"),
+            e => panic!("expected error from after_connect(), got {e:?}"),
+        }
         Ok(())
     }
 
