@@ -562,6 +562,25 @@ pub(crate) struct InnerOpts {
     address: HostPortOrUrl,
 }
 
+#[derive(Clone)]
+pub(crate) struct AfterConnectCallback(
+    Arc<dyn for<'a> Fn(&'a mut crate::Conn) -> crate::BoxFuture<'a, ()> + Send + Sync>,
+);
+
+impl Eq for AfterConnectCallback {}
+
+impl PartialEq for AfterConnectCallback {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for AfterConnectCallback {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("AfterConnectCallback").finish()
+    }
+}
+
 /// Mysql connection options.
 ///
 /// Build one with [`OptsBuilder`].
@@ -594,6 +613,9 @@ pub(crate) struct MysqlOpts {
     /// Pool will close a connection if time since last IO exceeds this number of seconds
     /// (defaults to `wait_timeout`).
     conn_ttl: Option<Duration>,
+
+    /// Callback to execute once a new connection is established.
+    after_connect: Option<AfterConnectCallback>,
 
     /// Commands to execute once new connection is established.
     init: Vec<String>,
@@ -784,7 +806,18 @@ impl Opts {
         self.inner.mysql_opts.db_name.as_ref().map(AsRef::as_ref)
     }
 
-    /// Commands to execute once new connection is established.
+    /// Callback to execute after opening a new connection to the database. Runs
+    /// before the [`init`][Self::init] queries.
+    ///
+    /// If this returns an error, the connection attempt will also fail.
+    pub fn after_connect(
+        &self,
+    ) -> Option<&Arc<dyn for<'a> Fn(&'a mut crate::Conn) -> crate::BoxFuture<'a, ()> + Send + Sync>>
+    {
+        self.inner.mysql_opts.after_connect.as_ref().map(|cb| &cb.0)
+    }
+
+    /// Commands to execute once new a connection is established.
     pub fn init(&self) -> &[String] {
         self.inner.mysql_opts.init.as_ref()
     }
@@ -1143,6 +1176,7 @@ impl Default for MysqlOpts {
             user: None,
             pass: None,
             db_name: None,
+            after_connect: None,
             init: vec![],
             setup: vec![],
             tcp_keepalive: None,
@@ -1355,6 +1389,17 @@ impl OptsBuilder {
     /// Defines database name. See [`Opts::db_name`].
     pub fn db_name<T: Into<String>>(mut self, db_name: Option<T>) -> Self {
         self.opts.db_name = db_name.map(Into::into);
+        self
+    }
+
+    /// Defines a callback that runs after connection. See [`Opts::after_connect`].
+    pub fn after_connect(
+        mut self,
+        callback: Arc<
+            dyn for<'a> Fn(&'a mut crate::Conn) -> crate::BoxFuture<'a, ()> + Send + Sync,
+        >,
+    ) -> Self {
+        self.opts.after_connect = Some(AfterConnectCallback(callback));
         self
     }
 
