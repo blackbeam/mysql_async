@@ -574,6 +574,8 @@ pub mod prelude {
     pub use mysql_common::prelude::FromRow;
     #[doc(inline)]
     pub use mysql_common::prelude::{FromValue, ToValue};
+    #[doc(inline)]
+    pub use mysql_common::value::convert::ParseIrOpt;
 
     /// Everything that is a statement.
     ///
