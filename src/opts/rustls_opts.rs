@@ -1,7 +1,6 @@
 #![cfg(feature = "rustls-tls")]
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer};
-use rustls_pemfile::{certs, rsa_private_keys};
+use rustls::pki_types::{pem, CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer};
 
 use std::{borrow::Cow, path::Path};
 
@@ -60,7 +59,7 @@ impl ClientIdentity {
         if std::str::from_utf8(&cert_data).is_err() {
             cert_chain.push(CertificateDer::from(cert_data.into_owned()));
         } else {
-            for cert in certs(&mut &*cert_data) {
+            for cert in pem::SliceIter::<CertificateDer<'_>>::new(&cert_data) {
                 cert_chain.push(cert?);
             }
         }
@@ -71,7 +70,7 @@ impl ClientIdentity {
             )))
         } else {
             let mut priv_key = None;
-            for key in rsa_private_keys(&mut &*key_data).take(1) {
+            for key in pem::SliceIter::<PrivatePkcs1KeyDer<'_>>::new(&key_data).take(1) {
                 priv_key = Some(PrivateKeyDer::Pkcs1(key?.clone_key()));
             }
             priv_key
