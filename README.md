@@ -386,10 +386,27 @@ pool.disconnect().await?;
 
 ## Testing
 
-Tests uses followin environment variables:
+### Quickstart
+
+If you have a container engine such as Podman or Docker, you can run the tests
+using the provided `compose.yaml` configuration file.
+* Docker
+  ```sh
+  docker compose up --wait && cargo test -- --test-threads=1; docker compose down
+  ```
+* Podman (requires `podman-compose` 1.6.0 or later)
+  ```sh
+  podman compose up --wait && cargo test -- --test-threads=1; podman compose down
+  ```
+
+### Configuration
+
+Tests uses following environment variables:
 * `DATABASE_URL` – defaults to `mysql://root:password@127.0.0.1:3307/mysql`
 * `COMPRESS` – set to `1` or `true` to enable compression for tests
 * `SSL` – set to `1` or `true` to enable TLS for tests
+
+### Manual container
 
 You can run a test server using docker. Please note that params related
 to max allowed packet, local-infile and binary logging are required
