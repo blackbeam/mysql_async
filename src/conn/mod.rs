@@ -9,10 +9,10 @@
 use futures_util::FutureExt;
 
 use mysql_common::{
+    auth::{self, plugins::ChallengeResponsePlugin as _},
     constants::{
         MariadbCapabilities, DEFAULT_MAX_ALLOWED_PACKET, UTF8MB4_GENERAL_CI, UTF8_GENERAL_CI,
     },
-    crypto,
     io::ParseBuf,
     packets::{
         AuthPlugin, AuthSwitchRequest, CommonOkPacket, ErrPacket, HandshakePacket,
@@ -58,6 +58,42 @@ pub mod routines;
 pub mod stmt_cache;
 
 const DEFAULT_WAIT_TIMEOUT: usize = 28800;
+
+type AuthState = (
+    AuthContext,
+    auth::plugins::AuthProc,
+    auth::plugins::Response,
+);
+
+struct AuthContext {
+    pass: Vec<u8>,
+    is_ipc_transport: bool,
+    is_tls_transport: bool,
+    scramble: Vec<u8>,
+    server_key_pem: Option<Vec<u8>>,
+}
+
+impl auth::plugins::Context for &'_ AuthContext {
+    fn pass(&self) -> &[u8] {
+        &self.pass
+    }
+
+    fn is_ipc_transport(&self) -> bool {
+        self.is_ipc_transport
+    }
+
+    fn is_tls_transport(&self) -> bool {
+        self.is_tls_transport
+    }
+
+    fn scramble(&self) -> &[u8] {
+        &self.scramble
+    }
+
+    fn server_key_pem(&self) -> Option<&[u8]> {
+        self.server_key_pem.as_deref()
+    }
+}
 
 /// Helper that asynchronously disconnects the given connection on the default tokio executor.
 fn disconnect(mut conn: Conn) {
@@ -117,7 +153,6 @@ struct ConnInner {
     stmt_cache: StmtCache,
     nonce: Vec<u8>,
     auth_plugin: AuthPlugin<'static>,
-    auth_switched: bool,
     server_key: Option<Vec<u8>>,
     active_since: Instant,
     /// Connection is already disconnected.
@@ -171,7 +206,6 @@ impl ConnInner {
             ttl_deadline,
             nonce: Vec::default(),
             auth_plugin: AuthPlugin::MysqlNativePassword,
-            auth_switched: false,
             disconnected: false,
             server_key: None,
             infile_handler: None,
@@ -546,11 +580,11 @@ impl Conn {
                 handshake.mariadb_ext_capabilities() & self.inner.opts.get_mariadb_capabilities();
         }
 
-        // Allow only CachingSha2Password and MysqlNativePassword here
-        // because sha256_password is deprecated and other plugins won't
-        // appear here.
+        // Only plugins that MySQL may advertise in the initial handshake are
+        // accepted here. Other supported plugins are negotiated by auth switch.
         self.inner.auth_plugin = match handshake.auth_plugin() {
             Some(AuthPlugin::CachingSha2Password) => AuthPlugin::CachingSha2Password,
+            Some(AuthPlugin::Sha256Password) => AuthPlugin::Sha256Password,
             _ => AuthPlugin::MysqlNativePassword,
         };
 
@@ -598,14 +632,47 @@ impl Conn {
         }
     }
 
-    async fn do_handshake_response(&mut self) -> Result<()> {
-        let auth_data = self
-            .inner
-            .auth_plugin
-            .gen_data(self.inner.opts.pass(), &self.inner.nonce);
+    fn auth_context(&self) -> AuthContext {
+        AuthContext {
+            pass: self
+                .inner
+                .opts
+                .pass()
+                .map(str::as_bytes)
+                .unwrap_or_default()
+                .to_vec(),
+            is_ipc_transport: self.is_socket(),
+            is_tls_transport: self.is_secure(),
+            scramble: self.inner.nonce.clone(),
+            server_key_pem: self.inner.server_key.clone(),
+        }
+    }
+
+    fn start_auth(&self, plugin: &AuthPlugin<'_>, challenge: &[u8]) -> Result<AuthState> {
+        if matches!(plugin, AuthPlugin::MysqlOldPassword) && self.inner.opts.secure_auth() {
+            return Err(DriverError::MysqlOldPasswordDisabled.into());
+        }
+        if matches!(plugin, AuthPlugin::MysqlClearPassword)
+            && !self.inner.opts.enable_cleartext_plugin()
+        {
+            return Err(DriverError::CleartextPluginDisabled.into());
+        }
+
+        let context = self.auth_context();
+        let mut procedure = plugin.init().map_err(DriverError::from)?;
+        let response = procedure
+            .run(&context, challenge)
+            .map_err(DriverError::from)?;
+        Ok((context, procedure, response))
+    }
+
+    async fn do_handshake_response(&mut self) -> Result<AuthState> {
+        let plugin = self.inner.auth_plugin.clone();
+        let nonce = self.inner.nonce.clone();
+        let state = self.start_auth(&plugin, &nonce)?;
 
         let handshake_response = HandshakeResponse::new(
-            auth_data.as_deref(),
+            state.2.data(),
             self.inner.version,
             self.inner.opts.user().map(|x| x.as_bytes()),
             self.inner.opts.db_name().map(|x| x.as_bytes()),
@@ -619,109 +686,84 @@ impl Conn {
         )
         .with_mariadb_ext_capabilities(self.inner.mariadb_capabilities);
 
-        // Serialize here to satisfy borrow checker.
         let mut buf = crate::buffer_pool().get();
         handshake_response.serialize(buf.as_mut());
 
         self.write_packet(buf).await?;
         self.inner.handshake_complete = true;
-        Ok(())
+        Ok(state)
     }
 
     async fn perform_auth_switch(
         &mut self,
         auth_switch_request: AuthSwitchRequest<'_>,
-    ) -> Result<()> {
-        if !self.inner.auth_switched {
-            self.inner.auth_switched = true;
-            self.inner.nonce = auth_switch_request.plugin_data().to_vec();
+    ) -> Result<AuthState> {
+        self.inner.nonce = auth_switch_request.plugin_data().to_vec();
+        self.inner.auth_plugin = auth_switch_request.auth_plugin().clone().into_owned();
 
-            if matches!(
-                auth_switch_request.auth_plugin(),
-                AuthPlugin::MysqlOldPassword
-            ) && self.inner.opts.secure_auth()
-            {
-                return Err(DriverError::MysqlOldPasswordDisabled.into());
-            }
-
-            self.inner.auth_plugin = auth_switch_request.auth_plugin().clone().into_owned();
-
-            let plugin_data = match &self.inner.auth_plugin {
-                x @ AuthPlugin::CachingSha2Password => {
-                    x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
-                }
-                x @ AuthPlugin::MysqlNativePassword => {
-                    x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
-                }
-                x @ AuthPlugin::MysqlOldPassword => {
-                    if self.inner.opts.secure_auth() {
-                        return Err(DriverError::MysqlOldPasswordDisabled.into());
-                    } else {
-                        x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
-                    }
-                }
-                x @ AuthPlugin::MysqlClearPassword => {
-                    if self.inner.opts.enable_cleartext_plugin() {
-                        x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
-                    } else {
-                        return Err(DriverError::CleartextPluginDisabled.into());
-                    }
-                }
-                x @ AuthPlugin::Ed25519 => x.gen_data(self.inner.opts.pass(), &self.inner.nonce),
-                // For parsec at this point we need to send an empty packet first
-                _x @ AuthPlugin::MariadbParsec { .. } => None,
-                x @ AuthPlugin::Other(_) => x.gen_data(self.inner.opts.pass(), &self.inner.nonce),
-            };
-
-            if let Some(plugin_data) = plugin_data {
-                self.write_struct(&plugin_data.into_owned()).await?;
-            } else {
-                self.write_packet(crate::buffer_pool().get()).await?;
-            }
-
-            self.continue_auth().await?;
-
-            Ok(())
-        } else {
-            unreachable!("auth_switched flag should be checked by caller")
+        let plugin = self.inner.auth_plugin.clone();
+        let nonce = self.inner.nonce.clone();
+        let state = self.start_auth(&plugin, &nonce)?;
+        if let Some(data) = state.2.data() {
+            self.write_bytes(data).await?;
         }
+        Ok(state)
     }
 
-    fn continue_auth(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
-        // NOTE: we need to box this since it may recurse
-        // see https://github.com/rust-lang/rust/issues/46415#issuecomment-528099782
-        Box::pin(async move {
-            match self.inner.auth_plugin {
-                AuthPlugin::MysqlNativePassword | AuthPlugin::MysqlOldPassword => {
-                    self.continue_mysql_native_password_auth().await?;
-                    Ok(())
-                }
-                AuthPlugin::CachingSha2Password => {
-                    self.continue_caching_sha2_password_auth().await?;
-                    Ok(())
-                }
-                AuthPlugin::MysqlClearPassword => {
-                    if self.inner.opts.enable_cleartext_plugin() {
-                        self.continue_mysql_native_password_auth().await?;
-                        Ok(())
-                    } else {
-                        Err(DriverError::CleartextPluginDisabled.into())
-                    }
-                }
-                AuthPlugin::Ed25519 => {
-                    self.continue_ed25519_auth().await?;
-                    Ok(())
-                }
-                AuthPlugin::MariadbParsec { .. } => {
-                    self.continue_parsec_auth().await?;
-                    Ok(())
-                }
-                AuthPlugin::Other(ref name) => Err(DriverError::UnknownAuthPlugin {
-                    name: String::from_utf8_lossy(name.as_ref()).to_string(),
-                }
-                .into()),
+    async fn continue_auth(
+        &mut self,
+        mut auth_switched: bool,
+        mut context: AuthContext,
+        mut procedure: auth::plugins::AuthProc,
+        mut previous_response: auth::plugins::Response,
+    ) -> Result<()> {
+        loop {
+            let packet = self.read_packet().await?;
+
+            if packet.first() == Some(&0xfe) && !auth_switched {
+                let auth_switch = if packet.len() > 1 {
+                    ParseBuf(&packet)
+                        .parse::<AuthSwitchRequest>(())?
+                        .into_owned()
+                } else {
+                    let _ = ParseBuf(&packet).parse::<OldAuthSwitchRequest>(())?;
+                    AuthSwitchRequest::new(
+                        "mysql_old_password".as_bytes(),
+                        self.inner.nonce.clone(),
+                    )
+                };
+                (context, procedure, previous_response) =
+                    self.perform_auth_switch(auth_switch).await?;
+                auth_switched = true;
+                continue;
             }
-        })
+
+            let challenge = packet.strip_prefix(b"\x01").unwrap_or(&packet);
+            if challenge.starts_with(b"-----BEGIN PUBLIC KEY-----") {
+                self.inner.server_key = Some(challenge.to_vec());
+            }
+
+            match previous_response {
+                auth::plugins::Response::Next { .. } => {
+                    let response = procedure
+                        .run(&context, challenge)
+                        .map_err(DriverError::from)?;
+                    if let Some(data) = response.data() {
+                        self.write_bytes(data).await?;
+                    }
+                    previous_response = response;
+                }
+                auth::plugins::Response::Last { .. } => {
+                    if packet.first() == Some(&0x00) {
+                        return Ok(());
+                    }
+                    return Err(DriverError::UnexpectedPacket {
+                        payload: packet.to_vec(),
+                    }
+                    .into());
+                }
+            }
+        }
     }
 
     fn switch_to_compression(&mut self) -> Result<()> {
@@ -733,141 +775,6 @@ impl Conn {
             }
         }
         Ok(())
-    }
-
-    async fn continue_ed25519_auth(&mut self) -> Result<()> {
-        let packet = self.read_packet().await?;
-        match packet.first() {
-            Some(0x00) => {
-                // ok packet for empty password
-                Ok(())
-            }
-            Some(0xfe) if !self.inner.auth_switched => {
-                let auth_switch_request = ParseBuf(&packet).parse::<AuthSwitchRequest>(())?;
-                self.perform_auth_switch(auth_switch_request).await
-            }
-            _ => Err(DriverError::UnexpectedPacket {
-                payload: packet.to_vec(),
-            }
-            .into()),
-        }
-    }
-
-    async fn continue_parsec_auth(&mut self) -> Result<()> {
-        let packet = self.read_packet().await?;
-        // Normally we need to skip escaping 0x01 byte. But in first parsec implementations, server did not send it.
-        let mut payload: &[u8] = &packet;
-        if packet.first() == Some(&0x01) {
-            payload = &packet[1..];
-        }
-        // At this point in future, when it will be possible for parsec to be default authentication method,
-        // we can have authentication switch request. The other possible option here(and for now the only option) -
-        // ext-salt packet.
-        if payload.first() == Some(&0xfe) {
-            let auth_switch_request = ParseBuf(payload).parse(())?;
-            self.perform_auth_switch(auth_switch_request).await
-        } else {
-            // Letting parser function decide if all is fine with the packet
-            self.inner
-                .auth_plugin
-                .read_add_data(payload)
-                .ok_or_else(|| DriverError::InvalidParsecSalt)?;
-            // Now generating response.
-            let plugin_data = self
-                .inner
-                .auth_plugin
-                .gen_data(self.inner.opts.pass(), &self.inner.nonce)
-                .unwrap();
-
-            self.write_struct(&plugin_data.into_owned()).await?;
-            // After client response, server will send either ok or error.
-            let payload = self.read_packet().await?;
-            match payload.first() {
-                Some(0x00) => Ok(()),
-                _ => Err(DriverError::UnexpectedPacket {
-                    payload: payload.to_vec(),
-                }
-                .into()),
-            }
-        }
-    }
-
-    async fn continue_caching_sha2_password_auth(&mut self) -> Result<()> {
-        let packet = self.read_packet().await?;
-        match packet.first() {
-            Some(0x00) => {
-                // ok packet for empty password
-                Ok(())
-            }
-            Some(0x01) => match packet.get(1) {
-                Some(0x03) => {
-                    // auth ok
-                    self.drop_packet().await
-                }
-                Some(0x04) => {
-                    let pass = self.inner.opts.pass().unwrap_or_default();
-                    let mut pass = crate::buffer_pool().get_with(pass.as_bytes());
-                    pass.as_mut().push(0);
-
-                    if self.is_secure() || self.is_socket() {
-                        self.write_packet(pass).await?;
-                    } else {
-                        if self.inner.server_key.is_none() {
-                            self.write_bytes(&[0x02][..]).await?;
-                            let packet = self.read_packet().await?;
-                            self.inner.server_key = Some(packet[1..].to_vec());
-                        }
-                        for (i, byte) in pass.as_mut().iter_mut().enumerate() {
-                            *byte ^= self.inner.nonce[i % self.inner.nonce.len()];
-                        }
-                        let encrypted_pass = crypto::encrypt(
-                            &pass,
-                            self.inner.server_key.as_deref().expect("unreachable"),
-                        );
-                        self.write_bytes(&encrypted_pass).await?;
-                    };
-                    self.drop_packet().await?;
-                    Ok(())
-                }
-                _ => Err(DriverError::UnexpectedPacket {
-                    payload: packet.to_vec(),
-                }
-                .into()),
-            },
-            Some(0xfe) if !self.inner.auth_switched => {
-                let auth_switch_request = ParseBuf(&packet).parse::<AuthSwitchRequest>(())?;
-                self.perform_auth_switch(auth_switch_request).await?;
-                Ok(())
-            }
-            _ => Err(DriverError::UnexpectedPacket {
-                payload: packet.to_vec(),
-            }
-            .into()),
-        }
-    }
-
-    async fn continue_mysql_native_password_auth(&mut self) -> Result<()> {
-        let packet = self.read_packet().await?;
-        match packet.first() {
-            Some(0x00) => Ok(()),
-            Some(0xfe) if !self.inner.auth_switched => {
-                let auth_switch = if packet.len() > 1 {
-                    ParseBuf(&packet).parse(())?
-                } else {
-                    let _ = ParseBuf(&packet).parse::<OldAuthSwitchRequest>(())?;
-                    // map OldAuthSwitch to AuthSwitch with mysql_old_password plugin
-                    AuthSwitchRequest::new(
-                        "mysql_old_password".as_bytes(),
-                        self.inner.nonce.clone(),
-                    )
-                };
-                self.perform_auth_switch(auth_switch).await
-            }
-            _ => Err(DriverError::UnexpectedPacket {
-                payload: packet.to_vec(),
-            }
-            .into()),
-        }
     }
 
     /// Returns `true` for ProgressReport packet.
@@ -991,11 +898,6 @@ impl Conn {
         self.write_command_raw(buf).await
     }
 
-    async fn drop_packet(&mut self) -> Result<()> {
-        self.read_packet().await?;
-        Ok(())
-    }
-
     async fn run_init_commands(&mut self) -> Result<()> {
         if let Some(callback) = self.inner.opts.after_connect() {
             callback(self).await?;
@@ -1042,8 +944,9 @@ impl Conn {
             conn.setup_stream()?;
             conn.handle_handshake().await?;
             conn.switch_to_ssl_if_needed().await?;
-            conn.do_handshake_response().await?;
-            conn.continue_auth().await?;
+            let (context, procedure, response) = conn.do_handshake_response().await?;
+            conn.continue_auth(false, context, procedure, response)
+                .await?;
             conn.switch_to_compression()?;
             conn.read_settings().await?;
             conn.reconnect_via_socket_if_needed().await?;
@@ -1687,7 +1590,7 @@ mod test {
         type CreateUserFn = fn(bool, (u16, u16, u16), &str) -> Vec<String>;
 
         #[allow(clippy::type_complexity)]
-        const TEST_MATRIX: [(&str, ShouldRunFn, CreateUserFn); 5] = [
+        const TEST_MATRIX: [(&str, ShouldRunFn, CreateUserFn); 6] = [
             (
                 "mysql_old_password",
                 |is_mariadb, version| is_mariadb || version < (5, 7, 0),
@@ -1742,6 +1645,15 @@ mod test {
                     vec![
                         format!("CREATE USER '__mats'@'%' IDENTIFIED WITH caching_sha2_password BY '{pass}'")
                     ]
+                },
+            ),
+            (
+                "sha256_password",
+                |is_mariadb, version| !is_mariadb && version >= (5, 7, 0) && version < (8, 4, 0),
+                |_is_mariadb, _version, pass| {
+                    vec![format!(
+                        "CREATE USER '__mats'@'%' IDENTIFIED WITH sha256_password BY '{pass}'"
+                    )]
                 },
             ),
             (
