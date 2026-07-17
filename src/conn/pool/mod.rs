@@ -590,6 +590,54 @@ mod test {
     }
 
     #[tokio::test]
+    async fn credentials_provider_runs_once_per_physical_connection() -> super::Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = calls.clone();
+
+        // min == max so returned connections are kept idle (not closed) for reuse below.
+        let constraints = PoolConstraints::new(3, 3).unwrap();
+        let pool_opts = PoolOpts::default().with_constraints(constraints);
+        let opts = get_opts()
+            .pool_opts(pool_opts)
+            .prefer_socket(false)
+            .credentials_provider(move |opts| {
+                let calls = calls_clone.clone();
+                async move {
+                    calls.fetch_add(1, AtomicOrdering::SeqCst);
+                    Ok(opts)
+                }
+                .boxed()
+            });
+
+        let pool = Pool::new(opts);
+
+        let conns = try_join_all((0..3).map(|_| pool.get_conn())).await?;
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 3);
+
+        drop(conns);
+        sleep(Duration::from_millis(200)).await;
+
+        // Reusing an idling connection must not invoke the provider again.
+        let conn = pool.get_conn().await?;
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 3);
+
+        drop(conn);
+        pool.disconnect().await
+    }
+
+    #[tokio::test]
+    async fn credentials_provider_error_fails_the_connection() {
+        let opts = get_opts().credentials_provider(|_opts| {
+            async move { Err(crate::Error::Driver(crate::DriverError::PoolDisconnected)) }.boxed()
+        });
+
+        let pool = Pool::new(opts);
+        assert!(pool.get_conn().await.is_err());
+    }
+
+    #[tokio::test]
     #[ignore]
     async fn can_handle_the_pressure() {
         let pool = Pool::new(get_opts());
