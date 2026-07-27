@@ -727,6 +727,8 @@ pub(crate) struct MysqlOpts {
     /// When set, the client will advertise `CLIENT_CONNECT_ATTRS` and send the provided
     /// key-value attributes to the server.
     connect_attributes: Option<std::collections::HashMap<String, String>>,
+    /// Path to the server key file (defaults to `None`).
+    server_key_path: Option<PathBuf>,
 }
 
 /// Mysql connection options.
@@ -1177,6 +1179,11 @@ impl Opts {
         self.inner.mysql_opts.connect_attributes.as_ref()
     }
 
+    /// Returns server public key path (defaults to `None`).
+    pub fn get_server_key_path(&self) -> Option<&Path> {
+        self.inner.mysql_opts.server_key_path.as_deref()
+    }
+
     pub(crate) fn get_capabilities(&self) -> CapabilityFlags {
         let mut out = CapabilityFlags::CLIENT_PROTOCOL_41
             | CapabilityFlags::CLIENT_SECURE_CONNECTION
@@ -1241,10 +1248,15 @@ impl Default for MysqlOpts {
             client_found_rows: false,
             enable_cleartext_plugin: false,
             connect_attributes: None,
+            server_key_path: None,
         }
     }
 }
 
+/// This type is used to store SSL options and a cached TLS connector. The TLS connector is cached
+/// to avoid the overhead of creating a new connector for each connection, which can be expensive.
+/// In case of "zero config tls" (MariaDB 11.4+), the cached TLS connector is bypassed as it can't
+/// be shared in this case.
 #[derive(Clone)]
 pub(crate) struct SslOptsAndCachedConnector {
     ssl_opts: SslOpts,
@@ -1271,11 +1283,22 @@ impl SslOptsAndCachedConnector {
         &self.ssl_opts
     }
 
-    pub(crate) async fn build_tls_connector(&self) -> Result<crate::io::TlsConnector> {
-        self.tls_connector
-            .get_or_try_init(move || self.ssl_opts.build_tls_connector())
-            .await
-            .cloned()
+    pub(crate) async fn build_tls_connector(
+        &self,
+        zero_config_check: Option<
+            Arc<std::sync::Mutex<Option<mysql_common::crypto::MariaDbZeroConfigCheck>>>,
+        >,
+    ) -> Result<crate::io::TlsConnector> {
+        if zero_config_check.is_some() {
+            // Don't cache when zero_config_check is present
+            self.ssl_opts.build_tls_connector(zero_config_check).await
+        } else {
+            // Use cache when zero_config_check is None
+            self.tls_connector
+                .get_or_try_init(move || self.ssl_opts.build_tls_connector(None))
+                .await
+                .cloned()
+        }
     }
 }
 
@@ -1603,6 +1626,12 @@ impl OptsBuilder {
             .connect_attributes
             .get_or_insert_with(Default::default);
         map.insert(key.into(), value.into());
+        self
+    }
+
+    /// Sets the server public key path.
+    pub fn server_key_path(mut self, server_key_path: Option<PathBuf>) -> Self {
+        self.opts.server_key_path = server_key_path;
         self
     }
 }
@@ -2009,6 +2038,8 @@ fn mysql_opts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
             }
         } else if key == "socket" {
             opts.socket = Some(value)
+        } else if key == "server_key_path" {
+            opts.server_key_path = Some(PathBuf::from(value));
         } else if key == "compression" {
             if value == "fast" {
                 opts.compression = Some(crate::Compression::fast());
