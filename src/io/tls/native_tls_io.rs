@@ -1,3 +1,5 @@
+use mysql_common::crypto::MariaDbZeroConfigCheck;
+use std::sync::{Arc, Mutex};
 use tokio_native_tls::native_tls::{self, Certificate};
 
 use crate::io::Endpoint;
@@ -17,7 +19,10 @@ impl SslOpts {
         Ok(output)
     }
 
-    pub(crate) async fn build_tls_connector(&self) -> Result<TlsConnector> {
+    pub(crate) async fn build_tls_connector(
+        &self,
+        _zero_config_check: Option<Arc<Mutex<Option<MariaDbZeroConfigCheck>>>>,
+    ) -> Result<TlsConnector> {
         let mut builder = native_tls::TlsConnector::builder();
         for root_cert in self.load_root_certs().await? {
             builder.add_root_certificate(root_cert);

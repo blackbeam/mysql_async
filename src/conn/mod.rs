@@ -9,10 +9,11 @@
 use futures_util::FutureExt;
 
 use mysql_common::{
+    auth::plugins::{AuthProc, ChallengeResponsePlugin, Context as AuthContextTrait, Response},
     constants::{
         MariadbCapabilities, DEFAULT_MAX_ALLOWED_PACKET, UTF8MB4_GENERAL_CI, UTF8_GENERAL_CI,
     },
-    crypto,
+    crypto::MariaDbZeroConfigCheck,
     io::ParseBuf,
     packets::{
         AuthPlugin, AuthSwitchRequest, CommonOkPacket, ErrPacket, HandshakePacket,
@@ -30,7 +31,7 @@ use std::{
     mem::{self, replace},
     pin::Pin,
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -116,8 +117,8 @@ struct ConnInner {
     wait_timeout: Duration,
     stmt_cache: StmtCache,
     nonce: Vec<u8>,
+    zero_config_check: Option<Arc<Mutex<Option<MariaDbZeroConfigCheck>>>>,
     auth_plugin: AuthPlugin<'static>,
-    auth_switched: bool,
     server_key: Option<Vec<u8>>,
     active_since: Instant,
     /// Connection is already disconnected.
@@ -170,8 +171,8 @@ impl ConnInner {
             opts,
             ttl_deadline,
             nonce: Vec::default(),
+            zero_config_check: None,
             auth_plugin: AuthPlugin::MysqlNativePassword,
-            auth_switched: false,
             disconnected: false,
             server_key: None,
             infile_handler: None,
@@ -203,6 +204,77 @@ pub struct Conn {
 }
 
 impl Conn {
+    fn auth_context_owned(&self) -> AuthContext {
+        AuthContext {
+            pass: self.inner.opts.pass().unwrap_or_default().to_owned(),
+            is_ipc_transport: self.is_socket(),
+            is_tls_transport: self.is_secure(),
+            scramble: self.inner.nonce.clone(),
+            server_key_pem: self.inner.server_key.clone(),
+        }
+    }
+
+    async fn auth_context(&mut self) -> Result<AuthContext> {
+        let mut server_key_pem = self.inner.server_key.clone();
+
+        // Try to load server_key_pem from file if server_key_path is configured and we don't have it cached
+        if server_key_pem.is_none()
+            || server_key_pem
+                .as_ref()
+                .map(|v| v.is_empty())
+                .unwrap_or_default()
+        {
+            if let Some(server_key_path) = self.inner.opts.get_server_key_path() {
+                match tokio::fs::read(server_key_path).await {
+                    Ok(pem) => {
+                        server_key_pem = Some(pem);
+                        self.inner.server_key = server_key_pem.clone();
+                    }
+                    Err(_) => {
+                        // Ignore file read errors - the server will provide the key
+                    }
+                }
+            }
+        }
+
+        Ok(AuthContext {
+            pass: self.inner.opts.pass().unwrap_or_default().to_owned(),
+            is_ipc_transport: self.is_socket(),
+            is_tls_transport: self.is_secure(),
+            scramble: self.inner.nonce.clone(),
+            server_key_pem,
+        })
+    }
+
+    fn zero_config_fallback_pending(&self) -> bool {
+        self.inner
+            .zero_config_check
+            .as_ref()
+            .and_then(|x| x.lock().ok())
+            .and_then(|guard| {
+                guard
+                    .as_ref()
+                    .map(|check| check.requires_zeroconfig_fallback())
+            })
+            .unwrap_or(false)
+    }
+
+    fn zero_config_leaf_cert_fingerprint(&self) -> Option<Vec<u8>> {
+        self.inner
+            .zero_config_check
+            .as_ref()
+            .and_then(|x| x.lock().ok())
+            .and_then(|guard| {
+                guard.as_ref().and_then(|check| {
+                    if check.requires_zeroconfig_fallback() {
+                        Some(check.leaf_cert_fingerprint().to_vec())
+                    } else {
+                        None
+                    }
+                })
+            })
+    }
+
     /// Returns connection identifier.
     pub fn id(&self) -> u32 {
         self.inner.id
@@ -494,6 +566,19 @@ impl Conn {
         false
     }
 
+    fn mariadb_fallback_possible(&self) -> bool {
+        self.inner.is_mariadb
+            && self.inner.version > (11, 4, 0)
+            && self.inner.opts.pass().is_some_and(|x| !x.is_empty())
+            && self.inner.auth_plugin.supports_password_hash()
+            && self
+                .inner
+                .opts
+                .ssl_opts()
+                .map(|ssl_opts| ssl_opts.root_certs().is_empty())
+                .unwrap_or_default()
+    }
+
     /// Hacky way to move connection through &mut. `self` becomes unusable.
     fn take(&mut self) -> Conn {
         mem::replace(self, Conn::empty(Default::default()))
@@ -582,13 +667,21 @@ impl Conn {
             .with_mariadb_capabilities(self.inner.mariadb_capabilities);
             self.write_struct(&ssl_request).await?;
             let conn = self;
-            let ssl_opts = conn.opts().ssl_opts_and_connector().expect("unreachable");
+            let ssl_opts = conn
+                .opts()
+                .ssl_opts_and_connector()
+                .expect("unreachable")
+                .clone();
+            let zero_config_check = conn
+                .mariadb_fallback_possible()
+                .then(|| Arc::new(Mutex::new(None)));
+            conn.inner.zero_config_check = zero_config_check.clone();
             let domain = ssl_opts
                 .ssl_opts()
                 .tls_hostname_override()
                 .unwrap_or_else(|| conn.opts().ip_or_hostname())
                 .into();
-            let tls_connector = ssl_opts.build_tls_connector().await?;
+            let tls_connector = ssl_opts.build_tls_connector(zero_config_check).await?;
             conn.stream_mut()?
                 .make_secure(domain, &tls_connector)
                 .await?;
@@ -599,13 +692,17 @@ impl Conn {
     }
 
     async fn do_handshake_response(&mut self) -> Result<()> {
-        let auth_data = self
-            .inner
-            .auth_plugin
-            .gen_data(self.inner.opts.pass(), &self.inner.nonce);
+        let auth_context = self.auth_context_owned();
+        let mut auth_proc = self.inner.auth_plugin.init()?;
+        let nonce = self.inner.nonce.clone();
+        #[cfg(test)]
+        eprintln!("{}:{} {auth_proc:?}\n{:?}", file!(), line!(), nonce);
+        let response = auth_proc
+            .run(auth_context.clone(), &nonce)
+            .map_err(Error::from)?;
 
         let handshake_response = HandshakeResponse::new(
-            auth_data.as_deref(),
+            response.data(),
             self.inner.version,
             self.inner.opts.user().map(|x| x.as_bytes()),
             self.inner.opts.db_name().map(|x| x.as_bytes()),
@@ -625,102 +722,112 @@ impl Conn {
 
         self.write_packet(buf).await?;
         self.inner.handshake_complete = true;
+
+        // Handle authentication challenge-response loop
+        self.continue_auth(false, auth_context, auth_proc, response)
+            .await?;
+
         Ok(())
     }
 
     async fn perform_auth_switch(
         &mut self,
         auth_switch_request: AuthSwitchRequest<'_>,
-    ) -> Result<()> {
-        if !self.inner.auth_switched {
-            self.inner.auth_switched = true;
-            self.inner.nonce = auth_switch_request.plugin_data().to_vec();
-
-            if matches!(
-                auth_switch_request.auth_plugin(),
-                AuthPlugin::MysqlOldPassword
-            ) && self.inner.opts.secure_auth()
-            {
-                return Err(DriverError::MysqlOldPasswordDisabled.into());
-            }
-
-            self.inner.auth_plugin = auth_switch_request.auth_plugin().clone().into_owned();
-
-            let plugin_data = match &self.inner.auth_plugin {
-                x @ AuthPlugin::CachingSha2Password => {
-                    x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
-                }
-                x @ AuthPlugin::MysqlNativePassword => {
-                    x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
-                }
-                x @ AuthPlugin::MysqlOldPassword => {
-                    if self.inner.opts.secure_auth() {
-                        return Err(DriverError::MysqlOldPasswordDisabled.into());
-                    } else {
-                        x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
-                    }
-                }
-                x @ AuthPlugin::MysqlClearPassword => {
-                    if self.inner.opts.enable_cleartext_plugin() {
-                        x.gen_data(self.inner.opts.pass(), &self.inner.nonce)
-                    } else {
-                        return Err(DriverError::CleartextPluginDisabled.into());
-                    }
-                }
-                x @ AuthPlugin::Ed25519 => x.gen_data(self.inner.opts.pass(), &self.inner.nonce),
-                // For parsec at this point we need to send an empty packet first
-                _x @ AuthPlugin::MariadbParsec { .. } => None,
-                x @ AuthPlugin::Other(_) => x.gen_data(self.inner.opts.pass(), &self.inner.nonce),
-            };
-
-            if let Some(plugin_data) = plugin_data {
-                self.write_struct(&plugin_data.into_owned()).await?;
-            } else {
-                self.write_packet(crate::buffer_pool().get()).await?;
-            }
-
-            self.continue_auth().await?;
-
-            Ok(())
-        } else {
-            unreachable!("auth_switched flag should be checked by caller")
+    ) -> Result<AuthProc> {
+        // If MariaDb "zero-config TLS" is in progress, then only supported plugins are allowed
+        #[cfg(feature = "rustls")]
+        if self.zero_config_fallback_pending()
+            && !auth_switch_request.auth_plugin().supports_password_hash()
+        {
+            return Err(
+                rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer).into(),
+            );
         }
+
+        let auth_ctx = self.auth_context().await?;
+        let mut auth_proc = auth_switch_request.auth_plugin().init()?;
+        #[cfg(test)]
+        eprintln!(
+            "{}:{} {auth_proc:?}\n{:?}",
+            file!(),
+            line!(),
+            auth_switch_request.plugin_data()
+        );
+        let response = auth_proc.run(auth_ctx.clone(), auth_switch_request.plugin_data())?;
+        if let Some(packet) = response.data() {
+            let buf = crate::buffer_pool().get_with(packet);
+            self.write_packet(buf).await?;
+        }
+
+        self.continue_auth(true, auth_ctx, auth_proc, response)
+            .await
     }
 
-    fn continue_auth(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+    fn continue_auth(
+        &mut self,
+        auth_switched: bool,
+        auth_ctx: AuthContext,
+        mut auth_proc: AuthProc,
+        mut prev_response: Response,
+    ) -> Pin<Box<dyn Future<Output = Result<AuthProc>> + Send + '_>> {
         // NOTE: we need to box this since it may recurse
         // see https://github.com/rust-lang/rust/issues/46415#issuecomment-528099782
         Box::pin(async move {
-            match self.inner.auth_plugin {
-                AuthPlugin::MysqlNativePassword | AuthPlugin::MysqlOldPassword => {
-                    self.continue_mysql_native_password_auth().await?;
-                    Ok(())
-                }
-                AuthPlugin::CachingSha2Password => {
-                    self.continue_caching_sha2_password_auth().await?;
-                    Ok(())
-                }
-                AuthPlugin::MysqlClearPassword => {
-                    if self.inner.opts.enable_cleartext_plugin() {
-                        self.continue_mysql_native_password_auth().await?;
-                        Ok(())
+            loop {
+                // read next challenge
+                let packet = self.read_packet().await?;
+
+                // check for auth-switch
+                if packet[0] == 0xFE && !auth_switched {
+                    let auth_switch = if packet.len() > 1 {
+                        ParseBuf(&packet).parse(())?
                     } else {
-                        Err(DriverError::CleartextPluginDisabled.into())
+                        let _ = ParseBuf(&packet).parse::<OldAuthSwitchRequest>(())?;
+                        // we'll map OldAuthSwitchRequest to an AuthSwitchRequest with mysql_old_password plugin.
+                        AuthSwitchRequest::new("mysql_old_password".as_bytes(), &*self.inner.nonce)
+                            .into_owned()
+                    };
+                    return self.perform_auth_switch(auth_switch).await;
+                }
+
+                // check for escaping byte
+                let challenge = if packet[0] == 0x01 {
+                    &packet[1..]
+                } else {
+                    packet.as_ref()
+                };
+
+                match prev_response {
+                    // plugin waits for another challenge
+                    Response::Next { .. } => {
+                        #[cfg(test)]
+                        eprintln!("{}:{} {auth_proc:?}\n{:?}", file!(), line!(), challenge);
+                        let response = auth_proc.run(auth_ctx.clone(), challenge)?;
+                        if let Some(packet) = response.data() {
+                            let buf = crate::buffer_pool().get_with(packet);
+                            self.write_packet(buf).await?;
+                        }
+                        prev_response = response;
+                    }
+                    // previous response was the last response for the plugin
+                    // OK packet must follow
+                    Response::Last { .. } => {
+                        if packet[0] == 0x00 {
+                            let ok_packet: OkPacket<'static> = ParseBuf(&packet)
+                                .parse::<OkPacketDeserializer<CommonOkPacket>>(self.capabilities())?
+                                .into_inner()
+                                .into_owned();
+                            self.handle_ok(ok_packet);
+                            break;
+                        } else {
+                            return Err(Error::Other(
+                                "Unexpected packet during authentication".into(),
+                            ));
+                        }
                     }
                 }
-                AuthPlugin::Ed25519 => {
-                    self.continue_ed25519_auth().await?;
-                    Ok(())
-                }
-                AuthPlugin::MariadbParsec { .. } => {
-                    self.continue_parsec_auth().await?;
-                    Ok(())
-                }
-                AuthPlugin::Other(ref name) => Err(DriverError::UnknownAuthPlugin {
-                    name: String::from_utf8_lossy(name.as_ref()).to_string(),
-                }
-                .into()),
             }
+            Ok(auth_proc)
         })
     }
 
@@ -733,141 +840,6 @@ impl Conn {
             }
         }
         Ok(())
-    }
-
-    async fn continue_ed25519_auth(&mut self) -> Result<()> {
-        let packet = self.read_packet().await?;
-        match packet.first() {
-            Some(0x00) => {
-                // ok packet for empty password
-                Ok(())
-            }
-            Some(0xfe) if !self.inner.auth_switched => {
-                let auth_switch_request = ParseBuf(&packet).parse::<AuthSwitchRequest>(())?;
-                self.perform_auth_switch(auth_switch_request).await
-            }
-            _ => Err(DriverError::UnexpectedPacket {
-                payload: packet.to_vec(),
-            }
-            .into()),
-        }
-    }
-
-    async fn continue_parsec_auth(&mut self) -> Result<()> {
-        let packet = self.read_packet().await?;
-        // Normally we need to skip escaping 0x01 byte. But in first parsec implementations, server did not send it.
-        let mut payload: &[u8] = &packet;
-        if packet.first() == Some(&0x01) {
-            payload = &packet[1..];
-        }
-        // At this point in future, when it will be possible for parsec to be default authentication method,
-        // we can have authentication switch request. The other possible option here(and for now the only option) -
-        // ext-salt packet.
-        if payload.first() == Some(&0xfe) {
-            let auth_switch_request = ParseBuf(payload).parse(())?;
-            self.perform_auth_switch(auth_switch_request).await
-        } else {
-            // Letting parser function decide if all is fine with the packet
-            self.inner
-                .auth_plugin
-                .read_add_data(payload)
-                .ok_or_else(|| DriverError::InvalidParsecSalt)?;
-            // Now generating response.
-            let plugin_data = self
-                .inner
-                .auth_plugin
-                .gen_data(self.inner.opts.pass(), &self.inner.nonce)
-                .unwrap();
-
-            self.write_struct(&plugin_data.into_owned()).await?;
-            // After client response, server will send either ok or error.
-            let payload = self.read_packet().await?;
-            match payload.first() {
-                Some(0x00) => Ok(()),
-                _ => Err(DriverError::UnexpectedPacket {
-                    payload: payload.to_vec(),
-                }
-                .into()),
-            }
-        }
-    }
-
-    async fn continue_caching_sha2_password_auth(&mut self) -> Result<()> {
-        let packet = self.read_packet().await?;
-        match packet.first() {
-            Some(0x00) => {
-                // ok packet for empty password
-                Ok(())
-            }
-            Some(0x01) => match packet.get(1) {
-                Some(0x03) => {
-                    // auth ok
-                    self.drop_packet().await
-                }
-                Some(0x04) => {
-                    let pass = self.inner.opts.pass().unwrap_or_default();
-                    let mut pass = crate::buffer_pool().get_with(pass.as_bytes());
-                    pass.as_mut().push(0);
-
-                    if self.is_secure() || self.is_socket() {
-                        self.write_packet(pass).await?;
-                    } else {
-                        if self.inner.server_key.is_none() {
-                            self.write_bytes(&[0x02][..]).await?;
-                            let packet = self.read_packet().await?;
-                            self.inner.server_key = Some(packet[1..].to_vec());
-                        }
-                        for (i, byte) in pass.as_mut().iter_mut().enumerate() {
-                            *byte ^= self.inner.nonce[i % self.inner.nonce.len()];
-                        }
-                        let encrypted_pass = crypto::encrypt(
-                            &pass,
-                            self.inner.server_key.as_deref().expect("unreachable"),
-                        );
-                        self.write_bytes(&encrypted_pass).await?;
-                    };
-                    self.drop_packet().await?;
-                    Ok(())
-                }
-                _ => Err(DriverError::UnexpectedPacket {
-                    payload: packet.to_vec(),
-                }
-                .into()),
-            },
-            Some(0xfe) if !self.inner.auth_switched => {
-                let auth_switch_request = ParseBuf(&packet).parse::<AuthSwitchRequest>(())?;
-                self.perform_auth_switch(auth_switch_request).await?;
-                Ok(())
-            }
-            _ => Err(DriverError::UnexpectedPacket {
-                payload: packet.to_vec(),
-            }
-            .into()),
-        }
-    }
-
-    async fn continue_mysql_native_password_auth(&mut self) -> Result<()> {
-        let packet = self.read_packet().await?;
-        match packet.first() {
-            Some(0x00) => Ok(()),
-            Some(0xfe) if !self.inner.auth_switched => {
-                let auth_switch = if packet.len() > 1 {
-                    ParseBuf(&packet).parse(())?
-                } else {
-                    let _ = ParseBuf(&packet).parse::<OldAuthSwitchRequest>(())?;
-                    // map OldAuthSwitch to AuthSwitch with mysql_old_password plugin
-                    AuthSwitchRequest::new(
-                        "mysql_old_password".as_bytes(),
-                        self.inner.nonce.clone(),
-                    )
-                };
-                self.perform_auth_switch(auth_switch).await
-            }
-            _ => Err(DriverError::UnexpectedPacket {
-                payload: packet.to_vec(),
-            }
-            .into()),
-        }
     }
 
     /// Returns `true` for ProgressReport packet.
@@ -1043,7 +1015,6 @@ impl Conn {
             conn.handle_handshake().await?;
             conn.switch_to_ssl_if_needed().await?;
             conn.do_handshake_response().await?;
-            conn.continue_auth().await?;
             conn.switch_to_compression()?;
             conn.read_settings().await?;
             conn.reconnect_via_socket_if_needed().await?;
@@ -1384,6 +1355,37 @@ impl Conn {
     }
 }
 
+#[derive(Clone)]
+struct AuthContext {
+    pass: String,
+    is_ipc_transport: bool,
+    is_tls_transport: bool,
+    scramble: Vec<u8>,
+    server_key_pem: Option<Vec<u8>>,
+}
+
+impl AuthContextTrait for AuthContext {
+    fn pass(&self) -> &[u8] {
+        self.pass.as_bytes()
+    }
+
+    fn is_ipc_transport(&self) -> bool {
+        self.is_ipc_transport
+    }
+
+    fn is_tls_transport(&self) -> bool {
+        self.is_tls_transport
+    }
+
+    fn scramble(&self) -> &[u8] {
+        &self.scramble
+    }
+
+    fn server_key_pem(&self) -> Option<&[u8]> {
+        self.server_key_pem.as_deref()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use bytes::Bytes;
@@ -1399,6 +1401,15 @@ mod test {
         from_row, params, prelude::*, test_misc::get_opts, ChangeUserOpts, Conn, Error,
         OptsBuilder, Pool, ServerError, Value, WhiteListFsHandler,
     };
+
+    fn random_pass() -> String {
+        let mut rng = rand::rng();
+        let pass: [u8; 10] = rng.random();
+
+        IntoIterator::into_iter(pass)
+            .map(|x| ((x % (123 - 97)) + 97) as char)
+            .collect()
+    }
 
     #[tokio::test]
     async fn should_return_found_rows_if_flag_is_set() -> super::Result<()> {
@@ -1763,15 +1774,6 @@ mod test {
                 },
             ),
         ];
-
-        fn random_pass() -> String {
-            let mut rng = rand::rng();
-            let pass: [u8; 10] = rng.random();
-
-            IntoIterator::into_iter(pass)
-                .map(|x| ((x % (123 - 97)) + 97) as char)
-                .collect()
-        }
 
         let mut conn = Conn::new(get_opts()).await?;
 
@@ -2790,6 +2792,168 @@ mod test {
         assert_eq!(fetched_rows[0], 12);
         assert_eq!(fetched_rows2[0], 42);
         assert_eq!(fetched_rows3[0], "foo".to_owned());
+    }
+
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "rustls", feature = "rustls-tls"))))]
+    #[tokio::test]
+    #[cfg(any(feature = "rustls", feature = "rustls-tls"))]
+    // Test of MariaDB "Zero config SSL" with native authentication - one of three supported by the feature.
+    // First making connection to verify that this is MariaDB server and that it supports "Zero config SSL"
+    // (MariaDB >= 11.4.0) then trying to establish TLS connection making sure that certificate is validated.
+    async fn mariadb_auto_tls() -> crate::Result<()> {
+        let aux = Conn::new(get_opts().ssl_opts(None)).await?;
+        let is_mariadb = aux.inner.is_mariadb;
+        let version = aux.server_version();
+        if is_mariadb && version > (11, 4, 0) {
+            let mut conn = Conn::new(
+                get_opts()
+                    .ssl_opts(crate::SslOpts::default().with_danger_skip_domain_validation(false)),
+            )
+            .await?;
+
+            assert!(conn.is_secure());
+            assert!(conn.ping().await.is_ok());
+        }
+        Ok(())
+    }
+
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(all(
+            any(feature = "rustls", feature = "rustls-tls"),
+            feature = "client_ed25519"
+        )))
+    )]
+    #[tokio::test]
+    #[cfg(all(
+        any(feature = "rustls", feature = "rustls-tls"),
+        feature = "client_ed25519"
+    ))]
+    // Test of MariaDB "Zero config SSL" with ed25519 authentication
+    async fn mariadb_auto_tls_ed25519() -> crate::Result<()> {
+        let mut aux = Conn::new(get_opts().ssl_opts(None)).await?;
+        let is_mariadb = aux.inner.is_mariadb;
+        let version = aux.server_version();
+        if is_mariadb && version > (11, 4, 0) {
+            let pass = random_pass();
+
+            aux.query_drop("DROP USER IF EXISTS 'ed25519_tls_test_user'@'%'")
+                .await?;
+            let create_user_query = format!(
+                "CREATE USER 'ed25519_tls_test_user'@'%' IDENTIFIED WITH ed25519 USING PASSWORD('{pass}')"
+            );
+            aux.query_drop(create_user_query).await?;
+
+            let mut conn = Conn::new(
+                get_opts()
+                    .user(Some("ed25519_tls_test_user"))
+                    .pass(Some(pass))
+                    .db_name(None::<String>)
+                    .init(vec![] as Vec<String>)
+                    .ssl_opts(crate::SslOpts::default().with_danger_skip_domain_validation(false)),
+            )
+            .await?;
+            assert!(conn.is_secure());
+            assert!(conn.ping().await.is_ok());
+
+            // Testing that we can't make secure connection with empty password.
+            // "Zero config SSL" does not work with empty password.
+            // This can fail if server has real certificate.
+            conn.query_drop("SET PASSWORD = PASSWORD('')").await?;
+            drop(conn);
+
+            let conn = Conn::new(
+                get_opts()
+                    .user(Some("ed25519_tls_test_user"))
+                    .pass(Some(""))
+                    .db_name(None::<String>)
+                    .init(vec![] as Vec<String>)
+                    .ssl_opts(crate::SslOpts::default().with_danger_skip_domain_validation(false)),
+            )
+            .await;
+            // We shouldn't have got secure connection with insecure plugins -
+            // connection should have failed.
+            assert!(conn.is_err());
+            aux.query_drop("DROP USER 'ed25519_tls_test_user'@'%'")
+                .await?;
+        }
+        Ok(())
+    }
+
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(all(
+            any(feature = "rustls", feature = "rustls-tls"),
+            feature = "client_parsec"
+        )))
+    )]
+    #[tokio::test]
+    #[cfg(all(
+        any(feature = "rustls", feature = "rustls-tls"),
+        feature = "client_parsec"
+    ))]
+    // Test of MariaDB "Zero config SSL" with parsec authentication
+    async fn mariadb_auto_tls_parsec() -> crate::Result<()> {
+        let mut aux = Conn::new(get_opts().ssl_opts(None)).await?;
+        let is_mariadb = aux.inner.is_mariadb;
+        let version = aux.server_version();
+        if is_mariadb && version >= (11, 6, 0) {
+            let pass = random_pass();
+            aux.query_drop("DROP USER IF EXISTS 'parsec_tls_test_user'@'%'")
+                .await?;
+            let create_user_query = format!(
+                "CREATE USER 'parsec_tls_test_user'@'%' IDENTIFIED VIA 'parsec' USING PASSWORD('{pass}')"
+            );
+            aux.query_drop(create_user_query).await?;
+
+            let mut conn = Conn::new(
+                get_opts()
+                    .user(Some("parsec_tls_test_user"))
+                    .pass(Some(pass.clone()))
+                    .db_name(None::<String>)
+                    .init(vec![] as Vec<String>)
+                    .ssl_opts(crate::SslOpts::default().with_danger_skip_domain_validation(false)),
+            )
+            .await?;
+            assert!(conn.is_secure());
+            assert!(conn.ping().await.is_ok());
+            drop(conn);
+            aux.query_drop("DROP USER 'parsec_tls_test_user'@'%'")
+                .await?;
+
+            // caching_sha2_password is not MitM-proof. "Zero config SSL" does not work with such authentication methods.
+            // This can fail if server has real certificate. Combining 2 tests to be sure for the 2nd test that "zero config SSL"
+            // works in general.
+            aux.query_drop("DROP USER IF EXISTS 'caching_sha2_tls_test_user'@'%'")
+                .await?;
+            if aux
+                .query_drop(
+                    "CREATE USER 'caching_sha2_tls_test_user'@'%'
+            IDENTIFIED WITH caching_sha2_password USING PASSWORD('{pass}')",
+                )
+                .await
+                .is_ok()
+            {
+                // Test makes sense only if the plugin is present and active. If we can't create user with such plugin, we can skip the test.
+                let conn = Conn::new(
+                    get_opts()
+                        .user(Some("ed25519_tls_test_user"))
+                        .pass(Some(pass))
+                        .db_name(None::<String>)
+                        .init(vec![] as Vec<String>)
+                        .ssl_opts(
+                            crate::SslOpts::default().with_danger_skip_domain_validation(false),
+                        ),
+                )
+                .await;
+                // We shouldn't have had secure connection with insecure plugins -
+                // connection should have failed.
+                assert!(conn.is_err());
+                aux.query_drop("DROP USER 'caching_sha2_tls_test_user'@'%'")
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     #[cfg(feature = "nightly")]

@@ -11,6 +11,7 @@ pub use url::ParseError;
 pub mod tls;
 
 use mysql_common::{
+    auth::plugins::{self, PluginInitError},
     named_params::MixedParamsError,
     packets::{BulkExecuteRequestBuilderError, BulkExecuteRequestError},
     params::{MissingNamedParameterError, ParamsError},
@@ -181,6 +182,12 @@ pub enum DriverError {
     #[error("Invalid parsec ext-salt packet received from server")]
     InvalidParsecSalt,
 
+    #[error("Server certificate cannot be validated")]
+    CertificateCannotBeValidated,
+
+    #[error("Auth plugin error: {0}")]
+    AuthPlugin(plugins::Error),
+
     #[error("Bulk execute error: {}", _0)]
     BulkExecute(BulkExecuteRequestError),
 }
@@ -197,6 +204,34 @@ impl From<BulkExecuteRequestBuilderError> for DriverError {
 impl From<BulkExecuteRequestError> for DriverError {
     fn from(value: BulkExecuteRequestError) -> Self {
         Self::BulkExecute(value)
+    }
+}
+
+impl From<plugins::Error> for Error {
+    fn from(err: plugins::Error) -> Self {
+        Self::Driver(DriverError::from(err))
+    }
+}
+
+impl From<plugins::Error> for DriverError {
+    fn from(err: plugins::Error) -> Self {
+        Self::AuthPlugin(err)
+    }
+}
+
+impl From<PluginInitError> for DriverError {
+    fn from(value: PluginInitError) -> Self {
+        match value {
+            PluginInitError::UnsupportedPlugin(name) => Self::UnknownAuthPlugin {
+                name: String::from_utf8_lossy(&name).into_owned(),
+            },
+        }
+    }
+}
+
+impl From<PluginInitError> for Error {
+    fn from(value: PluginInitError) -> Self {
+        Self::Driver(value.into())
     }
 }
 
