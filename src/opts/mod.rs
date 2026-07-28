@@ -711,6 +711,12 @@ pub(crate) struct MysqlOpts {
     /// It makes MySQL return the FOUND rows instead of the AFFECTED rows.
     client_found_rows: bool,
 
+    /// Enables `CLIENT_DEPRECATE_EOF` capability (defaults to `true`).
+    ///
+    /// This can be disabled for compatibility with proxies that advertise the capability but
+    /// still send legacy EOF packets.
+    deprecate_eof: bool,
+
     /// Enables Client-Side Cleartext Pluggable Authentication (defaults to `false`).
     ///
     /// Enables client to send passwords to the server as cleartext, without hashing or encryption
@@ -1147,6 +1153,11 @@ impl Opts {
         self.inner.mysql_opts.client_found_rows
     }
 
+    /// Returns `true` if `CLIENT_DEPRECATE_EOF` capability is enabled (defaults to `true`).
+    pub fn deprecate_eof(&self) -> bool {
+        self.inner.mysql_opts.deprecate_eof
+    }
+
     /// Returns `true` if `mysql_clear_password` plugin support is enabled (defaults to `false`).
     ///
     /// `mysql_clear_password` enables client to send passwords to the server as cleartext, without
@@ -1186,9 +1197,11 @@ impl Opts {
             | CapabilityFlags::CLIENT_MULTI_STATEMENTS
             | CapabilityFlags::CLIENT_MULTI_RESULTS
             | CapabilityFlags::CLIENT_PS_MULTI_RESULTS
-            | CapabilityFlags::CLIENT_DEPRECATE_EOF
             | CapabilityFlags::CLIENT_PLUGIN_AUTH;
 
+        if self.deprecate_eof() {
+            out |= CapabilityFlags::CLIENT_DEPRECATE_EOF;
+        }
         if self.inner.mysql_opts.db_name.is_some() {
             out |= CapabilityFlags::CLIENT_CONNECT_WITH_DB;
         }
@@ -1239,6 +1252,7 @@ impl Default for MysqlOpts {
             wait_timeout: None,
             secure_auth: true,
             client_found_rows: false,
+            deprecate_eof: true,
             enable_cleartext_plugin: false,
             connect_attributes: None,
         }
@@ -1561,6 +1575,12 @@ impl OptsBuilder {
     /// Enables or disables `CLIENT_FOUND_ROWS` capability. See [`Opts::client_found_rows`].
     pub fn client_found_rows(mut self, client_found_rows: bool) -> Self {
         self.opts.client_found_rows = client_found_rows;
+        self
+    }
+
+    /// Enables or disables `CLIENT_DEPRECATE_EOF` capability. See [`Opts::deprecate_eof`].
+    pub fn deprecate_eof(mut self, deprecate_eof: bool) -> Self {
+        self.opts.deprecate_eof = deprecate_eof;
         self
     }
 
@@ -2141,7 +2161,7 @@ impl TryFrom<&str> for Opts {
 #[cfg(test)]
 mod test {
     use super::{HostPortOrUrl, MysqlOpts, Opts, Url};
-    use crate::{error::UrlError::InvalidParamValue, SslOpts};
+    use crate::{consts::CapabilityFlags, error::UrlError::InvalidParamValue, SslOpts};
 
     use std::{net::IpAddr, net::Ipv4Addr, net::Ipv6Addr, str::FromStr};
 
@@ -2186,6 +2206,21 @@ mod test {
             url_opts.hostport_or_url().get_tcp_port(),
             builder_opts.hostport_or_url().get_tcp_port()
         );
+    }
+
+    #[test]
+    fn deprecate_eof_capability_can_be_disabled() {
+        let default_opts = Opts::default();
+        assert!(default_opts.deprecate_eof());
+        assert!(default_opts
+            .get_capabilities()
+            .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF));
+
+        let legacy_eof_opts = Opts::from(super::OptsBuilder::default().deprecate_eof(false));
+        assert!(!legacy_eof_opts.deprecate_eof());
+        assert!(!legacy_eof_opts
+            .get_capabilities()
+            .contains(CapabilityFlags::CLIENT_DEPRECATE_EOF));
     }
 
     #[test]
