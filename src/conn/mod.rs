@@ -1719,43 +1719,76 @@ mod test {
             let version = conn.server_version();
 
             if should_run(is_mariadb, version) {
-                let pass = random_pass();
+                for pass in [String::new(), random_pass()] {
+                    let result = conn
+                        .query_drop(
+                            "DROP USER /*!50700 IF EXISTS */ /*M!100103 IF EXISTS */ __mats",
+                        )
+                        .await;
 
-                let result = conn
-                    .query_drop("DROP USER /*!50700 IF EXISTS */ /*M!100103 IF EXISTS */ __mats")
-                    .await;
+                    if matches!(version, (5, 6, _)) && i == 0 {
+                        // IF EXISTS is not supported on 5.6 so the query will fail on the first iteration
+                        drop(result);
+                    } else {
+                        result.unwrap();
+                    }
 
-                if matches!(version, (5, 6, _)) && i == 0 {
-                    // IF EXISTS is not supported on 5.6 so the query will fail on the first iteration
-                    drop(result);
-                } else {
-                    result.unwrap();
-                }
+                    for statement in create_statements(is_mariadb, version, &pass) {
+                        conn.query_drop(dbg!(statement)).await.unwrap();
+                    }
 
-                for statement in create_statements(is_mariadb, version, &pass) {
-                    conn.query_drop(dbg!(statement)).await.unwrap();
-                }
-
-                let mut conn2 = Conn::new(get_opts().secure_auth(false)).await.unwrap();
-                conn2
-                    .change_user(
-                        ChangeUserOpts::default()
-                            .with_db_name(None)
-                            .with_user(Some("__mats".into()))
-                            .with_pass(Some(pass)),
+                    let mut conn3 = Conn::new(
+                        get_opts()
+                            .secure_auth(false)
+                            .user(Some("__mats"))
+                            .pass(if pass.is_empty() {
+                                None
+                            } else {
+                                Some(pass.clone())
+                            })
+                            .db_name(None::<String>)
+                            .max_allowed_packet(Some(1024 * 1024 * 4))
+                            .prefer_socket(false)
+                            .init(Vec::<String>::new()),
                     )
                     .await
                     .unwrap();
 
-                let (db, user) = conn2
-                    .query_first::<(Option<String>, String), _>("SELECT DATABASE(), USER();")
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(db, None);
-                assert!(user.starts_with("__mats"));
+                    let (db, user) = conn3
+                        .query_first::<(Option<String>, String), _>("SELECT DATABASE(), USER();")
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(db, None);
+                    assert!(user.starts_with("__mats"));
 
-                conn2.disconnect().await.unwrap();
+                    conn3.disconnect().await.unwrap();
+
+                    let mut conn2 = Conn::new(get_opts().secure_auth(false)).await.unwrap();
+                    conn2
+                        .change_user(
+                            ChangeUserOpts::default()
+                                .with_db_name(None)
+                                .with_user(Some("__mats".into()))
+                                .with_pass(if pass.is_empty() {
+                                    None
+                                } else {
+                                    Some(pass.clone())
+                                }),
+                        )
+                        .await
+                        .unwrap();
+
+                    let (db, user) = conn2
+                        .query_first::<(Option<String>, String), _>("SELECT DATABASE(), USER();")
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(db, None);
+                    assert!(user.starts_with("__mats"));
+
+                    conn2.disconnect().await.unwrap();
+                }
             }
         }
 
