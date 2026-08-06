@@ -715,6 +715,8 @@ impl Conn {
         mut procedure: auth::plugins::AuthProc,
         mut previous_response: auth::plugins::Response,
     ) -> Result<()> {
+        use auth::plugins::{AuthProc, Response};
+
         loop {
             let packet = self.read_packet().await?;
 
@@ -737,12 +739,20 @@ impl Conn {
             }
 
             let challenge = packet.strip_prefix(b"\x01").unwrap_or(&packet);
-            if challenge.starts_with(b"-----BEGIN PUBLIC KEY-----") {
+
+            // cache server key if needed
+            if self.inner.server_key.is_none()
+                && ((matches!(procedure, AuthProc::CachingSha2Password(_))
+                    && previous_response.data() == Some(&[0x02]))
+                    || (matches!(procedure, AuthProc::Sha256Password(_))
+                        && previous_response.data() == Some(&[0x01])))
+                && challenge.starts_with(b"-----BEGIN")
+            {
                 self.inner.server_key = Some(challenge.to_vec());
             }
 
             match previous_response {
-                auth::plugins::Response::Next { .. } => {
+                Response::Next { .. } => {
                     let response = procedure
                         .run(&context, challenge)
                         .map_err(DriverError::from)?;
@@ -751,7 +761,7 @@ impl Conn {
                     }
                     previous_response = response;
                 }
-                auth::plugins::Response::Last { .. } => {
+                Response::Last { .. } => {
                     if packet.first() == Some(&0x00) {
                         return Ok(());
                     }
