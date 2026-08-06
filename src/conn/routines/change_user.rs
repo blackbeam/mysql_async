@@ -29,7 +29,7 @@ impl Routine<()> for ChangeUser {
         let fut = async move {
             let plugin = conn.inner.auth_plugin.clone();
             let nonce = conn.inner.nonce.clone();
-            let (context, procedure, response) = conn.start_auth(&plugin, &nonce)?;
+            let (context, procedure, response) = conn.start_auth(&plugin, &nonce).await?;
 
             let com_change_user = ComChangeUser::new()
                 .with_user(conn.opts().user().map(|x| x.as_bytes()))

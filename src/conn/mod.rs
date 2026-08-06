@@ -22,6 +22,7 @@ use mysql_common::{
     proto::MySerialize,
     row::Row,
 };
+use tokio::{fs::File, io::AsyncReadExt as _};
 
 use std::{
     borrow::Cow,
@@ -153,7 +154,10 @@ struct ConnInner {
     stmt_cache: StmtCache,
     nonce: Vec<u8>,
     auth_plugin: AuthPlugin<'static>,
-    server_key: Option<Vec<u8>>,
+
+    // Cached public server key used for RSA-based key exchange by the caching_sha2_password plugin.
+    server_key_pem: Option<Option<Vec<u8>>>,
+
     active_since: Instant,
     /// Connection is already disconnected.
     pub(crate) disconnected: bool,
@@ -172,7 +176,7 @@ impl fmt::Debug for ConnInner {
             .field("tx_status", &self.tx_status)
             .field("stream", &self.stream)
             .field("options", &self.opts)
-            .field("server_key", &self.server_key)
+            .field("server_key_pem", &self.server_key_pem)
             .field("auth_plugin", &self.auth_plugin)
             .field("capabilities", &self.capabilities)
             .field("mariadb_capabilities", &self.mariadb_capabilities)
@@ -207,7 +211,7 @@ impl ConnInner {
             nonce: Vec::default(),
             auth_plugin: AuthPlugin::MysqlNativePassword,
             disconnected: false,
-            server_key: None,
+            server_key_pem: None,
             infile_handler: None,
             reset_upon_returning_to_a_pool: false,
             active_since: Instant::now(),
@@ -632,8 +636,20 @@ impl Conn {
         }
     }
 
-    fn auth_context(&self) -> AuthContext {
-        AuthContext {
+    async fn auth_context(&mut self) -> crate::Result<AuthContext> {
+        // cache server key
+        if self.inner.server_key_pem.is_none() {
+            if let Some(server_key_path) = self.inner.opts.server_key_path() {
+                let mut server_key_data = vec![];
+                let mut server_key_file = File::open(server_key_path).await?;
+                server_key_file.read_to_end(&mut server_key_data).await?;
+                self.inner.server_key_pem = Some(Some(server_key_data));
+            } else {
+                self.inner.server_key_pem = Some(None);
+            }
+        }
+
+        Ok(AuthContext {
             pass: self
                 .inner
                 .opts
@@ -644,11 +660,11 @@ impl Conn {
             is_ipc_transport: self.is_socket(),
             is_tls_transport: self.is_secure(),
             scramble: self.inner.nonce.clone(),
-            server_key_pem: self.inner.server_key.clone(),
-        }
+            server_key_pem: self.inner.server_key_pem.as_ref().and_then(|x| x.clone()),
+        })
     }
 
-    fn start_auth(&self, plugin: &AuthPlugin<'_>, challenge: &[u8]) -> Result<AuthState> {
+    async fn start_auth(&mut self, plugin: &AuthPlugin<'_>, challenge: &[u8]) -> Result<AuthState> {
         if matches!(plugin, AuthPlugin::MysqlOldPassword) && self.inner.opts.secure_auth() {
             return Err(DriverError::MysqlOldPasswordDisabled.into());
         }
@@ -658,7 +674,7 @@ impl Conn {
             return Err(DriverError::CleartextPluginDisabled.into());
         }
 
-        let context = self.auth_context();
+        let context = self.auth_context().await?;
         let mut procedure = plugin.init().map_err(DriverError::from)?;
         let response = procedure
             .run(&context, challenge)
@@ -669,7 +685,7 @@ impl Conn {
     async fn do_handshake_response(&mut self) -> Result<AuthState> {
         let plugin = self.inner.auth_plugin.clone();
         let nonce = self.inner.nonce.clone();
-        let state = self.start_auth(&plugin, &nonce)?;
+        let state = self.start_auth(&plugin, &nonce).await?;
 
         let handshake_response = HandshakeResponse::new(
             state.2.data(),
@@ -698,10 +714,12 @@ impl Conn {
         &mut self,
         auth_switch_request: AuthSwitchRequest<'_>,
     ) -> Result<AuthState> {
-        let state = self.start_auth(
-            &auth_switch_request.auth_plugin(),
-            auth_switch_request.plugin_data(),
-        )?;
+        let state = self
+            .start_auth(
+                &auth_switch_request.auth_plugin(),
+                auth_switch_request.plugin_data(),
+            )
+            .await?;
         if let Some(data) = state.2.data() {
             self.write_bytes(data).await?;
         }
@@ -741,14 +759,14 @@ impl Conn {
             let challenge = packet.strip_prefix(b"\x01").unwrap_or(&packet);
 
             // cache server key if needed
-            if self.inner.server_key.is_none()
+            if self.inner.server_key_pem.is_none()
                 && ((matches!(procedure, AuthProc::CachingSha2Password(_))
                     && previous_response.data() == Some(&[0x02]))
                     || (matches!(procedure, AuthProc::Sha256Password(_))
                         && previous_response.data() == Some(&[0x01])))
                 && challenge.starts_with(b"-----BEGIN")
             {
-                self.inner.server_key = Some(challenge.to_vec());
+                self.inner.server_key_pem = Some(Some(challenge.to_vec()));
             }
 
             match previous_response {

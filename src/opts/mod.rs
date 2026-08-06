@@ -142,10 +142,19 @@ impl HostPortOrUrl {
 }
 
 /// Represents data that is either on-disk or in the buffer.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum PathOrBuf<'a> {
     Path(Cow<'a, Path>),
     Buf(Cow<'a, [u8]>),
+}
+
+impl<'a> fmt::Debug for PathOrBuf<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(arg0) => f.debug_tuple("Path").field(arg0).finish(),
+            Self::Buf(_arg0) => f.debug_tuple("Buf").field(&"<REDACTED>").finish(),
+        }
+    }
 }
 
 impl<'a> PathOrBuf<'a> {
@@ -614,7 +623,7 @@ impl fmt::Debug for AfterConnectCallbackWrapper {
 /// Mysql connection options.
 ///
 /// Build one with [`OptsBuilder`].
-#[derive(Clone, Eq, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct MysqlOpts {
     /// User (defaults to `None`).
     user: Option<String>,
@@ -719,6 +728,17 @@ pub(crate) struct MysqlOpts {
     /// Available via `deprecate_eof` connection url parameter.
     deprecate_eof: bool,
 
+    /// Returns server public key path (defaults to `None`).
+    ///
+    /// The path contains a client side copy of the server public key in PEM format.
+    ///
+    /// # Security Notes
+    ///
+    /// This is not a TLS option — this path is used only for caching_sha2_password plugin
+    /// to make it not vulnerable to MITM. If it is not given then the public key will be
+    /// requested from the server.
+    server_key_path: Option<PathBuf>,
+
     /// Enables Client-Side Cleartext Pluggable Authentication (defaults to `false`).
     ///
     /// Enables client to send passwords to the server as cleartext, without hashing or encryption
@@ -735,6 +755,37 @@ pub(crate) struct MysqlOpts {
     /// When set, the client will advertise `CLIENT_CONNECT_ATTRS` and send the provided
     /// key-value attributes to the server.
     connect_attributes: Option<std::collections::HashMap<String, String>>,
+}
+
+impl fmt::Debug for MysqlOpts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MysqlOpts")
+            .field("user", &self.user)
+            .field("pass", &"<REDACTED>")
+            .field("db_name", &self.db_name)
+            .field("tcp_keepalive", &self.tcp_keepalive)
+            .field("tcp_nodelay", &self.tcp_nodelay)
+            .field("local_infile_handler", &self.local_infile_handler)
+            .field("pool_opts", &self.pool_opts)
+            .field("conn_ttl", &self.conn_ttl)
+            .field("after_connect", &self.after_connect)
+            .field("init", &self.init)
+            .field("setup", &self.setup)
+            .field("stmt_cache_size", &self.stmt_cache_size)
+            .field("ssl_opts", &self.ssl_opts)
+            .field("prefer_socket", &self.prefer_socket)
+            .field("socket", &self.socket)
+            .field("compression", &self.compression)
+            .field("max_allowed_packet", &self.max_allowed_packet)
+            .field("wait_timeout", &self.wait_timeout)
+            .field("secure_auth", &self.secure_auth)
+            .field("client_found_rows", &self.client_found_rows)
+            .field("deprecate_eof", &self.deprecate_eof)
+            .field("server_key_path", &self.server_key_path)
+            .field("enable_cleartext_plugin", &self.enable_cleartext_plugin)
+            .field("connect_attributes", &self.connect_attributes)
+            .finish()
+    }
 }
 
 /// Mysql connection options.
@@ -1172,6 +1223,11 @@ impl Opts {
         self.inner.mysql_opts.deprecate_eof
     }
 
+    /// Returns server public key path (defaults to `None`) (see [`OptsBuilder::server_key_path`]).
+    pub fn server_key_path(&self) -> Option<&Path> {
+        self.inner.mysql_opts.server_key_path.as_deref()
+    }
+
     /// Returns `true` if `mysql_clear_password` plugin support is enabled (defaults to `false`).
     ///
     /// `mysql_clear_password` enables client to send passwords to the server as cleartext, without
@@ -1269,6 +1325,7 @@ impl Default for MysqlOpts {
             deprecate_eof: true,
             enable_cleartext_plugin: false,
             connect_attributes: None,
+            server_key_path: None,
         }
     }
 }
@@ -1595,6 +1652,32 @@ impl OptsBuilder {
     /// Enables or disables `CLIENT_DEPRECATE_EOF` capability. See [`Opts::deprecate_eof`].
     pub fn deprecate_eof(mut self, deprecate_eof: bool) -> Self {
         self.opts.deprecate_eof = deprecate_eof;
+        self
+    }
+
+    /// Sets server public key path (defaults to `None`).
+    ///
+    /// The path contains a client side copy of the server public key in PEM format.
+    ///
+    /// # Security Notes
+    ///
+    /// This is not a TLS option — this path is used only for caching_sha2_password plugin
+    /// to make it not vulnerable to MITM. If it is not given then the public key will be
+    /// requested from the server.
+    ///
+    /// # Connection URL
+    ///
+    /// Use `server_key_path` URL parameter to set this value. E.g.
+    ///
+    /// ```
+    /// # use mysql_async::*;
+    /// # use std::path::Path;
+    /// # fn main() -> Result<()> {
+    /// let opts = Opts::from_url("mysql://localhost/db?server_key_path=/some/path/key.pem")?;
+    /// assert_eq!(opts.server_key_path(), Some(Path::new("/some/path/key.pem")));
+    /// # Ok(()) }
+    pub fn server_key_path(mut self, server_key_path: Option<PathBuf>) -> Self {
+        self.opts.server_key_path = server_key_path;
         self
     }
 
@@ -2055,6 +2138,8 @@ fn mysql_opts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
             }
         } else if key == "socket" {
             opts.socket = Some(value)
+        } else if key == "server_key_path" {
+            opts.server_key_path = Some(value.into())
         } else if key == "compression" {
             if value == "fast" {
                 opts.compression = Some(crate::Compression::fast());
