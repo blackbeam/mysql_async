@@ -22,9 +22,7 @@ futures-util = "0.3"
 futures-sink = "0.3"
 keyed_priority_queue = "0.4"
 lru = "0.18"
-# Temporary git pin while mysql_common 0.38.0 is under review in
-# blackbeam/rust_mysql_common#186. Replace with the released version afterwards.
-mysql_common = { git = "https://github.com/t8y2/rust_mysql_common.git", rev = "77085e91e5081309d585153e3b656ce33bc1fe74", default-features = false }
+mysql_common = { version = "0.38.2", default-features = false }
 pem = { version = "3.0", optional = true }
 percent-encoding = "2.1.0"
 rand = "0.10"
