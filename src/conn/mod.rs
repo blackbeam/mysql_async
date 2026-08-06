@@ -698,12 +698,10 @@ impl Conn {
         &mut self,
         auth_switch_request: AuthSwitchRequest<'_>,
     ) -> Result<AuthState> {
-        self.inner.nonce = auth_switch_request.plugin_data().to_vec();
-        self.inner.auth_plugin = auth_switch_request.auth_plugin().clone().into_owned();
-
-        let plugin = self.inner.auth_plugin.clone();
-        let nonce = self.inner.nonce.clone();
-        let state = self.start_auth(&plugin, &nonce)?;
+        let state = self.start_auth(
+            &auth_switch_request.auth_plugin(),
+            auth_switch_request.plugin_data(),
+        )?;
         if let Some(data) = state.2.data() {
             self.write_bytes(data).await?;
         }
