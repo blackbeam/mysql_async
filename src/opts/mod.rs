@@ -715,6 +715,8 @@ pub(crate) struct MysqlOpts {
     ///
     /// This can be disabled for compatibility with proxies that advertise the capability but
     /// still send legacy EOF packets.
+    ///
+    /// Available via `deprecate_eof` connection url parameter.
     deprecate_eof: bool,
 
     /// Enables Client-Side Cleartext Pluggable Authentication (defaults to `false`).
@@ -1154,6 +1156,18 @@ impl Opts {
     }
 
     /// Returns `true` if `CLIENT_DEPRECATE_EOF` capability is enabled (defaults to `true`).
+    ///
+    /// # Connection URL
+    ///
+    /// Use `deprecate_eof` URL parameter to set this value. E.g.
+    ///
+    /// ```
+    /// # use mysql_async::*;
+    /// # fn main() -> Result<()> {
+    /// let opts = Opts::from_url("mysql://localhost/db?deprecate_eof=false")?;
+    /// assert!(!opts.deprecate_eof());
+    /// # Ok(()) }
+    /// ```
     pub fn deprecate_eof(&self) -> bool {
         self.inner.mysql_opts.deprecate_eof
     }
@@ -2023,6 +2037,18 @@ fn mysql_opts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                 _ => {
                     return Err(UrlError::InvalidParamValue {
                         param: "client_found_rows".into(),
+                        value,
+                    });
+                }
+            }
+        } else if key == "deprecate_eof" {
+            match bool::from_str(&value) {
+                Ok(deprecate_eof) => {
+                    opts.deprecate_eof = deprecate_eof;
+                }
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "deprecate_eof".into(),
                         value,
                     });
                 }
