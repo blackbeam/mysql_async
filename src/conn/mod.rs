@@ -949,9 +949,18 @@ impl Conn {
     }
 
     /// Returns a future that resolves to [`Conn`].
+    ///
+    /// [`Opts::credentials_provider`] is used to supply freshly minted credentials
+    /// (e.g. an IAM auth token) for this specific physical connection.
+    /// See [`OptsBuilder::credentials_provider`].
     pub fn new<T: Into<Opts>>(opts: T) -> crate::BoxFuture<'static, Conn> {
         let opts = opts.into();
         async move {
+            let opts = match opts.credentials_provider() {
+                Some(provider) => provider(opts).await?,
+                None => opts,
+            };
+
             let mut conn = Conn::empty(opts.clone());
 
             let stream = if let Some(_path) = opts.socket() {
