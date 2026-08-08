@@ -13,7 +13,7 @@ use std::{mem::take, ops::Deref, sync::Arc};
 pub struct BufferPool {
     buffer_size_cap: usize,
     buffer_init_cap: usize,
-    pool: ArrayQueue<Vec<u8>>,
+    pool: Option<ArrayQueue<Vec<u8>>>,
 }
 
 impl BufferPool {
@@ -34,7 +34,11 @@ impl BufferPool {
             .unwrap_or(0);
 
         Self {
-            pool: ArrayQueue::new(pool_cap),
+            pool: if pool_cap == 0 {
+                None
+            } else {
+                Some(ArrayQueue::new(pool_cap))
+            },
             buffer_size_cap,
             buffer_init_cap,
         }
@@ -43,7 +47,8 @@ impl BufferPool {
     pub fn get(self: &Arc<Self>) -> PooledBuf {
         let buf = self
             .pool
-            .pop()
+            .as_ref()
+            .and_then(|pool| pool.pop())
             .unwrap_or_else(|| Vec::with_capacity(self.buffer_init_cap));
         debug_assert_eq!(buf.len(), 0);
         PooledBuf(buf, self.clone())
@@ -56,15 +61,13 @@ impl BufferPool {
     }
 
     fn put(self: &Arc<Self>, mut buf: Vec<u8>) {
-        // SAFETY:
-        // 1. OK – 0 is always within capacity
-        // 2. OK - nothing to initialize
-        unsafe { buf.set_len(0) }
+        if let Some(pool) = &self.pool {
+            buf.clear();
+            buf.shrink_to(self.buffer_size_cap);
 
-        buf.shrink_to(self.buffer_size_cap);
-
-        // ArrayQueue will make sure to drop the buffer if capacity is exceeded
-        let _ = self.pool.push(buf);
+            // ArrayQueue will make sure to drop the buffer if capacity is exceeded
+            let _ = pool.push(buf);
+        }
     }
 }
 
