@@ -154,7 +154,7 @@ impl<'a> Transaction<'a> {
         }
 
         if let Some(isolation_level) = isolation_level {
-            let query = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation_level);
+            let query = format!("SET TRANSACTION ISOLATION LEVEL {isolation_level}");
             conn.as_mut().query_drop(query).await?;
         }
 
