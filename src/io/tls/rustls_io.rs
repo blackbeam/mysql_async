@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rustls::{
     client::{
-        danger::{ServerCertVerified, ServerCertVerifier},
+        danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
         Resumption, WebPkiServerVerifier,
     },
     pki_types::{pem, CertificateDer, ServerName},
@@ -122,6 +122,11 @@ impl DangerousVerifier {
             verifier,
         }
     }
+
+    fn invalid_signature_assertion(&self) -> Option<HandshakeSignatureValid> {
+        self.accept_invalid_certs
+            .then(HandshakeSignatureValid::assertion)
+    }
 }
 
 /// Whether `error` says only that the certificate is not for the name we
@@ -204,7 +209,10 @@ impl ServerCertVerifier for DangerousVerifier {
         dss: &rustls::DigitallySignedStruct,
     ) -> std::prelude::v1::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
     {
-        self.verifier.verify_tls12_signature(message, cert, dss)
+        match self.invalid_signature_assertion() {
+            Some(assertion) => Ok(assertion),
+            None => self.verifier.verify_tls12_signature(message, cert, dss),
+        }
     }
 
     fn verify_tls13_signature(
@@ -214,7 +222,10 @@ impl ServerCertVerifier for DangerousVerifier {
         dss: &rustls::DigitallySignedStruct,
     ) -> std::prelude::v1::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
     {
-        self.verifier.verify_tls13_signature(message, cert, dss)
+        match self.invalid_signature_assertion() {
+            Some(assertion) => Ok(assertion),
+            None => self.verifier.verify_tls13_signature(message, cert, dss),
+        }
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
@@ -224,8 +235,17 @@ impl ServerCertVerifier for DangerousVerifier {
 
 #[cfg(test)]
 mod tests {
-    use super::is_name_mismatch;
+    use super::*;
     use rustls::{pki_types::ServerName, CertificateError, Error};
+
+    fn verifier(accept_invalid_certs: bool) -> DangerousVerifier {
+        let mut roots = RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let verifier = WebPkiServerVerifier::builder(Arc::new(roots))
+            .build()
+            .unwrap();
+        DangerousVerifier::new(accept_invalid_certs, false, verifier)
+    }
 
     #[test]
     fn a_name_mismatch_is_recognised_by_variant() {
@@ -256,5 +276,35 @@ mod tests {
             CertificateError::UnknownIssuer
         )));
         assert!(!is_name_mismatch(&Error::General("nope".to_owned())));
+    }
+
+    #[test]
+    fn invalid_x509_v1_is_only_fully_accepted_in_dangerous_mode() {
+        let certificate =
+            CertificateDer::from(include_bytes!("../../../tests/fixtures/x509-v1.der").as_slice());
+        let server_name = ServerName::try_from("localhost").unwrap();
+        let dangerous = verifier(true);
+        let strict = verifier(false);
+
+        assert!(dangerous
+            .verify_server_cert(
+                &certificate,
+                &[],
+                &server_name,
+                &[],
+                rustls::pki_types::UnixTime::now()
+            )
+            .is_ok());
+        assert!(dangerous.invalid_signature_assertion().is_some());
+        assert!(strict
+            .verify_server_cert(
+                &certificate,
+                &[],
+                &server_name,
+                &[],
+                rustls::pki_types::UnixTime::now()
+            )
+            .is_err());
+        assert!(strict.invalid_signature_assertion().is_none());
     }
 }
