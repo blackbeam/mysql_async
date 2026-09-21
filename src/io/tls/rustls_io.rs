@@ -124,6 +124,21 @@ impl DangerousVerifier {
     }
 }
 
+/// Whether `error` says only that the certificate is not for the name we
+/// connected by — the one failure `skip_domain_validation` is meant to
+/// ignore. Matched on the variant: the text of this error changed in
+/// rustls 0.23 (`NotValidForName` became "certificate not valid for name
+/// …"), which silently disabled a substring match (#404).
+fn is_name_mismatch(error: &rustls::Error) -> bool {
+    matches!(
+        error,
+        rustls::Error::InvalidCertificate(
+            rustls::CertificateError::NotValidForName
+                | rustls::CertificateError::NotValidForNameContext { .. }
+        )
+    )
+}
+
 impl ServerCertVerifier for DangerousVerifier {
     // fn verify_server_cert(
     //     &self,
@@ -174,9 +189,7 @@ impl ServerCertVerifier for DangerousVerifier {
                 now,
             ) {
                 Ok(assertion) => Ok(assertion),
-                Err(ref e)
-                    if e.to_string().contains("NotValidForName") && self.skip_domain_validation =>
-                {
+                Err(ref e) if self.skip_domain_validation && is_name_mismatch(e) => {
                     Ok(ServerCertVerified::assertion())
                 }
                 Err(e) => Err(e),
@@ -206,5 +219,42 @@ impl ServerCertVerifier for DangerousVerifier {
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
         self.verifier.supported_verify_schemes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_name_mismatch;
+    use rustls::{pki_types::ServerName, CertificateError, Error};
+
+    #[test]
+    fn a_name_mismatch_is_recognised_by_variant() {
+        assert!(is_name_mismatch(&Error::InvalidCertificate(
+            CertificateError::NotValidForName
+        )));
+        assert!(is_name_mismatch(&Error::InvalidCertificate(
+            CertificateError::NotValidForNameContext {
+                expected: ServerName::try_from("db.example.test").unwrap(),
+                presented: vec!["DnsName(\"other.example.test\")".to_owned()],
+            }
+        )));
+        // The text is what the old check relied on; the variant rustls
+        // returns today no longer says it.
+        let with_context = Error::InvalidCertificate(CertificateError::NotValidForNameContext {
+            expected: ServerName::try_from("db.example.test").unwrap(),
+            presented: vec!["DnsName(\"other.example.test\")".to_owned()],
+        });
+        assert!(!with_context.to_string().contains("NotValidForName"));
+    }
+
+    #[test]
+    fn other_certificate_errors_are_not() {
+        assert!(!is_name_mismatch(&Error::InvalidCertificate(
+            CertificateError::Expired
+        )));
+        assert!(!is_name_mismatch(&Error::InvalidCertificate(
+            CertificateError::UnknownIssuer
+        )));
+        assert!(!is_name_mismatch(&Error::General("nope".to_owned())));
     }
 }
