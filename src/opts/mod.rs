@@ -620,6 +620,27 @@ impl fmt::Debug for AfterConnectCallbackWrapper {
     }
 }
 
+/// Clippy shorthand
+type CredentialsProviderCallback =
+    Arc<dyn Fn(Opts) -> crate::BoxFuture<'static, Opts> + Send + Sync + 'static>;
+
+#[derive(Clone)]
+pub(crate) struct CredentialsProviderCallbackWrapper(CredentialsProviderCallback);
+
+impl Eq for CredentialsProviderCallbackWrapper {}
+
+impl PartialEq for CredentialsProviderCallbackWrapper {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for CredentialsProviderCallbackWrapper {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("CredentialsProviderCallbackWrapper").finish()
+    }
+}
+
 /// Mysql connection options.
 ///
 /// Build one with [`OptsBuilder`].
@@ -655,6 +676,9 @@ pub(crate) struct MysqlOpts {
 
     /// Callback to execute once a new connection is established.
     after_connect: Option<AfterConnectCallbackWrapper>,
+
+    /// Callback invoked immediately before every new physical connection is established.
+    credentials_provider: Option<CredentialsProviderCallbackWrapper>,
 
     /// Commands to execute once new connection is established.
     init: Vec<String>,
@@ -917,6 +941,16 @@ impl Opts {
         self.inner
             .mysql_opts
             .after_connect
+            .as_ref()
+            .map(|cb| cb.0.clone())
+    }
+
+    /// Callback invoked immediately before establishing every new physical connection. See
+    /// [`OptsBuilder::credentials_provider`].
+    pub fn credentials_provider(&self) -> Option<CredentialsProviderCallback> {
+        self.inner
+            .mysql_opts
+            .credentials_provider
             .as_ref()
             .map(|cb| cb.0.clone())
     }
@@ -1306,6 +1340,7 @@ impl Default for MysqlOpts {
             pass: None,
             db_name: None,
             after_connect: None,
+            credentials_provider: None,
             init: vec![],
             setup: vec![],
             tcp_keepalive: None,
@@ -1529,6 +1564,44 @@ impl OptsBuilder {
         F: for<'a> Fn(&'a mut crate::Conn) -> crate::BoxFuture<'a, ()> + Send + Sync + 'static,
     {
         self.opts.after_connect = Some(AfterConnectCallbackWrapper(Arc::new(callback)));
+        self
+    }
+
+    /// A callback, invoked for every new *physical* connection, i.e. every time
+    /// [`Conn::new`][crate::Conn::new] actually dials the server.
+    /// This happens for every connection [`Pool`][crate::Pool] creates to grow
+    /// itself, but *not* connections the pool hands out from its idle set.
+    ///
+    /// The callback receives the connection's current [`Opts`] and returns the
+    /// (possibly updated) `Opts` that will actually be used to connect.
+    /// 
+    /// This is the hook to use for injecting refreshed credentials, such as in 
+    /// cloud provider IAM database authentication tokens with
+    /// a few minutes validation.
+    ///
+    /// If this returns an error, the connection attempt will also fail.
+    ///
+    /// ```no_run
+    /// use futures_util::FutureExt;
+    /// use mysql_async::OptsBuilder;
+    ///
+    /// let opts_builder: OptsBuilder = todo!();
+    ///
+    /// opts_builder.credentials_provider(|opts| {
+    ///     async move {
+    ///         let token: String =
+    ///             todo!("mint a fresh auth token for `opts.user()` / `opts.ip_or_hostname()`");
+    ///         Ok(OptsBuilder::from_opts(opts).pass(Some(token)).into())
+    ///     }
+    ///     .boxed()
+    /// });
+    /// ```
+    pub fn credentials_provider<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(Opts) -> crate::BoxFuture<'static, Opts> + Send + Sync + 'static,
+    {
+        self.opts.credentials_provider =
+            Some(CredentialsProviderCallbackWrapper(Arc::new(callback)));
         self
     }
 
