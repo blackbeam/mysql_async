@@ -756,6 +756,21 @@ impl Conn {
                 continue;
             }
 
+            // A server or proxy may finish authentication directly after the
+            // handshake response. Do not feed its OK packet to the plugin as
+            // an AuthMoreData challenge.
+            if packet.first() == Some(&0x00) {
+                let mut data = ParseBuf(&packet);
+                let _: OkPacketDeserializer<CommonOkPacket> = data.parse(self.capabilities())?;
+                if !data.is_empty() {
+                    return Err(DriverError::UnexpectedPacket {
+                        payload: packet.to_vec(),
+                    }
+                    .into());
+                }
+                return Ok(());
+            }
+
             let challenge = packet.strip_prefix(b"\x01").unwrap_or(&packet);
 
             // cache server key if needed
@@ -780,9 +795,6 @@ impl Conn {
                     previous_response = response;
                 }
                 Response::Last { .. } => {
-                    if packet.first() == Some(&0x00) {
-                        return Ok(());
-                    }
                     return Err(DriverError::UnexpectedPacket {
                         payload: packet.to_vec(),
                     }
@@ -1322,12 +1334,108 @@ mod test {
     };
     use mysql_common::constants::{MariadbCapabilities, MAX_PAYLOAD_LEN};
     use rand::RngExt as _;
-    use tokio::{io::AsyncWriteExt, net::TcpListener};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
 
     use crate::{
         from_row, params, prelude::*, test_misc::get_opts, ChangeUserOpts, Conn, Error,
         OptsBuilder, Pool, ServerError, Value, WhiteListFsHandler,
     };
+
+    async fn auth_with_server_packet(server_packet: &[u8]) -> super::Result<()> {
+        use mysql_common::{packets::HandshakePacket, proto::MySerialize};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let packet = server_packet.to_vec();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let handshake = HandshakePacket::new(
+                10,
+                b"8.0.46\0".as_slice(),
+                1,
+                *b"12345678",
+                Some(b"abcdefghijkl\0".as_slice()),
+                crate::consts::CapabilityFlags::CLIENT_PROTOCOL_41
+                    | crate::consts::CapabilityFlags::CLIENT_SECURE_CONNECTION
+                    | crate::consts::CapabilityFlags::CLIENT_PLUGIN_AUTH,
+                45,
+                crate::consts::StatusFlags::SERVER_STATUS_AUTOCOMMIT,
+                Some(b"caching_sha2_password\0".as_slice()),
+            );
+            let mut greeting = Vec::new();
+            handshake.serialize(&mut greeting);
+            stream
+                .write_all(&[greeting.len() as u8, 0, 0, 0])
+                .await
+                .unwrap();
+            stream.write_all(&greeting).await.unwrap();
+
+            let mut header = [0; 4];
+            stream.read_exact(&mut header).await.unwrap();
+            assert_eq!(header[3], 1);
+            let len = usize::from(header[0])
+                | (usize::from(header[1]) << 8)
+                | (usize::from(header[2]) << 16);
+            let mut response = vec![0; len];
+            stream.read_exact(&mut response).await.unwrap();
+
+            stream
+                .write_all(&[packet.len() as u8, 0, 0, 2])
+                .await
+                .unwrap();
+            stream.write_all(&packet).await.unwrap();
+        });
+
+        let opts = OptsBuilder::default()
+            .ip_or_hostname(addr.ip().to_string())
+            .tcp_port(addr.port())
+            .user(Some("test"))
+            .pass(Some("test-password"));
+        let mut conn = Conn::empty(opts.into());
+        conn.inner.stream =
+            Some(super::Stream::connect_tcp(conn.inner.opts.hostport_or_url(), None).await?);
+        conn.handle_handshake().await?;
+        let (context, procedure, response) = conn.do_handshake_response().await?;
+        assert!(matches!(
+            response,
+            mysql_common::auth::plugins::Response::Next { .. }
+        ));
+        let result = conn
+            .continue_auth(false, context, procedure, response)
+            .await;
+        server.await.unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn accepts_immediate_ok_after_caching_sha2_handshake_response() {
+        auth_with_server_packet(&[0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_truncated_immediate_ok_and_invalid_auth_more_data() {
+        assert!(auth_with_server_packet(&[0x00, 0x00]).await.is_err());
+        assert!(
+            auth_with_server_packet(&[0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0xff])
+                .await
+                .is_err()
+        );
+        assert!(auth_with_server_packet(&[0x01, 0x05]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn preserves_server_error_during_authentication() {
+        let packet = b"\xff\x15\x04#28000Access denied";
+        assert!(matches!(
+            auth_with_server_packet(packet).await,
+            Err(Error::Server(ServerError { code: 1045, .. }))
+        ));
+    }
 
     #[tokio::test]
     async fn should_return_found_rows_if_flag_is_set() -> super::Result<()> {
