@@ -94,7 +94,7 @@ impl BinlogStream {
     /// Closes the stream's `Conn`. Additionally, the connection is dropped, so its associated
     /// pool (if any) will regain a connection slot.
     pub async fn close(self) -> Result<()> {
-        match self.read_packet.0.inner {
+        match self.read_packet.conn.inner {
             // `close_conn` requires ownership of `Conn`. That's okay, because
             // `BinLogStream`'s connection is always owned.
             ConnectionInner::Conn(conn) => {

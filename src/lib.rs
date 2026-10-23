@@ -326,6 +326,29 @@
 //! to its connection in any way, but one can look on to the connection id, contained
 //! in the [`Statement`] structure.
 //!
+//! # Metadata limits
+//!
+//! Applications can opt into [`Opts::max_metadata_count`] and [`Opts::max_metadata_bytes`]
+//! to bound server-supplied definitions before retaining them:
+//!
+//! ```
+//! let opts = mysql_async::OptsBuilder::default()
+//!     .max_allowed_packet(Some(1024 * 1024))
+//!     .max_metadata_count(Some(256))
+//!     .max_metadata_bytes(Some(256 * 1024));
+//! ```
+//!
+//! Each result set, prepared parameter block and prepared column block has its own budget.
+//! Defaults impose no additional metadata cap. Definitions are parsed incrementally, and
+//! oversized counts or payloads produce fatal driver errors. An explicit packet limit also
+//! applies to the greeting and authentication, not just established connections.
+//!
+//! These are not process memory limits: vector/`Column` overhead, buffer capacities, framing
+//! read-ahead and independently retained statement/result metadata are separate. In particular,
+//! plain error/progress packet candidates use the normal packet limit, while compressed packets
+//! and envelopes are subject to the remaining byte budget before control-packet classification.
+//! See the option documentation for the exact accounting and cache boundaries.
+//!
 //! # LOCAL INFILE Handlers
 //!
 //! **Warning:** You should be aware of [Security Considerations for LOAD DATA LOCAL][1].

@@ -10,7 +10,9 @@ use mysql_common::{
     value::Value,
 };
 
-use crate::{error::LocalInfileError, queryable::Protocol, Conn, Error, Statement};
+use crate::{
+    error::LocalInfileError, queryable::Protocol, Column, Conn, DriverError, Error, Statement,
+};
 
 impl Conn {
     /// Helper, that sends all `Value::Bytes` in the given list of parameters as long data.
@@ -132,18 +134,30 @@ impl Conn {
         P: Protocol,
     {
         let column_count = packet.read_lenenc_int()?;
+        let expected = self.check_metadata_count(column_count)?;
         // Reading 1st byte only if metadata skip is not possible, otherwise it can be a part of the first column definition.
         // Reading column metadata only if it is not skipped - if skip is not possible or if metadata is present.
         let meta = if !(P::metadata_skip_possible(self) && packet.first() == Some(&0x00)) {
-            let columns = self.read_column_defs(column_count as usize).await?;
+            let columns: Arc<[Column]> = self.read_column_defs(column_count).await?.into();
             // Statement must have latest version of the metadata.
             if let Some(stmt) = stmt {
                 stmt.update_columns_metadata(columns.clone());
             }
-            P::result_set_meta(Arc::from(columns.into_boxed_slice()))
+            P::result_set_meta(columns)
         } else {
-            // Since metadata is skipped, stmt must be present.
-            P::result_set_meta(stmt.unwrap().columns())
+            let columns = stmt
+                .ok_or_else(|| DriverError::UnexpectedPacket {
+                    payload: packet.to_vec(),
+                })?
+                .columns();
+            if columns.len() != expected {
+                return Err(DriverError::MetadataCountMismatch {
+                    expected,
+                    actual: columns.len(),
+                }
+                .into());
+            }
+            P::result_set_meta(columns)
         };
         self.set_pending_result(Some(meta))?;
         Ok(())

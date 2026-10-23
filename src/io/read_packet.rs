@@ -20,16 +20,27 @@ use crate::{buffer_pool::PooledBuf, connection_like::Connection, error::IoError}
 /// Reads a packet.
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct ReadPacket<'a, 't>(pub(crate) Connection<'a, 't>);
+pub struct ReadPacket<'a, 't> {
+    pub(crate) conn: Connection<'a, 't>,
+    metadata_limit: Option<usize>,
+}
 
 impl<'a, 't> ReadPacket<'a, 't> {
     pub(crate) fn new<T: Into<Connection<'a, 't>>>(conn: T) -> Self {
-        Self(conn.into())
+        Self {
+            conn: conn.into(),
+            metadata_limit: None,
+        }
+    }
+
+    pub(crate) fn with_metadata_limit(mut self, limit: Option<usize>) -> Self {
+        self.metadata_limit = limit;
+        self
     }
 
     #[cfg(feature = "binlog")]
     pub(crate) fn conn_ref(&self) -> &crate::Conn {
-        &self.0
+        &self.conn
     }
 }
 
@@ -37,15 +48,22 @@ impl Future for ReadPacket<'_, '_> {
     type Output = std::result::Result<PooledBuf, IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let packet_opt = match self.0.as_mut().stream_mut() {
-            Ok(stream) => ready!(Pin::new(stream).poll_next(cx)).transpose()?,
+        let limit = self.metadata_limit;
+        let packet_opt = match self.conn.as_mut().stream_mut() {
+            Ok(stream) => {
+                let previous_limit = stream.set_metadata_limit(limit);
+                let result = Pin::new(&mut *stream).poll_next(cx);
+                // Restore even on Pending: cancelling this future must not leak its limit.
+                stream.set_metadata_limit(previous_limit);
+                ready!(result).transpose()?
+            }
             // `ConnectionClosed` error.
             Err(_) => None,
         };
 
         match packet_opt {
             Some(packet) => {
-                self.0.as_mut().touch();
+                self.conn.as_mut().touch();
                 Poll::Ready(Ok(packet))
             }
             None => Poll::Ready(Err(Error::new(

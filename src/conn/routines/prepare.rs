@@ -52,16 +52,24 @@ impl Routine<Arc<StmtInner>> for PrepareRoutine {
             let packet = conn.read_packet().await?;
             let mut inner_stmt = StmtInner::from_payload(&packet, conn.id(), self.query.clone())?;
 
+            for count in [inner_stmt.num_params(), inner_stmt.num_columns()] {
+                conn.check_metadata_count(u64::from(count))?;
+            }
+
             #[cfg(feature = "tracing")]
             Span::current().record("mysql_async.statement.id", inner_stmt.id());
 
             if inner_stmt.num_params() > 0 {
-                let params = conn.read_column_defs(inner_stmt.num_params()).await?;
+                let params = conn
+                    .read_column_defs(u64::from(inner_stmt.num_params()))
+                    .await?;
                 inner_stmt = inner_stmt.with_params(params);
             }
 
             if inner_stmt.num_columns() > 0 {
-                let columns = conn.read_column_defs(inner_stmt.num_columns()).await?;
+                let columns = conn
+                    .read_column_defs(u64::from(inner_stmt.num_columns()))
+                    .await?;
                 inner_stmt = inner_stmt.with_columns(columns);
             }
 

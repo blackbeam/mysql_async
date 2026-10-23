@@ -10,7 +10,7 @@ pub use self::{read_packet::ReadPacket, write_packet::WritePacket};
 
 use bytes::BytesMut;
 use futures_core::{ready, stream};
-use mysql_common::proto::codec::PacketCodec as PacketCodecInner;
+use mysql_common::proto::codec::{error::PacketCodecError, PacketCodec as PacketCodecInner};
 #[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 use tokio::{
@@ -68,13 +68,21 @@ mod write_packet;
 pub struct PacketCodec {
     inner: PacketCodecInner,
     decode_buf: PooledBuf,
+    metadata_limit: Option<usize>,
+    compressed: bool,
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("Metadata packet exceeds the remaining byte budget.")]
+pub(crate) struct MetadataPacketTooLarge;
 
 impl Default for PacketCodec {
     fn default() -> Self {
         Self {
             inner: Default::default(),
             decode_buf: crate::buffer_pool().get(),
+            metadata_limit: None,
+            compressed: false,
         }
     }
 }
@@ -98,7 +106,47 @@ impl Decoder for PacketCodec {
     type Error = IoError;
 
     fn decode(&mut self, src: &mut BytesMut) -> std::result::Result<Option<Self::Item>, IoError> {
-        if self.inner.decode(src, self.decode_buf.as_mut())? {
+        let normal_limit = self.inner.max_allowed_packet;
+        let mut limit = self
+            .metadata_limit
+            .unwrap_or(normal_limit)
+            .min(normal_limit);
+        let mut metadata_is_limit = self
+            .metadata_limit
+            .is_some_and(|limit| limit <= normal_limit);
+        if metadata_is_limit && !self.compressed {
+            let first = if let Some(first) = self.decode_buf.first() {
+                Some(*first)
+            } else {
+                if src.len() < 4 {
+                    return Ok(None);
+                }
+                if src[..3] == [0; 3] {
+                    None
+                } else {
+                    let Some(first) = src.get(4) else {
+                        // Classify without admitting the rest of an oversized definition.
+                        return Ok(None);
+                    };
+                    Some(*first)
+                }
+            };
+            if first == Some(0xff) {
+                // ERR and MariaDB progress packets do not consume the definition budget.
+                limit = normal_limit;
+                metadata_is_limit = false;
+            }
+        }
+        self.inner.max_allowed_packet = limit;
+        let decoded = self.inner.decode(src, self.decode_buf.as_mut());
+        self.inner.max_allowed_packet = normal_limit;
+        let decoded = match decoded {
+            Err(PacketCodecError::PacketTooLarge) if metadata_is_limit => {
+                return Err(io::Error::other(MetadataPacketTooLarge).into());
+            }
+            result => result?,
+        };
+        if decoded {
             let new_buf = crate::buffer_pool().get();
             Ok(Some(replace(&mut self.decode_buf, new_buf)))
         } else {
@@ -435,8 +483,16 @@ impl Stream {
         }
     }
 
+    pub(crate) fn set_metadata_limit(&mut self, limit: Option<usize>) -> Option<usize> {
+        replace(
+            &mut self.codec.as_mut().unwrap().codec_mut().metadata_limit,
+            limit,
+        )
+    }
+
     pub(crate) fn compress(&mut self, level: crate::Compression) {
         if let Some(codec) = self.codec.as_mut() {
+            codec.codec_mut().compressed = true;
             codec.codec_mut().compress(level);
         }
     }
@@ -481,6 +537,36 @@ impl stream::Stream for Stream {
 #[cfg(test)]
 mod test {
     use std::time::Duration;
+
+    /// Scenario: definition framing, its type prefix and remaining body arrive separately.
+    /// Guarantees: classification cannot admit an oversized body; decode restores the normal cap.
+    #[test]
+    fn metadata_bounds_codec_handles_partial_prefixes() {
+        use tokio_util::codec::Decoder;
+
+        for len in [4, 9] {
+            let mut codec = super::PacketCodec::default();
+            codec.inner.max_allowed_packet = 1024;
+            codec.metadata_limit = Some(8);
+            let mut bytes = bytes::BytesMut::from(&[len, 0, 0, 0][..]);
+            assert!(codec.decode(&mut bytes).unwrap().is_none());
+            bytes.extend_from_slice(&[3]);
+            let result = codec.decode(&mut bytes);
+            assert_eq!(codec.inner.max_allowed_packet, 1024);
+            if len == 9 {
+                assert!(matches!(
+                    result.unwrap_err(),
+                    crate::error::IoError::Io(err)
+                        if err.get_ref().is_some_and(|err| err.is::<super::MetadataPacketTooLarge>())
+                ));
+            } else {
+                assert!(result.unwrap().is_none());
+                bytes.extend_from_slice(&[0; 3]);
+                assert_eq!(codec.decode(&mut bytes).unwrap().unwrap().len(), 4);
+                assert_eq!(codec.inner.max_allowed_packet, 1024);
+            }
+        }
+    }
 
     #[cfg(unix)] // no sane way to retrieve current keepalive value on windows
     #[tokio::test]
