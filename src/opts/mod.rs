@@ -723,6 +723,11 @@ pub(crate) struct MysqlOpts {
     /// It makes MySQL return the FOUND rows instead of the AFFECTED rows.
     client_found_rows: bool,
 
+    /// Enables `CLIENT_SESSION_TRACK` capability (defaults to `false`).
+    ///
+    /// Makes the server send session state changes in OK packets.
+    client_session_track: bool,
+
     /// Enables `CLIENT_DEPRECATE_EOF` capability (defaults to `true`).
     ///
     /// This can be disabled for compatibility with proxies that advertise the capability but
@@ -1254,6 +1259,25 @@ impl Opts {
         self.inner.mysql_opts.client_found_rows
     }
 
+    /// Returns `true` if `CLIENT_SESSION_TRACK` capability is enabled (defaults to `false`).
+    ///
+    /// `CLIENT_SESSION_TRACK` makes the server send session state changes in OK packets.
+    ///
+    /// # Connection URL
+    ///
+    /// Use `client_session_track` URL parameter to set this value. E.g.
+    ///
+    /// ```
+    /// # use mysql_async::*;
+    /// # fn main() -> Result<()> {
+    /// let opts = Opts::from_url("mysql://localhost/db?client_session_track=true")?;
+    /// assert!(opts.client_session_track());
+    /// # Ok(()) }
+    /// ```
+    pub fn client_session_track(&self) -> bool {
+        self.inner.mysql_opts.client_session_track
+    }
+
     /// Returns `true` if `CLIENT_DEPRECATE_EOF` capability is enabled (defaults to `true`).
     ///
     /// # Connection URL
@@ -1332,6 +1356,9 @@ impl Opts {
         if self.client_found_rows() {
             out |= CapabilityFlags::CLIENT_FOUND_ROWS;
         }
+        if self.client_session_track() {
+            out |= CapabilityFlags::CLIENT_SESSION_TRACK;
+        }
 
         out
     }
@@ -1372,6 +1399,7 @@ impl Default for MysqlOpts {
             wait_timeout: None,
             secure_auth: true,
             client_found_rows: false,
+            client_session_track: false,
             deprecate_eof: true,
             enable_cleartext_plugin: false,
             connect_attributes: None,
@@ -1708,6 +1736,12 @@ impl OptsBuilder {
     /// Enables or disables `CLIENT_FOUND_ROWS` capability. See [`Opts::client_found_rows`].
     pub fn client_found_rows(mut self, client_found_rows: bool) -> Self {
         self.opts.client_found_rows = client_found_rows;
+        self
+    }
+
+    /// Enables or disables `CLIENT_SESSION_TRACK` capability. See [`Opts::client_session_track`].
+    pub fn client_session_track(mut self, client_session_track: bool) -> Self {
+        self.opts.client_session_track = client_session_track;
         self
     }
 
@@ -2192,6 +2226,18 @@ fn mysql_opts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                 _ => {
                     return Err(UrlError::InvalidParamValue {
                         param: "client_found_rows".into(),
+                        value,
+                    });
+                }
+            }
+        } else if key == "client_session_track" {
+            match bool::from_str(&value) {
+                Ok(client_session_track) => {
+                    opts.client_session_track = client_session_track;
+                }
+                _ => {
+                    return Err(UrlError::InvalidParamValue {
+                        param: "client_session_track".into(),
                         value,
                     });
                 }

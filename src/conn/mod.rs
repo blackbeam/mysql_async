@@ -1545,6 +1545,40 @@ mod test {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn should_return_session_state_if_flag_is_set() -> super::Result<()> {
+        let opts = get_opts().client_session_track(true);
+        let mut conn = Conn::new(opts).await.unwrap();
+
+        "USE mysql".ignore(&mut conn).await?;
+
+        // `session_track_schema` is ON by default, so the schema change must be reported.
+        let ok_packet = conn.last_ok_packet().unwrap();
+        let schema =
+            ok_packet
+                .session_state_info()?
+                .iter()
+                .find_map(|info| match info.decode().unwrap() {
+                    crate::SessionStateChange::Schema(schema) => Some(schema.as_str().into_owned()),
+                    _ => None,
+                });
+        assert_eq!(schema.as_deref(), Some("mysql"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_not_return_session_state_if_flag_is_not_set() -> super::Result<()> {
+        let mut conn = Conn::new(get_opts()).await.unwrap();
+
+        "USE mysql".ignore(&mut conn).await?;
+
+        let ok_packet = conn.last_ok_packet().unwrap();
+        assert!(ok_packet.session_state_info()?.is_empty());
+
+        Ok(())
+    }
+
     #[test]
     fn opts_should_satisfy_send_and_sync() {
         struct A<T: Sync + Send>(T);
