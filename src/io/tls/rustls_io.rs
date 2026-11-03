@@ -1,13 +1,16 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use mysql_common::crypto::MariaDbZeroConfigCheck;
 use rustls::{
     client::{
         danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
         Resumption, WebPkiServerVerifier,
     },
     pki_types::{pem, CertificateDer, ServerName},
-    ClientConfig, RootCertStore,
+    CertificateError, ClientConfig, Error, RootCertStore,
 };
+use sha2::{Digest, Sha256};
+use x509_parser::{asn1_rs::FromDer, certificate::X509Certificate};
 
 pub(crate) use tokio_rustls::TlsConnector;
 
@@ -33,7 +36,10 @@ impl SslOpts {
         Ok(output)
     }
 
-    pub(crate) async fn build_tls_connector(&self) -> Result<TlsConnector> {
+    pub(crate) async fn build_tls_connector(
+        &self,
+        zero_config_check: Option<Arc<Mutex<Option<MariaDbZeroConfigCheck>>>>,
+    ) -> Result<TlsConnector> {
         let mut root_store = RootCertStore::empty();
         if !self.disable_built_in_roots() {
             root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().map(|x| x.to_owned()));
@@ -64,6 +70,7 @@ impl SslOpts {
             self.accept_invalid_certs(),
             self.skip_domain_validation(),
             web_pki_verifier,
+            zero_config_check,
         );
         dangerous.set_certificate_verifier(Arc::new(dangerous_verifier));
         let client_config = Arc::new(config);
@@ -103,11 +110,25 @@ impl Endpoint {
     }
 }
 
-#[derive(Debug)]
 struct DangerousVerifier {
     accept_invalid_certs: bool,
     skip_domain_validation: bool,
     verifier: Arc<WebPkiServerVerifier>,
+    zero_config_check: Option<Arc<Mutex<Option<MariaDbZeroConfigCheck>>>>,
+}
+
+impl std::fmt::Debug for DangerousVerifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DangerousVerifier")
+            .field("accept_invalid_certs", &self.accept_invalid_certs)
+            .field("skip_domain_validation", &self.skip_domain_validation)
+            .field("verifier", &self.verifier)
+            .field(
+                "zero_config_check",
+                &self.zero_config_check.as_ref().map(|_| "<hidden>"),
+            )
+            .finish()
+    }
 }
 
 impl DangerousVerifier {
@@ -115,11 +136,13 @@ impl DangerousVerifier {
         accept_invalid_certs: bool,
         skip_domain_validation: bool,
         verifier: Arc<WebPkiServerVerifier>,
+        zero_config_check: Option<Arc<Mutex<Option<MariaDbZeroConfigCheck>>>>,
     ) -> Self {
         Self {
             accept_invalid_certs,
             skip_domain_validation,
             verifier,
+            zero_config_check,
         }
     }
 
@@ -145,36 +168,6 @@ fn is_name_mismatch(error: &rustls::Error) -> bool {
 }
 
 impl ServerCertVerifier for DangerousVerifier {
-    // fn verify_server_cert(
-    //     &self,
-    //     end_entity: &Certificate,
-    //     intermediates: &[Certificate],
-    //     server_name: &rustls::ServerName,
-    //     scts: &mut dyn Iterator<Item = &[u8]>,
-    //     ocsp_response: &[u8],
-    //     now: std::time::SystemTime,
-    // ) -> std::result::Result<rustls::client::ServerCertVerified, rustls::Error> {
-    //     if self.accept_invalid_certs {
-    //         Ok(rustls::client::ServerCertVerified::assertion())
-    //     } else {
-    //         match self.verifier.verify_server_cert(
-    //             end_entity,
-    //             intermediates,
-    //             server_name,
-    //             scts,
-    //             ocsp_response,
-    //             now,
-    //         ) {
-    //             Ok(assertion) => Ok(assertion),
-    //             Err(ref e)
-    //                 if e.to_string().contains("NotValidForName") && self.skip_domain_validation =>
-    //             {
-    //                 Ok(rustls::client::ServerCertVerified::assertion())
-    //             }
-    //             Err(e) => Err(e),
-    //         }
-    //     }
-    // }
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
@@ -195,6 +188,27 @@ impl ServerCertVerifier for DangerousVerifier {
             ) {
                 Ok(assertion) => Ok(assertion),
                 Err(ref e) if self.skip_domain_validation && is_name_mismatch(e) => {
+                    Ok(ServerCertVerified::assertion())
+                }
+                Err(Error::InvalidCertificate(CertificateError::UnknownIssuer))
+                    if let Some(zero_config_check) = &self.zero_config_check =>
+                {
+                    // MariaDB zero-config TLS fallback applies only to self-signed ephemeral certs.
+                    let self_signed = X509Certificate::from_der(end_entity.as_ref())
+                        .map(|(_, cert)| cert.issuer() == cert.subject())
+                        .unwrap_or_default();
+
+                    if !self_signed {
+                        return Err(Error::InvalidCertificate(CertificateError::UnknownIssuer));
+                    }
+
+                    let mut hasher = Sha256::new();
+                    hasher.update(end_entity.as_ref());
+                    let fingerprint = hasher.finalize().to_vec();
+                    if let Ok(mut guard) = zero_config_check.lock() {
+                        *guard = Some(MariaDbZeroConfigCheck::new(Some(fingerprint)));
+                    }
+
                     Ok(ServerCertVerified::assertion())
                 }
                 Err(e) => Err(e),
@@ -244,7 +258,7 @@ mod tests {
         let verifier = WebPkiServerVerifier::builder(Arc::new(roots))
             .build()
             .unwrap();
-        DangerousVerifier::new(accept_invalid_certs, false, verifier)
+        DangerousVerifier::new(accept_invalid_certs, false, verifier, None)
     }
 
     #[test]

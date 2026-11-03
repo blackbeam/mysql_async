@@ -65,6 +65,15 @@ default-features = false
 features = ["std"]
 optional = true
 
+[dependencies.sha2]
+version = "0.10.0"
+optional = true
+
+[dependencies.x509-parser]
+version = "0.18"
+optional = true
+
+
 [dependencies.webpki-roots]
 version = "1"
 optional = true
@@ -98,7 +107,7 @@ minimal-rust = ["flate2/rust_backend"]
 native-tls-tls = ["native-tls", "tokio-native-tls", "pem"]
 
 # rustls based TLS support
-rustls-tls = ["rustls", "tokio-rustls", "webpki-roots"]
+rustls-tls = ["rustls", "tokio-rustls", "webpki-roots", "dep:sha2", "dep:x509-parser"]
 
 aws-lc-rs = ["rustls/aws_lc_rs", "tokio-rustls/aws_lc_rs"]
 ring = ["rustls/ring", "tokio-rustls/ring"]

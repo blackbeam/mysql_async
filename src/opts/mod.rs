@@ -1434,11 +1434,22 @@ impl SslOptsAndCachedConnector {
         &self.ssl_opts
     }
 
-    pub(crate) async fn build_tls_connector(&self) -> Result<crate::io::TlsConnector> {
-        self.tls_connector
-            .get_or_try_init(move || self.ssl_opts.build_tls_connector())
-            .await
-            .cloned()
+    pub(crate) async fn build_tls_connector(
+        &self,
+        zero_config_check: Option<
+            Arc<std::sync::Mutex<Option<mysql_common::crypto::MariaDbZeroConfigCheck>>>,
+        >,
+    ) -> Result<crate::io::TlsConnector> {
+        if zero_config_check.is_some() {
+            // Don't cache when zero_config_check is present
+            self.ssl_opts.build_tls_connector(zero_config_check).await
+        } else {
+            // Use cache when zero_config_check is None
+            self.tls_connector
+                .get_or_try_init(move || self.ssl_opts.build_tls_connector(None))
+                .await
+                .cloned()
+        }
     }
 }
 

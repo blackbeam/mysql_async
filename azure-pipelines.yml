@@ -175,7 +175,10 @@ jobs:
           git checkout 901a7de
         displayName: Clone rust-mysql-simple (for ssl certs)
       - bash: |
-          if [[ "$(DB_VERSION)" -ge "11" ]]; then ARG=" --plugin-load-add=auth_ed25519 --plugin-load-add=auth_parsec"; fi
+          if [[ "$(DB_VERSION)" -ge "11" ]];
+            then ARG=" --plugin-load-add=auth_ed25519 --plugin-load-add=auth_parsec";
+            else ARG=" --ssl-ca=/root/rust-mysql-simple/tests/ca.crt --ssl-cert=/root/rust-mysql-simple/tests/server.crt --ssl-key=/root/rust-mysql-simple/tests/server-key.pem ";
+          fi
           docker run --rm -d \
               --name container \
               -v `pwd`:/root \
@@ -188,9 +191,6 @@ jobs:
                   --performance-schema=on \
                   --log-bin=mysql-bin --gtid-domain-id=1 --server-id=1 \
                   --ssl \
-                  --ssl-ca=/root/rust-mysql-simple/tests/ca.crt \
-                  --ssl-cert=/root/rust-mysql-simple/tests/server.crt \
-                  --ssl-key=/root/rust-mysql-simple/tests/server-key.pem \
                   --secure-auth=OFF \
                   $ARG &
           while ! nc -W 1 localhost 3307 | grep -q -P '.+'; do sleep 1; done
