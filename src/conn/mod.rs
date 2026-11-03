@@ -31,7 +31,10 @@ use std::{
     mem::{self, replace},
     pin::Pin,
     str::FromStr,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -161,6 +164,8 @@ struct ConnInner {
     active_since: Instant,
     /// Connection is already disconnected.
     pub(crate) disconnected: bool,
+    /// Set if a routine was dropped before it completed (see [`Conn::routine`]).
+    routine_dropped: Arc<AtomicBool>,
     /// One-time connection-level infile handler.
     infile_handler:
         Option<Pin<Box<dyn Future<Output = crate::Result<InfileData>> + Send + Sync + 'static>>>,
@@ -211,6 +216,7 @@ impl ConnInner {
             nonce: Vec::default(),
             auth_plugin: AuthPlugin::MysqlNativePassword,
             disconnected: false,
+            routine_dropped: Arc::new(AtomicBool::new(false)),
             server_key_pem: None,
             infile_handler: None,
             reset_upon_returning_to_a_pool: false,
@@ -238,6 +244,24 @@ impl ConnInner {
 #[derive(Debug)]
 pub struct Conn {
     inner: Box<ConnInner>,
+}
+
+/// Marks its connection's routine as dropped unless defused, i.e. when the
+/// routine future is dropped before the routine completes.
+struct RoutineDropGuard(Option<Arc<AtomicBool>>);
+
+impl RoutineDropGuard {
+    fn defuse(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for RoutineDropGuard {
+    fn drop(&mut self) {
+        if let Some(dropped) = self.0.take() {
+            dropped.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 impl Conn {
@@ -440,8 +464,17 @@ impl Conn {
     where
         F: Routine<T> + 'a,
     {
+        // A previous routine was dropped midway (for example by a timeout), so
+        // its reply may still be on its way. Running a new command would read
+        // that reply as its own result. A routine that is merely still running
+        // (this call is nested in it, e.g. via `clean_dirty`) is not affected.
+        if self.inner.routine_dropped.load(Ordering::Relaxed) {
+            return Err(DriverError::ConnectionClosed.into());
+        }
+        let guard = RoutineDropGuard(Some(self.inner.routine_dropped.clone()));
         self.inner.disconnected = true;
         let result = f.call(&mut *self).await;
+        guard.defuse();
         match result {
             result @ Ok(_) | result @ Err(crate::Error::Server(_)) => {
                 // either OK or non-fatal error
@@ -1339,8 +1372,8 @@ mod test {
     };
 
     use crate::{
-        from_row, params, prelude::*, test_misc::get_opts, ChangeUserOpts, Conn, Error,
-        OptsBuilder, Pool, ServerError, Value, WhiteListFsHandler,
+        from_row, params, prelude::*, test_misc::get_opts, ChangeUserOpts, Conn, DriverError,
+        Error, OptsBuilder, Pool, ServerError, Value, WhiteListFsHandler,
     };
 
     async fn auth_with_server_packet(server_packet: &[u8]) -> super::Result<()> {
@@ -1434,6 +1467,30 @@ mod test {
             auth_with_server_packet(packet).await,
             Err(Error::Server(ServerError { code: 1045, .. }))
         ));
+    }
+
+    #[tokio::test]
+    async fn should_not_run_commands_after_a_dropped_query() -> super::Result<()> {
+        let mut conn = Conn::new(get_opts()).await?;
+
+        // Still waiting for the result when the timeout drops it.
+        let dropped = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            "SELECT 1 + SLEEP(0.5)".first::<i64, _>(&mut conn),
+        )
+        .await;
+        assert!(dropped.is_err());
+        assert!(conn.is_disconnected());
+
+        // The dropped query's result is still on its way; the next command must
+        // not read it as its own.
+        let next = "SELECT 2".first::<i64, _>(&mut conn).await;
+        assert!(
+            matches!(next, Err(Error::Driver(DriverError::ConnectionClosed))),
+            "{next:?}"
+        );
+
+        Ok(())
     }
 
     #[tokio::test]
