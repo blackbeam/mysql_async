@@ -549,6 +549,9 @@ impl Conn {
     fn setup_stream(&mut self) -> Result<()> {
         debug_assert!(self.inner.stream.is_some());
         if let Some(stream) = self.inner.stream.as_mut() {
+            if let Some(limit) = self.inner.opts.max_allowed_packet() {
+                stream.set_max_allowed_packet(limit);
+            }
             stream.set_tcp_nodelay(self.inner.opts.tcp_nodelay())?;
         }
         Ok(())
@@ -614,7 +617,7 @@ impl Conn {
 
             let ssl_request = SslRequest::new(
                 self.inner.capabilities,
-                DEFAULT_MAX_ALLOWED_PACKET as u32,
+                self.stream_ref()?.get_max_allowed_packet() as u32,
                 collation as u8,
             )
             .with_mariadb_capabilities(self.inner.mariadb_capabilities);
@@ -695,10 +698,7 @@ impl Conn {
             Some(self.inner.auth_plugin.borrow()),
             self.capabilities(),
             self.inner.opts.connect_attributes().cloned(),
-            self.inner
-                .opts
-                .max_allowed_packet()
-                .unwrap_or(DEFAULT_MAX_ALLOWED_PACKET) as u32,
+            self.stream_ref()?.get_max_allowed_packet() as u32,
         )
         .with_mariadb_ext_capabilities(self.inner.mariadb_capabilities);
 
@@ -859,8 +859,16 @@ impl Conn {
     }
 
     pub(crate) async fn read_packet(&mut self) -> Result<PooledBuf> {
+        self.read_packet_with_metadata_limit(None).await
+    }
+
+    pub(crate) async fn read_packet_with_metadata_limit(
+        &mut self,
+        limit: Option<usize>,
+    ) -> Result<PooledBuf> {
         loop {
             let packet = crate::io::ReadPacket::new(&mut *self)
+                .with_metadata_limit(limit)
                 .await
                 .map_err(|io_err| {
                     self.inner.stream.take();
@@ -874,15 +882,6 @@ impl Conn {
                 return Ok(packet);
             }
         }
-    }
-
-    /// Returns future that reads packets from a server.
-    pub(crate) async fn read_packets(&mut self, n: usize) -> Result<Vec<PooledBuf>> {
-        let mut packets = Vec::with_capacity(n);
-        for _ in 0..n {
-            packets.push(self.read_packet().await?);
-        }
-        Ok(packets)
     }
 
     pub(crate) async fn write_packet(&mut self, data: PooledBuf) -> Result<()> {

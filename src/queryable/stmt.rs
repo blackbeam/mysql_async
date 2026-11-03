@@ -20,6 +20,7 @@ use crate::{
     conn::routines::{ExecBulkRoutine, ExecRoutine, PrepareRoutine},
     consts::CapabilityFlags,
     error::*,
+    io::MetadataPacketTooLarge,
     Column, Params,
 };
 
@@ -232,7 +233,7 @@ impl StmtInner {
             .unwrap_or_default()
     }
 
-    pub fn update_columns_metadata(&self, columns: Vec<Column>) {
+    pub fn update_columns_metadata(&self, columns: Arc<[Column]>) {
         self.columns_cache.set_columns(columns);
     }
 
@@ -283,7 +284,7 @@ impl Statement {
     /// Overrides columns metadata for this statement.
     ///
     /// See MARIADB_CLIENT_CACHE_METADATA capability.
-    pub(crate) fn update_columns_metadata(&self, columns: Vec<Column>) {
+    pub(crate) fn update_columns_metadata(&self, columns: Arc<[Column]>) {
         self.inner.update_columns_metadata(columns);
     }
 
@@ -314,21 +315,50 @@ impl Statement {
 }
 
 impl crate::Conn {
+    pub(crate) fn check_metadata_count(&self, count: u64) -> Result<usize> {
+        let capacity_limit = isize::MAX as usize / std::mem::size_of::<Column>();
+        let limit = self
+            .opts()
+            .max_metadata_count()
+            .unwrap_or(capacity_limit)
+            .min(capacity_limit);
+        match usize::try_from(count) {
+            Ok(count) if count <= limit => Ok(count),
+            _ => Err(DriverError::MetadataCountExceeded { count, limit }.into()),
+        }
+    }
+
     /// Low-level helpers, that reads the given number of column packets terminated by EOF packet.
     ///
     /// Requires `num > 0`.
-    pub(crate) async fn read_column_defs<U>(&mut self, num: U) -> Result<Vec<Column>>
-    where
-        U: Into<usize>,
-    {
-        let num = num.into();
+    pub(crate) async fn read_column_defs(&mut self, num: u64) -> Result<Vec<Column>> {
+        let num = self.check_metadata_count(num)?;
         debug_assert!(num > 0);
-        let packets = self.read_packets(num).await?;
-        let defs = packets
-            .into_iter()
-            .map(|x| ParseBuf(&x).parse(()))
-            .collect::<std::result::Result<Vec<Column>, _>>()
-            .map_err(Error::from)?;
+        let byte_limit = self.opts().max_metadata_bytes();
+        let limit = byte_limit.unwrap_or(usize::MAX);
+        let mut remaining = limit;
+        let mut defs = Vec::new();
+        for _ in 0..num {
+            let packet = match self
+                .read_packet_with_metadata_limit(byte_limit.map(|_| remaining))
+                .await
+            {
+                Err(Error::Io(IoError::Io(err)))
+                    if err
+                        .get_ref()
+                        .is_some_and(|err| err.is::<MetadataPacketTooLarge>()) =>
+                {
+                    return Err(DriverError::MetadataBytesExceeded { limit }.into());
+                }
+                result => result?,
+            };
+            remaining = remaining
+                .checked_sub(packet.len())
+                .ok_or(DriverError::MetadataBytesExceeded { limit })?;
+            defs.try_reserve(1)
+                .map_err(DriverError::MetadataAllocationFailed)?;
+            defs.push(ParseBuf(&packet).parse(())?);
+        }
 
         if !self.has_capabilities(CapabilityFlags::CLIENT_DEPRECATE_EOF) {
             self.read_packet().await?;
@@ -415,8 +445,7 @@ impl ColumnCache {
         self.columns.load_full().map(|x| (*x).clone())
     }
 
-    fn set_columns(&self, new_columns: Vec<Column>) {
-        let new_columns: Arc<[Column]> = new_columns.into();
+    fn set_columns(&self, new_columns: Arc<[Column]>) {
         self.columns.store(Some(Arc::new(new_columns)));
     }
 }
@@ -446,10 +475,11 @@ mod tests {
 
     const ROUNDS: usize = if cfg!(miri) { 8 } else { 10_000 };
 
-    fn columns(table: &str, len: usize) -> Vec<Column> {
+    fn columns(table: &str, len: usize) -> Arc<[Column]> {
         (0..len)
             .map(|_| Column::new(ColumnType::MYSQL_TYPE_LONG).with_table(table.as_bytes()))
-            .collect()
+            .collect::<Vec<_>>()
+            .into()
     }
 
     #[test]

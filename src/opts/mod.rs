@@ -703,6 +703,9 @@ pub(crate) struct MysqlOpts {
     /// by explicitly specifying it.
     max_allowed_packet: Option<usize>,
 
+    max_metadata_count: Option<usize>,
+    max_metadata_bytes: Option<usize>,
+
     /// Client side `wait_timeout` value (defaults to `None`).
     ///
     /// By default `Conn` will query this value from the server. One can avoid this step
@@ -1164,9 +1167,54 @@ impl Opts {
     /// By default `Conn` will query this value from the server. One can avoid this step
     /// by explicitly specifying it. Server side default is 4MB.
     ///
+    /// An explicit value applies before reading the server greeting, including authentication,
+    /// and is advertised in both the SSL request and handshake response.
+    ///
     /// Available in connection URL via `max_allowed_packet` parameter.
     pub fn max_allowed_packet(&self) -> Option<usize> {
         self.inner.mysql_opts.max_allowed_packet
+    }
+
+    /// Maximum number of definitions in one metadata block (defaults to `None`, no configured cap).
+    ///
+    /// A block is a result set's columns, a prepared statement's parameters, or a prepared
+    /// statement's columns. These blocks are bounded independently, not cumulatively per
+    /// connection or statement. Counts are checked before reading definitions, including
+    /// when result metadata is reused from a statement's cache.
+    ///
+    /// `Some(0)` rejects nonempty blocks. Values are not clamped; counts that cannot fit a
+    /// `Vec<Column>` are always rejected. Pair with [`Opts::max_metadata_bytes`].
+    ///
+    /// Available in connection URLs via `max_metadata_count`.
+    pub fn max_metadata_count(&self) -> Option<usize> {
+        self.inner.mysql_opts.max_metadata_count
+    }
+
+    /// Maximum sum of definition packet payload bytes per metadata block (defaults to `None`).
+    ///
+    /// Uses the same block boundary as [`Opts::max_metadata_count`]. Counts uncompressed
+    /// payload lengths, excluding framing headers, result-set/prepare response headers,
+    /// and EOF/error/progress packets. Each definition is decoded with the smaller of the
+    /// remaining budget and `max_allowed_packet`, then parsed before reading the next.
+    /// Plain packets require a framing header and one payload byte to distinguish definitions
+    /// from `0xff` error/progress candidates. Those candidates, even malformed ones, use the
+    /// normal packet limit instead. At most one raw definition or control packet is held alongside
+    /// the parsed definitions; parsing can temporarily copy that packet's contents.
+    /// The initial result-set/prepare response can also remain live under its packet limit.
+    ///
+    /// This is not a process memory limit. It excludes `Column`/vector/`Arc` overhead and
+    /// spare capacity, pooled buffers, transport/framing read-ahead and cached generations.
+    /// Cached definitions were checked when read. A statement can retain its parameters,
+    /// original columns and latest replacement columns; caller-held results can outlive
+    /// cache entries. Compressed packets/envelopes are subject to the remaining budget before
+    /// control-packet classification, so a batch containing errors, headers or data read-ahead
+    /// can be rejected even if its definition payloads alone fit. Pre-existing buffers and
+    /// read-ahead are not retroactively limited. Normal packet limits resume for EOF and rows.
+    ///
+    /// `Some(0)` permits no definition payload bytes. Values are not clamped.
+    /// Available in connection URLs via `max_metadata_bytes`.
+    pub fn max_metadata_bytes(&self) -> Option<usize> {
+        self.inner.mysql_opts.max_metadata_bytes
     }
 
     /// Client side `wait_timeout` value (defaults to `None`).
@@ -1319,6 +1367,8 @@ impl Default for MysqlOpts {
             socket: None,
             compression: None,
             max_allowed_packet: None,
+            max_metadata_count: None,
+            max_metadata_bytes: None,
             wait_timeout: None,
             secure_auth: true,
             client_found_rows: false,
@@ -1616,6 +1666,18 @@ impl OptsBuilder {
     /// for this parameter (see MySql documentation).
     pub fn max_allowed_packet(mut self, max_allowed_packet: Option<usize>) -> Self {
         self.opts.max_allowed_packet = max_allowed_packet.map(|x| x.clamp(1024, 1073741824));
+        self
+    }
+
+    /// Defines the metadata count limit. See [`Opts::max_metadata_count`].
+    pub fn max_metadata_count(mut self, max_metadata_count: Option<usize>) -> Self {
+        self.opts.max_metadata_count = max_metadata_count;
+        self
+    }
+
+    /// Defines the metadata payload byte limit. See [`Opts::max_metadata_bytes`].
+    pub fn max_metadata_bytes(mut self, max_metadata_bytes: Option<usize>) -> Self {
+        self.opts.max_metadata_bytes = max_metadata_bytes;
         self
     }
 
@@ -2033,6 +2095,16 @@ fn mysql_opts_from_url(url: &Url) -> std::result::Result<MysqlOpts, UrlError> {
                     });
                 }
             }
+        } else if key == "max_metadata_count" || key == "max_metadata_bytes" {
+            let parsed = usize::from_str(&value).map_err(|_| UrlError::InvalidParamValue {
+                param: key.to_string(),
+                value,
+            })?;
+            if key == "max_metadata_count" {
+                opts.max_metadata_count = Some(parsed);
+            } else {
+                opts.max_metadata_bytes = Some(parsed);
+            }
         } else if key == "wait_timeout" {
             match usize::from_str(&value) {
                 #[cfg(windows)]
@@ -2275,6 +2347,38 @@ mod test {
     use crate::{consts::CapabilityFlags, error::UrlError::InvalidParamValue, SslOpts};
 
     use std::{net::IpAddr, net::Ipv4Addr, net::Ipv6Addr, str::FromStr};
+
+    /// Scenario: metadata limits are configured through either supported option surface.
+    /// Guarantees: defaults/reset are unlimited, zero is explicit, and values are never clamped.
+    #[test]
+    fn metadata_bounds_options() {
+        assert_eq!(Opts::default().max_metadata_count(), None);
+        assert_eq!(Opts::default().max_metadata_bytes(), None);
+        for limit in [0, 1, usize::MAX] {
+            let url = format!(
+                "mysql://localhost/db?max_metadata_count={limit}&max_metadata_bytes={limit}"
+            );
+            let from_url = Opts::from_url(&url).unwrap();
+            let builder = super::OptsBuilder::default()
+                .max_metadata_count(Some(limit))
+                .max_metadata_bytes(Some(limit));
+            let opts = Opts::from(builder.clone());
+            assert_eq!(opts.max_metadata_count(), Some(limit));
+            assert_eq!(opts.max_metadata_bytes(), Some(limit));
+            assert_eq!(opts.max_metadata_count(), from_url.max_metadata_count());
+            assert_eq!(opts.max_metadata_bytes(), from_url.max_metadata_bytes());
+            let reset = Opts::from(builder.max_metadata_count(None).max_metadata_bytes(None));
+            assert_eq!(reset.max_metadata_count(), None);
+            assert_eq!(reset.max_metadata_bytes(), None);
+        }
+        for key in ["max_metadata_count", "max_metadata_bytes"] {
+            for value in ["", "-1", "no", "18446744073709551616"] {
+                let err =
+                    Opts::from_url(&format!("mysql://localhost/db?{key}={value}")).unwrap_err();
+                assert!(matches!(err, InvalidParamValue { param, .. } if param == key));
+            }
+        }
+    }
 
     #[test]
     fn test_builder_eq_url() {

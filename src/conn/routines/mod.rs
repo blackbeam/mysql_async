@@ -14,6 +14,9 @@ mod reset;
 
 mod helpers;
 
+#[cfg(test)]
+mod metadata_bounds;
+
 /// Connection will be broken if this operation isn't finished.
 pub trait Routine<T> {
     fn call<'a>(self, conn: &'a mut Conn) -> BoxFuture<'a, crate::Result<T>>

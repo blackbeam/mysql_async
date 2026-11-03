@@ -21,7 +21,7 @@ use mysql_common::{
 };
 use thiserror::Error;
 
-use std::{io, result};
+use std::{collections::TryReserveError, io, result};
 
 /// Result type alias for this library.
 pub type Result<T> = result::Result<T, Error>;
@@ -158,6 +158,18 @@ pub enum DriverError {
 
     #[error("Packet too large.")]
     PacketTooLarge,
+
+    #[error("Metadata count {count} exceeds limit {limit}.")]
+    MetadataCountExceeded { count: u64, limit: usize },
+
+    #[error("Metadata definition payloads exceed byte limit {limit}.")]
+    MetadataBytesExceeded { limit: usize },
+
+    #[error("Metadata allocation failed: {0}")]
+    MetadataAllocationFailed(#[source] TryReserveError),
+
+    #[error("Result set has {expected} columns but cached metadata has {actual}.")]
+    MetadataCountMismatch { expected: usize, actual: usize },
 
     #[error("Bad compressed packet header.")]
     BadCompressedPacketHeader,
