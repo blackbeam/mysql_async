@@ -542,6 +542,9 @@ mod test {
             // get_conn should work if connection is available and alive
             pool.get_conn().await?;
 
+            // give some time to reset connections
+            sleep(Duration::from_millis(1000)).await;
+
             // now we'll kill connections..
             for id in ids {
                 master.query_drop(format!("KILL {}", id)).await?;
