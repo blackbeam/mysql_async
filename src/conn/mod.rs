@@ -1482,7 +1482,7 @@ mod test {
         stream::{self, StreamExt},
         FutureExt,
     };
-    use mysql_common::constants::{MariadbCapabilities, MAX_PAYLOAD_LEN};
+    use mysql_common::constants::{CapabilityFlags, MariadbCapabilities, MAX_PAYLOAD_LEN};
     use rand::RngExt as _;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -1677,19 +1677,20 @@ mod test {
         let opts = get_opts().client_session_track(true);
         let mut conn = Conn::new(opts).await.unwrap();
 
-        "USE mysql".ignore(&mut conn).await?;
+        // CLIENT_SESSION_TRACK only supported since 5.7.4
+        if (5, 7, 4) <= conn.server_version() {
+            "USE mysql".ignore(&mut conn).await?;
 
-        // `session_track_schema` is ON by default, so the schema change must be reported.
-        let ok_packet = conn.last_ok_packet().unwrap();
-        let schema =
-            ok_packet
-                .session_state_info()?
-                .iter()
-                .find_map(|info| match info.decode().unwrap() {
+            // `session_track_schema` is ON by default, so the schema change must be reported.
+            let ok_packet = conn.last_ok_packet().unwrap();
+            let schema = ok_packet.session_state_info()?.iter().find_map(|info| {
+                match info.decode().unwrap() {
                     crate::SessionStateChange::Schema(schema) => Some(schema.as_str().into_owned()),
                     _ => None,
-                });
-        assert_eq!(schema.as_deref(), Some("mysql"));
+                }
+            });
+            assert_eq!(schema.as_deref(), Some("mysql"));
+        }
 
         Ok(())
     }
