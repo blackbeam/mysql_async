@@ -42,7 +42,7 @@ impl Routine<()> for ChangeUser {
                         UTF8_GENERAL_CI
                     })
                     .with_auth_plugin(Some(conn.inner.auth_plugin.clone()))
-                    .with_connect_attributes(conn.opts().connect_attributes().cloned()),
+                    .with_connect_attributes(conn.connect_attributes_to_send().cloned()),
                 ))
                 .into_owned();
 

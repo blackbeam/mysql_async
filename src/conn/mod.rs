@@ -27,6 +27,7 @@ use tokio::{fs::File, io::AsyncReadExt as _};
 
 use std::{
     borrow::Cow,
+    collections::HashMap,
     fmt,
     future::Future,
     mem::{self, replace},
@@ -394,6 +395,14 @@ impl Conn {
         self.inner.mariadb_capabilities.contains(c)
     }
 
+    /// Connection attributes to send, if the server advertises the capability.
+    fn connect_attributes_to_send(&self) -> Option<&HashMap<String, String>> {
+        self.inner
+            .opts
+            .connect_attributes()
+            .filter(|_| self.has_capabilities(CapabilityFlags::CLIENT_CONNECT_ATTRS))
+    }
+
     /// Will update last IO time for this connection.
     pub(crate) fn touch(&mut self) {
         self.inner.last_io = Instant::now();
@@ -700,7 +709,7 @@ impl Conn {
             };
 
             let ssl_request = SslRequest::new(
-                self.inner.capabilities,
+                self.capabilities(),
                 self.stream_ref()?.get_max_allowed_packet() as u32,
                 collation as u8,
             )
@@ -833,7 +842,7 @@ impl Conn {
             self.inner.opts.db_name().map(|x| x.as_bytes()),
             Some(self.inner.auth_plugin.borrow()),
             self.capabilities(),
-            self.inner.opts.connect_attributes().cloned(),
+            self.connect_attributes_to_send().cloned(),
             self.stream_ref()?.get_max_allowed_packet() as u32,
         )
         .with_mariadb_ext_capabilities(self.inner.mariadb_capabilities);
@@ -1482,7 +1491,9 @@ mod test {
         stream::{self, StreamExt},
         FutureExt,
     };
-    use mysql_common::constants::{CapabilityFlags, MariadbCapabilities, MAX_PAYLOAD_LEN};
+    use mysql_common::constants::{
+        CapabilityFlags, MariadbCapabilities, StatusFlags, MAX_PAYLOAD_LEN,
+    };
     use rand::RngExt as _;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -1504,10 +1515,28 @@ mod test {
     }
 
     async fn auth_with_server_packet(server_packet: &[u8]) -> super::Result<()> {
+        let (result, _) = auth_with_server(
+            CapabilityFlags::CLIENT_PROTOCOL_41
+                | CapabilityFlags::CLIENT_SECURE_CONNECTION
+                | CapabilityFlags::CLIENT_PLUGIN_AUTH,
+            OptsBuilder::default(),
+            server_packet,
+        )
+        .await;
+        result
+    }
+
+    /// Authenticates against a mock server that advertises `server_capabilities` and
+    /// returns the result along with the handshake response sent by the client.
+    async fn auth_with_server(
+        server_capabilities: CapabilityFlags,
+        opts: OptsBuilder,
+        server_packet: &[u8],
+    ) -> (super::Result<()>, Vec<u8>) {
         use mysql_common::{packets::HandshakePacket, proto::MySerialize};
 
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
         let packet = server_packet.to_vec();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -1517,11 +1546,9 @@ mod test {
                 1,
                 *b"12345678",
                 Some(b"abcdefghijkl\0".as_slice()),
-                crate::consts::CapabilityFlags::CLIENT_PROTOCOL_41
-                    | crate::consts::CapabilityFlags::CLIENT_SECURE_CONNECTION
-                    | crate::consts::CapabilityFlags::CLIENT_PLUGIN_AUTH,
+                server_capabilities,
                 45,
-                crate::consts::StatusFlags::SERVER_STATUS_AUTOCOMMIT,
+                StatusFlags::SERVER_STATUS_AUTOCOMMIT,
                 Some(b"caching_sha2_password\0".as_slice()),
             );
             let mut greeting = Vec::new();
@@ -1546,18 +1573,22 @@ mod test {
                 .await
                 .unwrap();
             stream.write_all(&packet).await.unwrap();
+            response
         });
 
-        let opts = OptsBuilder::default()
+        let opts = opts
             .ip_or_hostname(addr.ip().to_string())
             .tcp_port(addr.port())
             .user(Some("test"))
             .pass(Some("test-password"));
         let mut conn = Conn::empty(opts.into());
-        conn.inner.stream =
-            Some(super::Stream::connect_tcp(conn.inner.opts.hostport_or_url(), None).await?);
-        conn.handle_handshake().await?;
-        let (context, procedure, response) = conn.do_handshake_response().await?;
+        conn.inner.stream = Some(
+            super::Stream::connect_tcp(conn.inner.opts.hostport_or_url(), None)
+                .await
+                .unwrap(),
+        );
+        conn.handle_handshake().await.unwrap();
+        let (context, procedure, response) = conn.do_handshake_response().await.unwrap();
         assert!(matches!(
             response,
             mysql_common::auth::plugins::Response::Next { .. }
@@ -1565,8 +1596,7 @@ mod test {
         let result = conn
             .continue_auth(false, context, procedure, response)
             .await;
-        server.await.unwrap();
-        result.map(drop)
+        (result.map(drop), server.await.unwrap())
     }
 
     #[tokio::test]
@@ -1705,6 +1735,46 @@ mod test {
         assert!(ok_packet.session_state_info()?.is_empty());
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_propagate_connect_attributes() -> super::Result<()> {
+        let opts = get_opts().connect_attribute("probe_attr", "it-arrived");
+        let mut conn = Conn::new(opts).await.unwrap();
+
+        let attrs: Vec<(String, String)> = conn
+            .query(
+                "SELECT ATTR_NAME, ATTR_VALUE \
+                 FROM performance_schema.session_account_connect_attrs \
+                 WHERE PROCESSLIST_ID = CONNECTION_ID()",
+            )
+            .await?;
+
+        let attr = attrs.iter().find(|(name, _)| name == "probe_attr");
+        assert_eq!(attr.map(|(_, value)| value.as_str()), Some("it-arrived"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_not_send_connect_attributes_if_server_does_not_support_them() {
+        let (result, response) = auth_with_server(
+            // `CLIENT_CONNECT_ATTRS` is intentionally missing here.
+            crate::consts::CapabilityFlags::CLIENT_PROTOCOL_41
+                | crate::consts::CapabilityFlags::CLIENT_SECURE_CONNECTION
+                | crate::consts::CapabilityFlags::CLIENT_PLUGIN_AUTH,
+            OptsBuilder::default().connect_attribute("probe_attr", "it-arrived"),
+            &[0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00],
+        )
+        .await;
+        result.unwrap();
+
+        let flags = u32::from_le_bytes(response[..4].try_into().unwrap());
+        let attr_flag = crate::consts::CapabilityFlags::CLIENT_CONNECT_ATTRS;
+        assert_eq!(flags & attr_flag.bits(), 0, "{flags:#x}");
+        assert!(!response
+            .windows(b"probe_attr".len())
+            .any(|x| x == b"probe_attr"));
     }
 
     #[test]
