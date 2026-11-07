@@ -13,6 +13,7 @@ use mysql_common::{
     constants::{
         MariadbCapabilities, DEFAULT_MAX_ALLOWED_PACKET, UTF8MB4_GENERAL_CI, UTF8_GENERAL_CI,
     },
+    crypto::MariaDbZeroConfigCheck,
     io::ParseBuf,
     packets::{
         AuthPlugin, AuthSwitchRequest, CommonOkPacket, ErrPacket, HandshakePacket,
@@ -33,7 +34,7 @@ use std::{
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -156,6 +157,7 @@ struct ConnInner {
     wait_timeout: Duration,
     stmt_cache: StmtCache,
     nonce: Vec<u8>,
+    zero_config_check: Option<Arc<Mutex<Option<MariaDbZeroConfigCheck>>>>,
     auth_plugin: AuthPlugin<'static>,
 
     // Cached public server key used for RSA-based key exchange by the caching_sha2_password plugin.
@@ -214,6 +216,7 @@ impl ConnInner {
             opts,
             ttl_deadline,
             nonce: Vec::default(),
+            zero_config_check: None,
             auth_plugin: AuthPlugin::MysqlNativePassword,
             disconnected: false,
             routine_dropped: Arc::new(AtomicBool::new(false)),
@@ -244,6 +247,8 @@ impl ConnInner {
 #[derive(Debug)]
 pub struct Conn {
     inner: Box<ConnInner>,
+    #[cfg(test)]
+    zero_config_tls: bool,
 }
 
 /// Marks its connection's routine as dropped unless defused, i.e. when the
@@ -323,6 +328,50 @@ impl Conn {
     /// Only makes sense for pooled connections.
     pub fn reset_connection(&mut self, reset_connection: bool) {
         self.inner.reset_upon_returning_to_a_pool = reset_connection;
+    }
+
+    #[cfg(feature = "rustls")]
+    fn zero_config_fallback_pending(&self) -> bool {
+        self.inner
+            .zero_config_check
+            .as_ref()
+            .and_then(|x| x.lock().ok())
+            .and_then(|guard| {
+                guard
+                    .as_ref()
+                    .map(|check| check.requires_zeroconfig_fallback())
+            })
+            .unwrap_or(false)
+    }
+
+    fn zero_config_leaf_cert_fingerprint(&self) -> Option<Vec<u8>> {
+        self.inner
+            .zero_config_check
+            .as_ref()
+            .and_then(|x| x.lock().ok())
+            .and_then(|guard| {
+                guard.as_ref().and_then(|check| {
+                    if check.requires_zeroconfig_fallback() {
+                        Some(check.leaf_cert_fingerprint().to_vec())
+                    } else {
+                        None
+                    }
+                })
+            })
+    }
+
+    fn mariadb_fallback_possible(&self) -> bool {
+        self.inner.is_mariadb
+            && self.inner.version > (11, 4, 0)
+            && self.inner.opts.pass().is_some_and(|x| !x.is_empty())
+            && self.inner.auth_plugin.supports_password_hash()
+            && self
+                .inner
+                .opts
+                .ssl_opts()
+                // MariaDb "Zero-config TLS" requires no root certs explicitly specified
+                .map(|ssl_opts| ssl_opts.root_certs().is_empty())
+                .unwrap_or_default()
     }
 
     pub(crate) fn stream_ref(&self) -> Result<&Stream> {
@@ -573,6 +622,8 @@ impl Conn {
     fn empty(opts: Opts) -> Self {
         Self {
             inner: Box::new(ConnInner::empty(opts)),
+            #[cfg(test)]
+            zero_config_tls: false,
         }
     }
 
@@ -656,13 +707,21 @@ impl Conn {
             .with_mariadb_capabilities(self.inner.mariadb_capabilities);
             self.write_struct(&ssl_request).await?;
             let conn = self;
-            let ssl_opts = conn.opts().ssl_opts_and_connector().expect("unreachable");
+            let ssl_opts = conn
+                .opts()
+                .ssl_opts_and_connector()
+                .expect("unreachable")
+                .clone();
+            let zero_config_check = conn
+                .mariadb_fallback_possible()
+                .then(|| Arc::new(Mutex::new(None)));
+            conn.inner.zero_config_check = zero_config_check.clone();
             let domain = ssl_opts
                 .ssl_opts()
                 .tls_hostname_override()
                 .unwrap_or_else(|| conn.opts().ip_or_hostname())
                 .into();
-            let tls_connector = ssl_opts.build_tls_connector().await?;
+            let tls_connector = ssl_opts.build_tls_connector(zero_config_check).await?;
             conn.stream_mut()?
                 .make_secure(domain, &tls_connector)
                 .await?;
@@ -670,6 +729,50 @@ impl Conn {
         } else {
             Ok(())
         }
+    }
+
+    async fn validate_mariadb_certificate_if_needed(
+        &mut self,
+        auth_proc: auth::plugins::AuthProc,
+    ) -> Result<()> {
+        let leaf_cert_fingerprint = match self.zero_config_leaf_cert_fingerprint() {
+            Some(f) => f,
+            // Nothing to validate, so we can return early.
+            None => return Ok(()),
+        };
+
+        let auth_context = self.auth_context().await?;
+        // Shared secret is stored in "info" field of OK packet that server sends after successful authentication. It's
+        // prepended with 0x01 byte and in hex string form. If we did not get it, we cannot validate certificate.
+        let shared_secret = self
+            .last_ok_packet()
+            .and_then(|ok| ok.info_ref())
+            .and_then(|info| info.strip_prefix(&[1_u8]))
+            .ok_or(DriverError::CertificateCannotBeValidated)?;
+
+        let password_hash = auth_proc
+            .password_hash(&auth_context)
+            .ok_or(DriverError::CertificateCannotBeValidated)?;
+        // Initially the scrable is stored in nonce field. If we had to perform authentication switch during handshake,
+        // we moved it to scramble field. So, if it's definde - we use scramble and nonce otherwise.
+        if !mysql_common::crypto::verify_mariadb_shared_secret(
+            shared_secret,
+            &password_hash,
+            &self.inner.nonce,
+            &leaf_cert_fingerprint,
+        ) {
+            self.inner.zero_config_check = None;
+            return Err(DriverError::CertificateCannotBeValidated.into());
+        }
+
+        self.inner.zero_config_check = None;
+
+        #[cfg(test)]
+        {
+            self.zero_config_tls = true;
+        }
+
+        Ok(())
     }
 
     async fn auth_context(&mut self) -> crate::Result<AuthContext> {
@@ -747,6 +850,15 @@ impl Conn {
         &mut self,
         auth_switch_request: AuthSwitchRequest<'_>,
     ) -> Result<AuthState> {
+        // If MariaDb "zero-config TLS" is in progress, then only supported plugins are allowed
+        #[cfg(feature = "rustls")]
+        if self.zero_config_fallback_pending()
+            && !auth_switch_request.auth_plugin().supports_password_hash()
+        {
+            return Err(
+                rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer).into(),
+            );
+        }
         let state = self
             .start_auth(
                 &auth_switch_request.auth_plugin(),
@@ -765,7 +877,7 @@ impl Conn {
         mut context: AuthContext,
         mut procedure: auth::plugins::AuthProc,
         mut previous_response: auth::plugins::Response,
-    ) -> Result<()> {
+    ) -> Result<auth::plugins::AuthProc> {
         use auth::plugins::{AuthProc, Response};
 
         loop {
@@ -801,7 +913,7 @@ impl Conn {
                     }
                     .into());
                 }
-                return Ok(());
+                return Ok(procedure);
             }
 
             let challenge = packet.strip_prefix(b"\x01").unwrap_or(&packet);
@@ -1015,8 +1127,14 @@ impl Conn {
             conn.handle_handshake().await?;
             conn.switch_to_ssl_if_needed().await?;
             let (context, procedure, response) = conn.do_handshake_response().await?;
-            conn.continue_auth(false, context, procedure, response)
+            let auth_proc = conn
+                .continue_auth(false, context, procedure, response)
                 .await?;
+
+            // If authentication was successful, we have evertything to validate the certificate.
+            conn.validate_mariadb_certificate_if_needed(auth_proc)
+                .await?;
+
             conn.switch_to_compression()?;
             conn.read_settings().await?;
             conn.reconnect_via_socket_if_needed().await?;
@@ -1364,7 +1482,7 @@ mod test {
         stream::{self, StreamExt},
         FutureExt,
     };
-    use mysql_common::constants::{MariadbCapabilities, MAX_PAYLOAD_LEN};
+    use mysql_common::constants::{CapabilityFlags, MariadbCapabilities, MAX_PAYLOAD_LEN};
     use rand::RngExt as _;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -1375,6 +1493,15 @@ mod test {
         from_row, params, prelude::*, test_misc::get_opts, ChangeUserOpts, Conn, DriverError,
         Error, OptsBuilder, Pool, ServerError, Value, WhiteListFsHandler,
     };
+
+    fn random_pass() -> String {
+        let mut rng = rand::rng();
+        let pass: [u8; 10] = rng.random();
+
+        IntoIterator::into_iter(pass)
+            .map(|x| ((x % (123 - 97)) + 97) as char)
+            .collect()
+    }
 
     async fn auth_with_server_packet(server_packet: &[u8]) -> super::Result<()> {
         use mysql_common::{packets::HandshakePacket, proto::MySerialize};
@@ -1439,7 +1566,7 @@ mod test {
             .continue_auth(false, context, procedure, response)
             .await;
         server.await.unwrap();
-        result
+        result.map(drop)
     }
 
     #[tokio::test]
@@ -1550,19 +1677,20 @@ mod test {
         let opts = get_opts().client_session_track(true);
         let mut conn = Conn::new(opts).await.unwrap();
 
-        "USE mysql".ignore(&mut conn).await?;
+        // CLIENT_SESSION_TRACK only supported since 5.7.4
+        if (5, 7, 4) <= conn.server_version() {
+            "USE mysql".ignore(&mut conn).await?;
 
-        // `session_track_schema` is ON by default, so the schema change must be reported.
-        let ok_packet = conn.last_ok_packet().unwrap();
-        let schema =
-            ok_packet
-                .session_state_info()?
-                .iter()
-                .find_map(|info| match info.decode().unwrap() {
+            // `session_track_schema` is ON by default, so the schema change must be reported.
+            let ok_packet = conn.last_ok_packet().unwrap();
+            let schema = ok_packet.session_state_info()?.iter().find_map(|info| {
+                match info.decode().unwrap() {
                     crate::SessionStateChange::Schema(schema) => Some(schema.as_str().into_owned()),
                     _ => None,
-                });
-        assert_eq!(schema.as_deref(), Some("mysql"));
+                }
+            });
+            assert_eq!(schema.as_deref(), Some("mysql"));
+        }
 
         Ok(())
     }
@@ -1900,15 +2028,6 @@ mod test {
             ),
         ];
 
-        fn random_pass() -> String {
-            let mut rng = rand::rng();
-            let pass: [u8; 10] = rng.random();
-
-            IntoIterator::into_iter(pass)
-                .map(|x| ((x % (123 - 97)) + 97) as char)
-                .collect()
-        }
-
         let mut conn = Conn::new(get_opts()).await?;
 
         assert_eq!(
@@ -2008,6 +2127,171 @@ mod test {
             }
         }
 
+        Ok(())
+    }
+
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "rustls", feature = "rustls-tls"))))]
+    #[tokio::test]
+    #[cfg(any(feature = "rustls", feature = "rustls-tls"))]
+    // Test of MariaDB "Zero config SSL" with native authentication - one of three supported by the feature.
+    // First making connection to verify that this is MariaDB server and that it supports "Zero config SSL"
+    // (MariaDB >= 11.4.0) then trying to establish TLS connection making sure that certificate is validated.
+    async fn mariadb_auto_tls() -> crate::Result<()> {
+        let aux = Conn::new(get_opts().ssl_opts(None)).await?;
+        let is_mariadb = aux.inner.is_mariadb;
+        let version = aux.server_version();
+        if is_mariadb && version > (11, 4, 0) {
+            let mut conn = Conn::new(
+                get_opts()
+                    .ssl_opts(crate::SslOpts::default().with_danger_skip_domain_validation(false)),
+            )
+            .await?;
+
+            assert!(conn.is_secure());
+            assert!(conn.ping().await.is_ok());
+            assert!(conn.zero_config_tls);
+        }
+        Ok(())
+    }
+
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(all(
+            any(feature = "rustls", feature = "rustls-tls"),
+            feature = "client_ed25519"
+        )))
+    )]
+    #[tokio::test]
+    #[cfg(all(
+        any(feature = "rustls", feature = "rustls-tls"),
+        feature = "client_ed25519"
+    ))]
+    // Test of MariaDB "Zero config SSL" with ed25519 authentication
+    async fn mariadb_auto_tls_ed25519() -> crate::Result<()> {
+        let mut aux = Conn::new(get_opts().ssl_opts(None)).await?;
+        let is_mariadb = aux.inner.is_mariadb;
+        let version = aux.server_version();
+        if is_mariadb && version > (11, 4, 0) {
+            let pass = random_pass();
+
+            aux.query_drop("DROP USER IF EXISTS 'ed25519_tls_test_user'@'%'")
+                .await?;
+            let create_user_query = format!(
+                    "CREATE USER 'ed25519_tls_test_user'@'%' IDENTIFIED WITH ed25519 USING PASSWORD('{pass}')"
+                );
+            aux.query_drop(create_user_query).await?;
+
+            let mut conn = Conn::new(
+                get_opts()
+                    .user(Some("ed25519_tls_test_user"))
+                    .pass(Some(pass))
+                    .db_name(None::<String>)
+                    .init(vec![] as Vec<String>)
+                    .ssl_opts(crate::SslOpts::default().with_danger_skip_domain_validation(false)),
+            )
+            .await?;
+            assert!(conn.is_secure());
+            assert!(conn.ping().await.is_ok());
+            assert!(conn.zero_config_tls);
+
+            // Testing that we can't make secure connection with empty password.
+            // "Zero config SSL" does not work with empty password.
+            // This can fail if server has real certificate.
+            conn.query_drop("SET PASSWORD = PASSWORD('')").await?;
+            drop(conn);
+
+            let conn = Conn::new(
+                get_opts()
+                    .user(Some("ed25519_tls_test_user"))
+                    .pass(Some(""))
+                    .db_name(None::<String>)
+                    .init(vec![] as Vec<String>)
+                    .ssl_opts(crate::SslOpts::default().with_danger_skip_domain_validation(false)),
+            )
+            .await;
+            // We shouldn't have got secure connection with insecure plugins -
+            // connection should have failed.
+            assert!(conn.is_err());
+            aux.query_drop("DROP USER 'ed25519_tls_test_user'@'%'")
+                .await?;
+        }
+        Ok(())
+    }
+
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(all(
+            any(feature = "rustls", feature = "rustls-tls"),
+            feature = "client_parsec"
+        )))
+    )]
+    #[tokio::test]
+    #[cfg(all(
+        any(feature = "rustls", feature = "rustls-tls"),
+        feature = "client_parsec"
+    ))]
+    // Test of MariaDB "Zero config SSL" with parsec authentication
+    async fn mariadb_auto_tls_parsec() -> crate::Result<()> {
+        let mut aux = Conn::new(get_opts().ssl_opts(None)).await?;
+        let is_mariadb = aux.inner.is_mariadb;
+        let version = aux.server_version();
+        if is_mariadb && version >= (11, 6, 0) {
+            let pass = random_pass();
+            aux.query_drop("DROP USER IF EXISTS 'parsec_tls_test_user'@'%'")
+                .await?;
+            let create_user_query = format!(
+                    "CREATE USER 'parsec_tls_test_user'@'%' IDENTIFIED VIA 'parsec' USING PASSWORD('{pass}')"
+                );
+            aux.query_drop(create_user_query).await?;
+
+            let mut conn = Conn::new(
+                get_opts()
+                    .user(Some("parsec_tls_test_user"))
+                    .pass(Some(pass.clone()))
+                    .db_name(None::<String>)
+                    .init(vec![] as Vec<String>)
+                    .ssl_opts(crate::SslOpts::default().with_danger_skip_domain_validation(false)),
+            )
+            .await?;
+            assert!(conn.is_secure());
+            assert!(conn.ping().await.is_ok());
+            assert!(conn.zero_config_tls);
+            drop(conn);
+            aux.query_drop("DROP USER 'parsec_tls_test_user'@'%'")
+                .await?;
+
+            // caching_sha2_password is not MitM-proof. "Zero config SSL" does not work with such authentication methods.
+            // This can fail if server has real certificate. Combining 2 tests to be sure for the 2nd test that "zero config SSL"
+            // works in general.
+            aux.query_drop("DROP USER IF EXISTS 'caching_sha2_tls_test_user'@'%'")
+                .await?;
+            if aux
+                .query_drop(
+                    "CREATE USER 'caching_sha2_tls_test_user'@'%'
+                IDENTIFIED WITH caching_sha2_password USING PASSWORD('{pass}')",
+                )
+                .await
+                .is_ok()
+            {
+                // Test makes sense only if the plugin is present and active. If we can't create user with such plugin, we can skip the test.
+                let conn = Conn::new(
+                    get_opts()
+                        .user(Some("ed25519_tls_test_user"))
+                        .pass(Some(pass))
+                        .db_name(None::<String>)
+                        .init(vec![] as Vec<String>)
+                        .ssl_opts(
+                            crate::SslOpts::default().with_danger_skip_domain_validation(false),
+                        ),
+                )
+                .await;
+                // We shouldn't have had secure connection with insecure plugins -
+                // connection should have failed.
+                assert!(conn.is_err());
+                aux.query_drop("DROP USER 'caching_sha2_tls_test_user'@'%'")
+                    .await?;
+            }
+        }
         Ok(())
     }
 

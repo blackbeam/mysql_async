@@ -194,6 +194,9 @@ pub enum DriverError {
     #[error("Invalid parsec ext-salt packet received from server")]
     InvalidParsecSalt,
 
+    #[error("Server certificate cannot be validated")]
+    CertificateCannotBeValidated,
+
     #[error("Authentication plugin error: {}", _0)]
     AuthPlugin(#[source] plugins::Error),
 

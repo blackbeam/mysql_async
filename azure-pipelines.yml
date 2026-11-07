@@ -65,31 +65,48 @@ jobs:
           RUST_TOOLCHAIN: stable
     steps:
       - script: |
-          choco install 7zip
-          mkdir C:\mysql
-          CD /D C:\mysql
-          curl -fsS --retry 3 --retry-connrefused -o mysql.msi https://cdn.mysql.com/archives/mysql-installer/mysql-installer-community-8.0.11.0.msi
-          msiexec /q /log install.txt /i mysql.msi datadir=C:\mysql installdir=C:\mysql
-          call "C:\Program Files (x86)\MySQL\MySQL Installer for Windows\MySQLInstallerConsole.exe" community install server;8.0.11;x64:*:port=3306;rootpasswd=password;servicename=MySQL -silent
+          set "PATH=%PATH%;C:\mysql\mysql\current\bin"
+
+          choco install mysql -y --no-progress --params "/port:3306 /serviceName:MySQL /installLocation:C:\mysql /dataLocation:C:\mysql"
+          if errorlevel 1 exit /b 1
+
           netsh advfirewall firewall add rule name="Allow mysql" dir=in action=allow edge=yes remoteip=any protocol=TCP localport=80,8080,3306
-          "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql" -e "SET GLOBAL max_allowed_packet = 36700160;" -uroot -ppassword
-          "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql" -e "SET @@GLOBAL.ENFORCE_GTID_CONSISTENCY = WARN;" -uroot -ppassword
-          "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql" -e "SET @@GLOBAL.ENFORCE_GTID_CONSISTENCY = ON;" -uroot -ppassword
-          "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql" -e "SET @@GLOBAL.GTID_MODE = OFF_PERMISSIVE;" -uroot -ppassword
-          "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql" -e "SET @@GLOBAL.GTID_MODE = ON_PERMISSIVE;" -uroot -ppassword
-          "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql" -e "SET @@GLOBAL.GTID_MODE = ON;" -uroot -ppassword
-        displayName: Install MySql
-      - bash: |
-          rustup install $RUST_TOOLCHAIN
-        displayName: Install Rust (Windows)
-      - bash: |
-          SSL=false COMPRESS=false cargo test
-          SSL=true COMPRESS=false cargo test --features native-tls-tls
-          SSL=false COMPRESS=true cargo test
-        env:
-          RUST_BACKTRACE: 1
-          DATABASE_URL: mysql://root:password@127.0.0.1/mysql
-        displayName: Run tests
+
+          for /L %%i in (1,1,60) do (
+            mysql.exe -uroot -e "SELECT 1" >nul 2>&1 && goto :mysql_ready
+            ping -n 3 127.0.0.1 >nul
+          )
+          echo ##vso[task.logissue type=error]MySQL server did not become available
+          exit /b 1
+
+          :mysql_ready
+
+          net stop MySQL
+          if errorlevel 1 exit /b 1
+
+          >> "C:\mysql\mysql\current\my.ini" (
+            echo.
+            echo enforce_gtid_consistency=ON
+            echo gtid_mode=ON
+            echo max_allowed_packet=36700160
+          )
+
+          net start MySQL
+          for /L %%i in (1,1,60) do (
+            mysql.exe -uroot -e "SELECT 1" >nul 2>&1 && goto :mysql_ready2
+            ping -n 3 127.0.0.1 >nul
+          )
+          echo ##vso[task.logissue type=error]MySQL server did not become available2
+          exit /b 1
+
+          :mysql_ready2
+
+          mysql.exe -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'password'; CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY 'password'; GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;"
+          if errorlevel 1 exit /b 1
+
+          mysql.exe -h 127.0.0.1 --protocol=TCP -uroot -ppassword -e "SELECT VERSION(); SHOW VARIABLES WHERE Variable_name IN ('gtid_mode','max_allowed_packet','port');"
+          if errorlevel 1 exit /b 1
+        displayName: 'Install MySQL via Chocolatey'
 
   - job: "TestMySql"
     pool:
@@ -175,7 +192,10 @@ jobs:
           git checkout 901a7de
         displayName: Clone rust-mysql-simple (for ssl certs)
       - bash: |
-          if [[ "$(DB_VERSION)" -ge "11" ]]; then ARG=" --plugin-load-add=auth_ed25519 --plugin-load-add=auth_parsec"; fi
+          if [[ "$(DB_VERSION)" -ge "11" ]];
+            then ARG=" --plugin-load-add=auth_ed25519 --plugin-load-add=auth_parsec";
+            else ARG=" --ssl-ca=/root/rust-mysql-simple/tests/ca.crt --ssl-cert=/root/rust-mysql-simple/tests/server.crt --ssl-key=/root/rust-mysql-simple/tests/server-key.pem ";
+          fi
           docker run --rm -d \
               --name container \
               -v `pwd`:/root \
@@ -188,9 +208,6 @@ jobs:
                   --performance-schema=on \
                   --log-bin=mysql-bin --gtid-domain-id=1 --server-id=1 \
                   --ssl \
-                  --ssl-ca=/root/rust-mysql-simple/tests/ca.crt \
-                  --ssl-cert=/root/rust-mysql-simple/tests/server.crt \
-                  --ssl-key=/root/rust-mysql-simple/tests/server-key.pem \
                   --secure-auth=OFF \
                   $ARG &
           while ! nc -W 1 localhost 3307 | grep -q -P '.+'; do sleep 1; done
