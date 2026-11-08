@@ -760,8 +760,8 @@ pub(crate) struct MysqlOpts {
 
     /// Connection attributes to send in handshake and COM_CHANGE_USER (defaults to `None`).
     ///
-    /// When set, the client will advertise `CLIENT_CONNECT_ATTRS` and send the provided
-    /// key-value attributes to the server.
+    /// When set and if server supports it, the client will advertise `CLIENT_CONNECT_ATTRS`
+    /// and send the provided key-value attributes to the server.
     connect_attributes: Option<std::collections::HashMap<String, String>>,
 }
 
@@ -1358,6 +1358,9 @@ impl Opts {
         }
         if self.client_session_track() {
             out |= CapabilityFlags::CLIENT_SESSION_TRACK;
+        }
+        if self.connect_attributes().is_some_and(|x| !x.is_empty()) {
+            out |= CapabilityFlags::CLIENT_CONNECT_ATTRS;
         }
 
         out
