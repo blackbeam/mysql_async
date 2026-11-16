@@ -371,7 +371,8 @@ impl Conn {
                 .opts
                 .ssl_opts()
                 // MariaDb "Zero-config TLS" requires no root certs explicitly specified
-                .map(|ssl_opts| ssl_opts.root_certs().is_empty())
+                // and no rustls client config of the application's own
+                .map(|ssl_opts| ssl_opts.zero_config_possible())
                 .unwrap_or_default()
     }
 
@@ -1895,6 +1896,95 @@ mod test {
             assert!(format!("{:?}", conn).contains("Tls"));
         }
 
+        conn.disconnect().await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "rustls-tls")]
+    #[tokio::test]
+    async fn should_connect_with_a_rustls_client_config() -> super::Result<()> {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use rustls::{
+            client::{
+                danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+                WebPkiServerVerifier,
+            },
+            pki_types::{CertificateDer, ServerName, UnixTime},
+            ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
+        };
+
+        /// Accepts any server certificate and counts how often it was asked.
+        #[derive(Debug)]
+        struct CountingVerifier {
+            calls: Arc<AtomicUsize>,
+            signatures: Arc<WebPkiServerVerifier>,
+        }
+
+        impl ServerCertVerifier for CountingVerifier {
+            fn verify_server_cert(
+                &self,
+                _: &CertificateDer<'_>,
+                _: &[CertificateDer<'_>],
+                _: &ServerName<'_>,
+                _: &[u8],
+                _: UnixTime,
+            ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(ServerCertVerified::assertion())
+            }
+
+            fn verify_tls12_signature(
+                &self,
+                message: &[u8],
+                cert: &CertificateDer<'_>,
+                dss: &DigitallySignedStruct,
+            ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+                self.signatures.verify_tls12_signature(message, cert, dss)
+            }
+
+            fn verify_tls13_signature(
+                &self,
+                message: &[u8],
+                cert: &CertificateDer<'_>,
+                dss: &DigitallySignedStruct,
+            ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+                self.signatures.verify_tls13_signature(message, cert, dss)
+            }
+
+            fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+                self.signatures.supported_verify_schemes()
+            }
+        }
+
+        if !crate::test_misc::test_ssl() {
+            return Ok(());
+        }
+
+        let mut roots = RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let verifier = CountingVerifier {
+            calls: calls.clone(),
+            signatures: WebPkiServerVerifier::builder(Arc::new(roots))
+                .build()
+                .unwrap(),
+        };
+        let config = ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(verifier))
+            .with_no_client_auth();
+
+        // The danger flags `get_opts` sets are left off: the config alone decides what is accepted.
+        let ssl_opts = crate::SslOpts::default().with_rustls_client_config(Some(Arc::new(config)));
+        let opts = OptsBuilder::from_opts(get_opts()).ssl_opts(ssl_opts);
+        let mut conn = Conn::new(opts).await?;
+        assert!(format!("{:?}", conn).contains("Tls"));
+        assert!(calls.load(Ordering::SeqCst) > 0);
+        conn.query_drop("SELECT 1").await?;
         conn.disconnect().await?;
         Ok(())
     }
