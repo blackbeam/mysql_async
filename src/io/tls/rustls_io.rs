@@ -40,6 +40,10 @@ impl SslOpts {
         &self,
         zero_config_check: Option<Arc<Mutex<Option<MariaDbZeroConfigCheck>>>>,
     ) -> Result<TlsConnector> {
+        if let Some(config) = self.rustls_client_config() {
+            return Ok(TlsConnector::from(config.clone()));
+        }
+
         let mut root_store = RootCertStore::empty();
         if !self.disable_built_in_roots() {
             root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().map(|x| x.to_owned()));
@@ -259,6 +263,45 @@ mod tests {
             .build()
             .unwrap();
         DangerousVerifier::new(accept_invalid_certs, false, verifier, None)
+    }
+
+    #[tokio::test]
+    async fn a_rustls_client_config_is_used_as_given() {
+        let config = Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+        let opts = SslOpts::default()
+            .with_rustls_client_config(Some(config.clone()))
+            // Ignored when a config is given; this one would fail to load.
+            .with_root_certs(vec![b"not a certificate".to_vec().into()])
+            .with_danger_accept_invalid_certs(true);
+        let connector = opts.build_tls_connector(None).await.unwrap();
+        assert!(Arc::ptr_eq(connector.config(), &config));
+        assert!(!opts.zero_config_possible());
+    }
+
+    #[test]
+    fn ssl_opts_compare_a_rustls_client_config_by_identity() {
+        let config = || {
+            Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(RootCertStore::empty())
+                    .with_no_client_auth(),
+            )
+        };
+        let first = config();
+        let opts = SslOpts::default().with_rustls_client_config(Some(first.clone()));
+        assert_eq!(
+            opts,
+            SslOpts::default().with_rustls_client_config(Some(first))
+        );
+        assert_ne!(
+            opts,
+            SslOpts::default().with_rustls_client_config(Some(config()))
+        );
+        assert_ne!(opts, SslOpts::default());
     }
 
     #[test]

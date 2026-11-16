@@ -2,9 +2,41 @@
 
 use rustls::pki_types::{pem, pem::PemObject, CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer};
 
-use std::{borrow::Cow, path::Path};
+use std::{
+    borrow::Cow,
+    fmt,
+    hash::{Hash, Hasher},
+    path::Path,
+    sync::Arc,
+};
 
 use super::PathOrBuf;
+
+/// A rustls client configuration given to [`super::SslOpts::with_rustls_client_config`].
+///
+/// Compared and hashed by identity: two wrappers are equal when they hold the same `Arc`.
+#[derive(Clone)]
+pub(crate) struct ClientConfigWrapper(pub(crate) Arc<rustls::ClientConfig>);
+
+impl Eq for ClientConfigWrapper {}
+
+impl PartialEq for ClientConfigWrapper {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Hash for ClientConfigWrapper {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
+impl fmt::Debug for ClientConfigWrapper {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ClientIdentity {

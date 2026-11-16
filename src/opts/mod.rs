@@ -16,6 +16,9 @@ pub use native_tls_opts::ClientIdentity;
 #[cfg(feature = "rustls-tls")]
 pub use rustls_opts::ClientIdentity;
 
+#[cfg(feature = "rustls-tls")]
+use rustls_opts::ClientConfigWrapper;
+
 use percent_encoding::percent_decode;
 use rand::RngExt as _;
 use tokio::sync::OnceCell;
@@ -232,6 +235,8 @@ pub struct SslOpts {
     tls_hostname_override: Option<Cow<'static, str>>,
     #[cfg(feature = "rustls-tls")]
     disable_tls_resumption: bool,
+    #[cfg(feature = "rustls-tls")]
+    rustls_client_config: Option<ClientConfigWrapper>,
 }
 
 impl SslOpts {
@@ -343,6 +348,32 @@ impl SslOpts {
         self
     }
 
+    /// Sets a rustls client configuration to connect with, as given.
+    ///
+    /// The configuration decides the crypto provider, the trusted roots, how the server's
+    /// certificate is verified, the client certificate and session resumption, so when it is set
+    /// [`SslOpts::with_root_certs`], [`SslOpts::with_disable_built_in_roots`],
+    /// [`SslOpts::with_client_identity`], [`SslOpts::with_danger_skip_domain_validation`],
+    /// [`SslOpts::with_danger_accept_invalid_certs`] and [`SslOpts::with_disable_tls_resumption`]
+    /// are ignored, and MariaDB's zero-configuration TLS fallback is not attempted.
+    /// [`SslOpts::with_danger_tls_hostname_override`] still sets the name the server is verified by.
+    ///
+    /// The configuration must come from the same `rustls` version this crate depends on.
+    ///
+    /// ```
+    /// # #[cfg(feature = "rustls-tls")]
+    /// # fn example(config: rustls::ClientConfig) -> mysql_async::SslOpts {
+    /// use std::sync::Arc;
+    ///
+    /// mysql_async::SslOpts::default().with_rustls_client_config(Some(Arc::new(config)))
+    /// # }
+    /// ```
+    #[cfg(feature = "rustls-tls")]
+    pub fn with_rustls_client_config(mut self, config: Option<Arc<rustls::ClientConfig>>) -> Self {
+        self.rustls_client_config = config.map(ClientConfigWrapper);
+        self
+    }
+
     #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     pub fn client_identity(&self) -> Option<&ClientIdentity> {
         self.client_identity.as_ref()
@@ -372,6 +403,23 @@ impl SslOpts {
     #[cfg(feature = "rustls-tls")]
     pub fn disable_tls_resumption(&self) -> bool {
         self.disable_tls_resumption
+    }
+
+    /// Returns the rustls client configuration set by [`SslOpts::with_rustls_client_config`].
+    #[cfg(feature = "rustls-tls")]
+    pub fn rustls_client_config(&self) -> Option<&Arc<rustls::ClientConfig>> {
+        self.rustls_client_config.as_ref().map(|config| &config.0)
+    }
+
+    /// Whether MariaDB's zero-configuration TLS fallback may apply: it relies on the connector
+    /// this crate builds itself, with no root certificates given and no rustls client
+    /// configuration of the application's own.
+    pub(crate) fn zero_config_possible(&self) -> bool {
+        #[cfg(feature = "rustls-tls")]
+        if self.rustls_client_config.is_some() {
+            return false;
+        }
+        self.root_certs.is_empty()
     }
 }
 
