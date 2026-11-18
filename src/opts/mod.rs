@@ -1135,6 +1135,9 @@ impl Opts {
 
     /// Path to unix socket (or named pipe on Windows) (defaults to `None`).
     ///
+    /// On Windows this is either a full pipe path (`\\.\pipe\MySQL`) or a bare pipe name
+    /// (`MySQL`, as in the server's `socket` variable), which names a pipe on the local machine.
+    ///
     /// # Connection URL
     ///
     /// You can use `socket` URL parameter to set this value. E.g.

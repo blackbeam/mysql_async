@@ -46,7 +46,7 @@ impl Endpoint {
         domain: String,
         tls_connector: &TlsConnector,
     ) -> Result<()> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if self.is_socket() {
             // won't secure socket connection
             return Ok(());
@@ -59,7 +59,7 @@ impl Endpoint {
                 Endpoint::Secure(tls_stream)
             }
             Endpoint::Secure(_) => unreachable!(),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Endpoint::Socket(_) => unreachable!(),
         };
 
