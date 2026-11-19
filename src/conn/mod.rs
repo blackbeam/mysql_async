@@ -608,9 +608,9 @@ impl Conn {
         false
     }
 
-    /// Returns true if io stream is socket.
+    /// Returns true if io stream is socket (or named pipe on Windows).
     fn is_socket(&self) -> bool {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.inner
                 .stream
@@ -619,7 +619,7 @@ impl Conn {
                 .unwrap_or_default()
         }
 
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         false
     }
 
@@ -805,7 +805,8 @@ impl Conn {
                 .map(str::as_bytes)
                 .unwrap_or_default()
                 .to_vec(),
-            is_ipc_transport: self.is_socket(),
+            // MySQL treats a unix socket as a secure transport, but not a named pipe.
+            is_ipc_transport: cfg!(unix) && self.is_socket(),
             is_tls_transport: self.is_secure(),
             scramble: self.inner.nonce.clone(),
             server_key_pem: self.inner.server_key_pem.as_ref().and_then(|x| x.clone()),
@@ -1120,11 +1121,11 @@ impl Conn {
             let mut conn = Conn::empty(opts.clone());
 
             let stream = if let Some(_path) = opts.socket() {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 {
                     Stream::connect_socket(_path.to_owned()).await?
                 }
-                #[cfg(not(unix))]
+                #[cfg(not(any(unix, windows)))]
                 return Err(crate::DriverError::NamedPipesDisabled.into());
             } else {
                 let keepalive = opts.tcp_keepalive();
@@ -1907,6 +1908,118 @@ mod test {
             fut.await.unwrap();
         });
         // connection will drop here
+    }
+
+    #[tokio::test]
+    async fn should_connect_via_socket() -> super::Result<()> {
+        // Unix socket path, or pipe name on Windows.
+        let opts = get_opts().prefer_socket(false);
+        let mut conn = Conn::new(opts).await?;
+        let socket: Option<String> = conn.query_first("SELECT @@socket").await?;
+        let Some(socket) = socket else {
+            return conn.disconnect().await;
+        };
+
+        let opts = get_opts()
+            .prefer_socket(false)
+            .ssl_opts(None::<crate::SslOpts>)
+            .socket(Some(&*socket));
+        let mut socket_conn = match Conn::new(opts.clone()).await {
+            Ok(socket_conn) => socket_conn,
+            Err(Error::Io(crate::error::IoError::Io(err)))
+                if err.kind() == std::io::ErrorKind::NotFound =>
+            {
+                // the server is not local, or (on Windows) has named pipes disabled
+                println!("Skipping: socket {socket:?} not found");
+                return conn.disconnect().await;
+            }
+            Err(err) => return Err(err),
+        };
+        assert!(socket_conn.is_socket());
+        assert_eq!(socket_conn.query_first("SELECT 1").await?, Some(1_u8));
+        socket_conn.disconnect().await?;
+
+        #[cfg(windows)]
+        {
+            // full pipe path
+            let opts = opts.clone().socket(Some(format!(r"\\.\pipe\{socket}")));
+            let mut socket_conn = Conn::new(opts).await?;
+            assert!(socket_conn.is_socket());
+            socket_conn.disconnect().await?;
+        }
+
+        // `caching_sha2_password` full authentication: MySQL sends the password
+        // in clear text over a unix socket, but not over a named pipe.
+        let plugins: Vec<String> = conn
+            .query_map("SHOW PLUGINS", |mut row: crate::Row| {
+                row.take("Name").unwrap()
+            })
+            .await?;
+        if plugins.iter().any(|p| p == "caching_sha2_password") {
+            let pass = random_pass();
+            let _ = conn.query_drop("DROP USER 'socket_user'@'%'").await;
+            conn.query_drop(format!(
+                "CREATE USER 'socket_user'@'%' IDENTIFIED WITH caching_sha2_password BY '{pass}'"
+            ))
+            .await?;
+            // empty the authentication cache, so that the login can't use it
+            conn.query_drop("FLUSH PRIVILEGES").await?;
+
+            let opts = opts
+                .user(Some("socket_user"))
+                .pass(Some(pass))
+                .db_name(None::<String>);
+            let result = Conn::new(opts).await;
+            conn.query_drop("DROP USER 'socket_user'@'%'").await?;
+            let mut socket_conn = result?;
+            assert!(socket_conn.is_socket());
+            socket_conn.disconnect().await?;
+        }
+
+        conn.disconnect().await
+    }
+
+    #[tokio::test]
+    async fn should_connect_via_socket_with_tls() -> super::Result<()> {
+        if !crate::test_misc::test_ssl() {
+            return Ok(());
+        }
+
+        let mut conn = Conn::new(get_opts()).await?;
+        let socket: Option<String> = conn.query_first("SELECT @@socket").await?;
+        conn.disconnect().await?;
+        let Some(socket) = socket else {
+            return Ok(());
+        };
+
+        let mut socket_conn = match Conn::new(get_opts().socket(Some(&*socket))).await {
+            Ok(socket_conn) => socket_conn,
+            Err(Error::Io(crate::error::IoError::Io(err)))
+                if err.kind() == std::io::ErrorKind::NotFound =>
+            {
+                // the server is not local, or (on Windows) has named pipes disabled
+                println!("Skipping: socket {socket:?} not found");
+                return Ok(());
+            }
+            #[cfg(windows)]
+            Err(Error::Io(crate::error::IoError::Io(err)))
+                if err.kind() == std::io::ErrorKind::Unsupported =>
+            {
+                // MySQL serves TLS over a unix socket, but not over a named pipe
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        };
+        assert!(!cfg!(windows), "TLS over a named pipe should be refused");
+        assert!(socket_conn.is_socket());
+        assert!(socket_conn.is_secure());
+        let cipher: Option<(String, String)> = socket_conn
+            .query_first("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
+            .await?;
+        assert!(!cipher.unwrap().1.is_empty());
+        socket_conn.disconnect().await?;
+
+        Ok(())
     }
 
     #[tokio::test]

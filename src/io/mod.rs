@@ -11,7 +11,7 @@ pub use self::{read_packet::ReadPacket, write_packet::WritePacket};
 use bytes::BytesMut;
 use futures_core::{ready, stream};
 use mysql_common::proto::codec::{error::PacketCodecError, PacketCodec as PacketCodecInner};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::io::AsyncWriteExt;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ErrorKind::Interrupted, ReadBuf},
@@ -19,7 +19,7 @@ use tokio::{
 };
 use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::path::Path;
 use std::{
     fmt,
@@ -42,7 +42,7 @@ use crate::{
     opts::{HostPortOrUrl, DEFAULT_PORT},
 };
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::io::socket::Socket;
 
 mod tls;
@@ -170,8 +170,12 @@ pub(crate) enum Endpoint {
     Secure(tokio_native_tls::TlsStream<TcpStream>),
     #[cfg(feature = "rustls-tls")]
     Secure(tokio_rustls::client::TlsStream<tokio::net::TcpStream>),
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Socket(Socket),
+    #[cfg(all(feature = "native-tls-tls", unix))]
+    SecureSocket(tokio_native_tls::TlsStream<Socket>),
+    #[cfg(all(feature = "rustls-tls", unix))]
+    SecureSocket(tokio_rustls::client::TlsStream<Socket>),
 }
 
 /// This future will check that TcpStream is live.
@@ -201,9 +205,14 @@ impl Future for CheckTcpStream<'_> {
 }
 
 impl Endpoint {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn is_socket(&self) -> bool {
-        matches!(self, Self::Socket(_))
+        match self {
+            Self::Socket(_) => true,
+            #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+            Self::SecureSocket(_) => true,
+            _ => false,
+        }
     }
 
     /// Checks, that connection is alive.
@@ -225,9 +234,19 @@ impl Endpoint {
                 CheckTcpStream(stream).await?;
                 Ok(())
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Endpoint::Socket(socket) => {
                 let _ = socket.write(&[]).await?;
+                Ok(())
+            }
+            #[cfg(all(feature = "native-tls-tls", unix))]
+            Endpoint::SecureSocket(tls_stream) => {
+                let _ = tls_stream.get_mut().get_mut().get_mut().write(&[]).await?;
+                Ok(())
+            }
+            #[cfg(all(feature = "rustls-tls", unix))]
+            Endpoint::SecureSocket(tls_stream) => {
+                let _ = tls_stream.get_mut().0.write(&[]).await?;
                 Ok(())
             }
             Endpoint::Plain(None) => unreachable!(),
@@ -236,7 +255,12 @@ impl Endpoint {
 
     #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     pub fn is_secure(&self) -> bool {
-        matches!(self, Endpoint::Secure(_))
+        match self {
+            Endpoint::Secure(_) => true,
+            #[cfg(unix)]
+            Endpoint::SecureSocket(_) => true,
+            _ => false,
+        }
     }
 
     pub fn set_tcp_nodelay(&self, val: bool) -> io::Result<()> {
@@ -252,8 +276,10 @@ impl Endpoint {
                 let stream = stream.get_ref().0;
                 stream.set_nodelay(val)?;
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Endpoint::Socket(_) => (/* inapplicable */),
+            #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+            Endpoint::SecureSocket(_) => (/* inapplicable */),
         }
         Ok(())
     }
@@ -265,7 +291,7 @@ impl From<TcpStream> for Endpoint {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl From<Socket> for Endpoint {
     fn from(socket: Socket) -> Self {
         Endpoint::Socket(socket)
@@ -298,8 +324,10 @@ impl AsyncRead for Endpoint {
             Self::Secure(stream) => Pin::new(stream).poll_read(cx, buf),
             #[cfg(feature = "rustls-tls")]
             Self::Secure(stream) => Pin::new(stream).poll_read(cx, buf),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Socket(stream) => Pin::new(stream).poll_read(cx, buf),
+            #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+            Self::SecureSocket(stream) => Pin::new(stream).poll_read(cx, buf),
         })
     }
 }
@@ -319,8 +347,10 @@ impl AsyncWrite for Endpoint {
             Self::Secure(stream) => Pin::new(stream).poll_write(cx, buf),
             #[cfg(feature = "rustls-tls")]
             Self::Secure(stream) => Pin::new(stream).poll_write(cx, buf),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Socket(stream) => Pin::new(stream).poll_write(cx, buf),
+            #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+            Self::SecureSocket(stream) => Pin::new(stream).poll_write(cx, buf),
         })
     }
 
@@ -337,8 +367,10 @@ impl AsyncWrite for Endpoint {
             Self::Secure(stream) => Pin::new(stream).poll_flush(cx),
             #[cfg(feature = "rustls-tls")]
             Self::Secure(stream) => Pin::new(stream).poll_flush(cx),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Socket(stream) => Pin::new(stream).poll_flush(cx),
+            #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+            Self::SecureSocket(stream) => Pin::new(stream).poll_flush(cx),
         })
     }
 
@@ -355,8 +387,10 @@ impl AsyncWrite for Endpoint {
             Self::Secure(stream) => Pin::new(stream).poll_shutdown(cx),
             #[cfg(feature = "rustls-tls")]
             Self::Secure(stream) => Pin::new(stream).poll_shutdown(cx),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Socket(stream) => Pin::new(stream).poll_shutdown(cx),
+            #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+            Self::SecureSocket(stream) => Pin::new(stream).poll_shutdown(cx),
         })
     }
 }
@@ -378,7 +412,7 @@ impl fmt::Debug for Stream {
 }
 
 impl Stream {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn new<T: Into<Endpoint>>(endpoint: T) -> Self {
         let endpoint = endpoint.into();
 
@@ -425,7 +459,7 @@ impl Stream {
         })
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) async fn connect_socket<P: AsRef<Path>>(path: P) -> io::Result<Stream> {
         Ok(Stream::new(Socket::new(path).await?))
     }
@@ -452,7 +486,7 @@ impl Stream {
         self.codec.as_ref().unwrap().get_ref().is_secure()
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn is_socket(&self) -> bool {
         self.codec.as_ref().unwrap().get_ref().is_socket()
     }
