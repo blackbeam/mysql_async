@@ -172,6 +172,10 @@ pub(crate) enum Endpoint {
     Secure(tokio_rustls::client::TlsStream<tokio::net::TcpStream>),
     #[cfg(any(unix, windows))]
     Socket(Socket),
+    #[cfg(all(feature = "native-tls-tls", unix))]
+    SecureSocket(tokio_native_tls::TlsStream<Socket>),
+    #[cfg(all(feature = "rustls-tls", unix))]
+    SecureSocket(tokio_rustls::client::TlsStream<Socket>),
 }
 
 /// This future will check that TcpStream is live.
@@ -203,7 +207,12 @@ impl Future for CheckTcpStream<'_> {
 impl Endpoint {
     #[cfg(any(unix, windows))]
     fn is_socket(&self) -> bool {
-        matches!(self, Self::Socket(_))
+        match self {
+            Self::Socket(_) => true,
+            #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+            Self::SecureSocket(_) => true,
+            _ => false,
+        }
     }
 
     /// Checks, that connection is alive.
@@ -230,13 +239,28 @@ impl Endpoint {
                 let _ = socket.write(&[]).await?;
                 Ok(())
             }
+            #[cfg(all(feature = "native-tls-tls", unix))]
+            Endpoint::SecureSocket(tls_stream) => {
+                let _ = tls_stream.get_mut().get_mut().get_mut().write(&[]).await?;
+                Ok(())
+            }
+            #[cfg(all(feature = "rustls-tls", unix))]
+            Endpoint::SecureSocket(tls_stream) => {
+                let _ = tls_stream.get_mut().0.write(&[]).await?;
+                Ok(())
+            }
             Endpoint::Plain(None) => unreachable!(),
         }
     }
 
     #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
     pub fn is_secure(&self) -> bool {
-        matches!(self, Endpoint::Secure(_))
+        match self {
+            Endpoint::Secure(_) => true,
+            #[cfg(unix)]
+            Endpoint::SecureSocket(_) => true,
+            _ => false,
+        }
     }
 
     pub fn set_tcp_nodelay(&self, val: bool) -> io::Result<()> {
@@ -254,6 +278,8 @@ impl Endpoint {
             }
             #[cfg(any(unix, windows))]
             Endpoint::Socket(_) => (/* inapplicable */),
+            #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+            Endpoint::SecureSocket(_) => (/* inapplicable */),
         }
         Ok(())
     }
@@ -300,6 +326,8 @@ impl AsyncRead for Endpoint {
             Self::Secure(stream) => Pin::new(stream).poll_read(cx, buf),
             #[cfg(any(unix, windows))]
             Self::Socket(stream) => Pin::new(stream).poll_read(cx, buf),
+            #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+            Self::SecureSocket(stream) => Pin::new(stream).poll_read(cx, buf),
         })
     }
 }
@@ -321,6 +349,8 @@ impl AsyncWrite for Endpoint {
             Self::Secure(stream) => Pin::new(stream).poll_write(cx, buf),
             #[cfg(any(unix, windows))]
             Self::Socket(stream) => Pin::new(stream).poll_write(cx, buf),
+            #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+            Self::SecureSocket(stream) => Pin::new(stream).poll_write(cx, buf),
         })
     }
 
@@ -339,6 +369,8 @@ impl AsyncWrite for Endpoint {
             Self::Secure(stream) => Pin::new(stream).poll_flush(cx),
             #[cfg(any(unix, windows))]
             Self::Socket(stream) => Pin::new(stream).poll_flush(cx),
+            #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+            Self::SecureSocket(stream) => Pin::new(stream).poll_flush(cx),
         })
     }
 
@@ -357,6 +389,8 @@ impl AsyncWrite for Endpoint {
             Self::Secure(stream) => Pin::new(stream).poll_shutdown(cx),
             #[cfg(any(unix, windows))]
             Self::Socket(stream) => Pin::new(stream).poll_shutdown(cx),
+            #[cfg(all(any(feature = "native-tls-tls", feature = "rustls-tls"), unix))]
+            Self::SecureSocket(stream) => Pin::new(stream).poll_shutdown(cx),
         })
     }
 }

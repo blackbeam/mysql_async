@@ -46,21 +46,26 @@ impl Endpoint {
         domain: String,
         tls_connector: &TlsConnector,
     ) -> Result<()> {
-        #[cfg(any(unix, windows))]
-        if self.is_socket() {
-            // won't secure socket connection
-            return Ok(());
-        }
-
-        *self = match self {
-            Endpoint::Plain(ref mut stream) => {
-                let stream = stream.take().unwrap();
+        *self = match std::mem::replace(self, Endpoint::Plain(None)) {
+            Endpoint::Plain(Some(stream)) => {
                 let tls_stream = tls_connector.connect(&domain, stream).await?;
                 Endpoint::Secure(tls_stream)
             }
-            Endpoint::Secure(_) => unreachable!(),
-            #[cfg(any(unix, windows))]
-            Endpoint::Socket(_) => unreachable!(),
+            // MySQL serves TLS over a unix socket, but not over a named pipe
+            #[cfg(windows)]
+            Endpoint::Socket(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "TLS is not available over a named pipe",
+                )
+                .into());
+            }
+            #[cfg(unix)]
+            Endpoint::Socket(socket) => {
+                let tls_stream = tls_connector.connect(&domain, socket).await?;
+                Endpoint::SecureSocket(tls_stream)
+            }
+            _ => unreachable!(),
         };
 
         Ok(())

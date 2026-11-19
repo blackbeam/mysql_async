@@ -1980,6 +1980,49 @@ mod test {
     }
 
     #[tokio::test]
+    async fn should_connect_via_socket_with_tls() -> super::Result<()> {
+        if !crate::test_misc::test_ssl() {
+            return Ok(());
+        }
+
+        let mut conn = Conn::new(get_opts()).await?;
+        let socket: Option<String> = conn.query_first("SELECT @@socket").await?;
+        conn.disconnect().await?;
+        let Some(socket) = socket else {
+            return Ok(());
+        };
+
+        let mut socket_conn = match Conn::new(get_opts().socket(Some(&*socket))).await {
+            Ok(socket_conn) => socket_conn,
+            Err(Error::Io(crate::error::IoError::Io(err)))
+                if err.kind() == std::io::ErrorKind::NotFound =>
+            {
+                // the server is not local, or (on Windows) has named pipes disabled
+                println!("Skipping: socket {socket:?} not found");
+                return Ok(());
+            }
+            #[cfg(windows)]
+            Err(Error::Io(crate::error::IoError::Io(err)))
+                if err.kind() == std::io::ErrorKind::Unsupported =>
+            {
+                // MySQL serves TLS over a unix socket, but not over a named pipe
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        };
+        assert!(!cfg!(windows), "TLS over a named pipe should be refused");
+        assert!(socket_conn.is_socket());
+        assert!(socket_conn.is_secure());
+        let cipher: Option<(String, String)> = socket_conn
+            .query_first("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
+            .await?;
+        assert!(!cipher.unwrap().1.is_empty());
+        socket_conn.disconnect().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn should_execute_init_queries_on_new_connection() -> super::Result<()> {
         let opts = OptsBuilder::from_opts(get_opts()).init(vec!["SET @a = 42", "SET @b = 'foo'"]);
         let mut conn = Conn::new(opts).await?;
