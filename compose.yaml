@@ -1,0 +1,48 @@
+# Compose file to spin up a test environment.
+#
+# This file is compatible with both `docker compose` and `podman compose`.
+#
+# Start in the foreground, stop with the interupt signal (^C).
+# ```
+# # Docker
+# docker compose up
+# # Podman
+# podman compose up
+# ```
+#
+# Start in the background, then stop it
+# ```
+# # Docker
+# docker compose up --wait
+# docker compose down
+# # Podman (requires podman-compose 1.6.0 or later)
+# podman compose up --wait
+# podman compose down
+# ```
+
+services:
+  mariadb:
+    image: "docker.io/library/mariadb:10.6.20@sha256:0ba11696aa4be8d463eaf2316212ffb1e0fb4a4430b2fff076eb518c8a1328e1"
+    command: [
+      "--max_connections=1000",
+      # required for the test `conn::test::should_change_user`
+      "--secure-auth=false",
+      # required for the test `conn::test::should_perform_queries`
+      "--max-allowed-packet=36700160",
+    ]
+    environment: [
+       # required for Linux hosts
+      "UMASK=0777",
+       # required for Linux hosts
+      "UMASK_DIR=0777",
+      "MARIADB_ROOT_PASSWORD=password",
+      "MARIADB_DATABASE=mysql",
+    ]
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: "/usr/bin/mysql --user=root --password=password --execute \"show databases;\""
+      interval: "3s"
+      start_period: "3s"
+      timeout: "3s"
+      retries: 10
