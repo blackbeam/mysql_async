@@ -1095,9 +1095,9 @@ impl Conn {
             callback(self).await?;
         }
 
-        let mut init = self.inner.opts.init().to_vec();
+        let init = self.inner.opts.init().to_vec();
 
-        while let Some(query) = init.pop() {
+        for query in init {
             self.query_drop(query).await?;
         }
 
@@ -1105,9 +1105,9 @@ impl Conn {
     }
 
     async fn run_setup_commands(&mut self) -> Result<()> {
-        let mut setup = self.inner.opts.setup().to_vec();
+        let setup = self.inner.opts.setup().to_vec();
 
-        while let Some(query) = setup.pop() {
+        for query in setup {
             self.query_drop(query).await?;
         }
 
@@ -1935,6 +1935,54 @@ mod test {
         .expect("dropped conn was not closed")
         .unwrap();
         assert_eq!(received, [0x01, 0x00, 0x00, 0x00, Command::COM_QUIT as u8]);
+    }
+
+    async fn read_mock_packet(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+        use tokio::io::AsyncReadExt;
+
+        let mut header = [0_u8; 4];
+        stream.read_exact(&mut header).await.unwrap();
+        let len = u32::from_le_bytes([header[0], header[1], header[2], 0]) as usize;
+        let mut payload = vec![0_u8; len];
+        stream.read_exact(&mut payload).await.unwrap();
+        payload
+    }
+
+    async fn write_mock_ok(stream: &mut tokio::net::TcpStream) {
+        stream
+            .write_all(&[
+                0x07, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+            ])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn should_run_init_and_setup_commands_in_order() {
+        let opts = OptsBuilder::default()
+            .init(vec!["SET @a = 1", "SET @a = 2"])
+            .setup(vec!["SET @b = 1", "SET @b = 2"]);
+        let (mut conn, mut server_stream) = mock_peer_conn(opts).await;
+
+        let peer = tokio::spawn(async move {
+            let mut queries = Vec::new();
+            for _ in 0..4 {
+                let packet = read_mock_packet(&mut server_stream).await;
+                assert_eq!(packet[0], 0x03);
+                queries.push(String::from_utf8(packet[1..].to_vec()).unwrap());
+                write_mock_ok(&mut server_stream).await;
+            }
+            queries
+        });
+
+        conn.run_init_commands().await.unwrap();
+        conn.run_setup_commands().await.unwrap();
+        conn.inner.disconnected = true;
+
+        assert_eq!(
+            peer.await.unwrap(),
+            ["SET @a = 1", "SET @a = 2", "SET @b = 1", "SET @b = 2"]
+        );
     }
 
     #[test]
