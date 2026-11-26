@@ -342,6 +342,15 @@ impl Pool {
         self.release_connection_slot();
     }
 
+    /// Releases the slot of a checked-out connection that leaves the pool for good.
+    pub(super) fn detach_connection(&self) {
+        self.inner
+            .metrics
+            .connections_in_use
+            .fetch_sub(1, Ordering::Relaxed);
+        self.release_connection_slot();
+    }
+
     /// Polls the pool for an available connection or a new connection slot.
     fn poll_new_conn(
         &mut self,
@@ -1345,6 +1354,42 @@ mod test {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn should_release_slot_and_in_use_gauge_when_change_user_detaches_conn() {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let opts = crate::Opts::from(get_opts().pool_opts(pool_opts));
+        let pool = Pool::new(opts.clone());
+        let metrics = pool.metrics();
+
+        // Simulate a checked-out connection.
+        ex_field!(pool, exist) = 1;
+        metrics
+            .connections_in_use
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        let mut conn = crate::Conn::empty(opts);
+        conn.inner.pool = Some(pool.clone());
+
+        // There is no server, so `COM_CHANGE_USER` fails after the connection left the pool.
+        let change = crate::ChangeUserOpts::default().with_user(Some("other_user".into()));
+        assert!(conn.change_user(change).await.is_err());
+        assert!(conn.inner.pool.is_none());
+        drop(conn);
+
+        assert_eq!(ex_field!(pool, exist), 0);
+        assert_eq!(
+            metrics
+                .connections_in_use
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            metrics
+                .create_failed
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
     }
 
     #[tokio::test]
