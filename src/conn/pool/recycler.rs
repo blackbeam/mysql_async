@@ -17,9 +17,18 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use super::{IdlingConn, Inner};
+use super::{IdlingConn, Inner, RECYCLE_TIMEOUT};
 use crate::{queryable::transaction::TxStatus, BoxFuture, Conn, PoolOpts};
 use tokio::sync::mpsc::UnboundedReceiver;
+
+/// Fails `fut` once it exceeds [`RECYCLE_TIMEOUT`], dropping the connection it owns.
+fn bounded<T: 'static>(
+    fut: impl Future<Output = crate::Result<T>> + Send + 'static,
+) -> BoxFuture<'static, T> {
+    tokio::time::timeout(RECYCLE_TIMEOUT, fut)
+        .map(|res| res.unwrap_or_else(|elapsed| Err(std::io::Error::from(elapsed).into())))
+        .boxed()
+}
 
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
@@ -66,7 +75,7 @@ impl Recycler {
                 .metrics
                 .discarded_superfluous_connection
                 .fetch_add(1, Ordering::Relaxed);
-            self.discard.push(conn.close_conn().boxed());
+            self.discard.push(bounded(conn.close_conn()));
         } else {
             self.inner
                 .metrics
@@ -106,19 +115,19 @@ impl Recycler {
                 .metrics
                 .dirty_connection_return
                 .fetch_add(1, Ordering::Relaxed);
-            self.cleaning.push(conn.cleanup_for_pool().boxed());
+            self.cleaning.push(bounded(conn.cleanup_for_pool()));
         } else if conn.expired() || close {
             self.inner
                 .metrics
                 .discarded_expired_connection
                 .fetch_add(1, Ordering::Relaxed);
-            self.discard.push(conn.close_conn().boxed());
+            self.discard.push(bounded(conn.close_conn()));
         } else if conn.inner.reset_upon_returning_to_a_pool {
             self.inner
                 .metrics
                 .resetting_connection
                 .fetch_add(1, Ordering::Relaxed);
-            self.reset.push(conn.reset_for_pool().boxed());
+            self.reset.push(bounded(conn.reset_for_pool()));
         } else {
             self.conn_return(conn, false);
         }

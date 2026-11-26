@@ -15,7 +15,7 @@ use std::{
     sync::{atomic::Ordering, Arc},
 };
 
-use super::{in_pool_connections::InPoolConnections, Inner};
+use super::{in_pool_connections::InPoolConnections, Inner, RECYCLE_TIMEOUT};
 use crate::PoolOpts;
 use futures_core::task::{Context, Poll};
 use std::pin::Pin;
@@ -75,10 +75,12 @@ impl TtlCheckInterval {
         for idling_conn in to_be_dropped {
             assert!(idling_conn.conn.inner.pool.is_none());
             let inner = self.inner.clone();
-            tokio::spawn(idling_conn.conn.disconnect().then(move |_| {
-                inner.release_connection_slot();
-                ok::<_, ()>(())
-            }));
+            tokio::spawn(
+                time::timeout(RECYCLE_TIMEOUT, idling_conn.conn.disconnect()).then(move |_| {
+                    inner.release_connection_slot();
+                    ok::<_, ()>(())
+                }),
+            );
         }
     }
 }

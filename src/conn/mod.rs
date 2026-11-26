@@ -101,6 +101,31 @@ impl auth::plugins::Context for &'_ AuthContext {
     }
 }
 
+/// Closes the socket synchronously, without further I/O, if the owning future ends early by
+/// cancellation or error.
+struct ConnGuard(Option<Conn>);
+
+impl ConnGuard {
+    fn conn_mut(&mut self) -> &mut Conn {
+        self.0
+            .as_mut()
+            .expect("ConnGuard still owns the connection")
+    }
+
+    fn take(mut self) -> Conn {
+        self.0.take().expect("ConnGuard still owns the connection")
+    }
+}
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        if let Some(mut conn) = self.0.take() {
+            conn.inner.disconnected = true;
+            drop(conn);
+        }
+    }
+}
+
 /// Helper that asynchronously disconnects the given connection on the default tokio executor.
 fn disconnect(mut conn: Conn) {
     let disconnected = conn.inner.disconnected;
@@ -1124,35 +1149,9 @@ impl Conn {
 
     /// Returns a future that resolves to [`Conn`].
     pub fn new<T: Into<Opts>>(opts: T) -> crate::BoxFuture<'static, Conn> {
-        /// Closes the socket synchronously if setup ends early by cancellation or error.
-        struct ConnSetupGuard(Option<Conn>);
-
-        impl ConnSetupGuard {
-            fn conn_mut(&mut self) -> &mut Conn {
-                self.0
-                    .as_mut()
-                    .expect("ConnSetupGuard still owns the connection")
-            }
-
-            fn take(mut self) -> Conn {
-                self.0
-                    .take()
-                    .expect("ConnSetupGuard still owns the connection")
-            }
-        }
-
-        impl Drop for ConnSetupGuard {
-            fn drop(&mut self) {
-                if let Some(mut conn) = self.0.take() {
-                    conn.inner.disconnected = true;
-                    drop(conn);
-                }
-            }
-        }
-
         let opts = opts.into();
         async move {
-            let mut guard = ConnSetupGuard(Some(Conn::empty(opts.clone())));
+            let mut guard = ConnGuard(Some(Conn::empty(opts.clone())));
 
             let stream = if let Some(_path) = opts.socket() {
                 #[cfg(unix)]
@@ -1431,11 +1430,13 @@ impl Conn {
     /// Resets the connection upon returning it to a pool.
     ///
     /// Will invoke `COM_CHANGE_USER` if `COM_RESET_CONNECTION` is not supported.
-    async fn reset_for_pool(mut self) -> Result<Self> {
-        if !self.reset().await? {
-            self.change_user(Default::default()).await?;
+    async fn reset_for_pool(self) -> Result<Self> {
+        let mut guard = ConnGuard(Some(self));
+        let conn = guard.conn_mut();
+        if !conn.reset().await? {
+            conn.change_user(Default::default()).await?;
         }
-        Ok(self)
+        Ok(guard.take())
     }
 
     /// Requires that `self.inner.tx_status != TxStatus::None`
@@ -1496,27 +1497,29 @@ impl Conn {
     /// This function will drop pending result and rollback a transaction, if needed.
     ///
     /// The purpose of this function, is to cleanup the connection while returning it to a [`Pool`].
-    async fn cleanup_for_pool(mut self) -> Result<Self> {
+    async fn cleanup_for_pool(self) -> Result<Self> {
+        let mut guard = ConnGuard(Some(self));
+        let conn = guard.conn_mut();
         loop {
-            if self.has_pending_result() {
+            if conn.has_pending_result() {
                 // The connection was dropped and we assume that it was dropped intentionally,
                 // so we'll ignore non-fatal errors during cleanup (also there is no direct caller
                 // to return this error to).
-                if let Err(err) = self.drop_result().await {
+                if let Err(err) = conn.drop_result().await {
                     if err.is_fatal() {
                         // This means that connection is completely broken
                         // and shouldn't return to a pool.
                         return Err(err);
                     }
                 }
-            } else if self.inner.tx_status != TxStatus::None {
+            } else if conn.inner.tx_status != TxStatus::None {
                 // If an error occurs during rollback, don't reuse the connection.
-                self.rollback_transaction().await?;
+                conn.rollback_transaction().await?;
             } else {
                 break;
             }
         }
-        Ok(self)
+        Ok(guard.take())
     }
 }
 

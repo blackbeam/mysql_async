@@ -36,6 +36,11 @@ mod metrics;
 mod ttl_check_inerval;
 mod waitlist;
 
+/// Upper bound on the I/O spent cleaning, resetting or closing a connection that holds a pool
+/// slot outside of the caller's control. A connection that takes longer (an unresponsive peer,
+/// a large unread result set) is closed without further I/O and its slot is released.
+const RECYCLE_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// Connection that is idling in the pool.
 #[derive(Debug)]
 struct IdlingConn {
@@ -536,9 +541,13 @@ mod test {
         time::{Duration, Instant},
     };
 
+    use super::RECYCLE_TIMEOUT;
     use crate::{
-        conn::pool::Pool, opts::PoolOpts, prelude::*, test_misc::get_opts, PoolConstraints, Row,
-        TxOpts, Value,
+        conn::pool::Pool,
+        opts::PoolOpts,
+        prelude::*,
+        test_misc::{get_opts, proxy::Proxy},
+        PoolConstraints, Row, TxOpts, Value,
     };
 
     macro_rules! conn_ex_field {
@@ -2181,6 +2190,127 @@ mod test {
             .await
             .expect("Pool::disconnect did not finish after releasing the slot")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn should_release_slot_of_returned_conn_with_unresponsive_peer() -> super::Result<()> {
+        let proxy = Proxy::start(&get_opts()).await;
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let pool = Pool::new(proxy.opts(get_opts()).pool_opts(pool_opts));
+        let bound = RECYCLE_TIMEOUT + Duration::from_secs(1);
+
+        let mut conn = pool.get_conn().await?;
+        conn.ping().await?;
+        proxy.blackhole_links();
+        drop(conn);
+        let mut conn = timeout(bound, pool.get_conn())
+            .await
+            .expect("the unresponsive conn's reset pinned the only slot")?;
+
+        conn.ping().await?;
+        proxy.blackhole_links();
+        drop(conn);
+        timeout(bound, pool.disconnect())
+            .await
+            .expect("Pool::disconnect waited on the unresponsive conn's reset")
+    }
+
+    #[tokio::test]
+    async fn should_release_slot_of_conn_dropped_during_slow_result_set() -> super::Result<()> {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let pool = Pool::new(get_opts().pool_opts(pool_opts));
+
+        // Rows larger than the server's net buffer are flushed one by one, ~5s in total.
+        // A cross join instead of a recursive CTE, so this also runs on MySQL 5.6.
+        let mut conn = pool.get_conn().await?;
+        let mut rows = 0;
+        let streamed = timeout(Duration::from_millis(500), async {
+            let mut result = conn
+                .query_iter(
+                    "SELECT REPEAT('x', 100000), SLEEP(0.05) FROM \
+                     (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 \
+                      UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) a, \
+                     (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 \
+                      UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) b",
+                )
+                .await?;
+            while result.next().await?.is_some() {
+                rows += 1;
+            }
+            super::Result::Ok(())
+        })
+        .await;
+        assert!(streamed.is_err(), "the result set finished early");
+        assert!(rows > 0, "the result set did not start streaming");
+        let dropped_id = conn.id();
+        drop(conn);
+
+        let mut conn = timeout(RECYCLE_TIMEOUT + Duration::from_secs(1), pool.get_conn())
+            .await
+            .expect("draining the dropped result set pinned the only slot")?;
+        timeout(Duration::from_secs(1), async {
+            while "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID = ?"
+                .with((dropped_id,))
+                .first::<u32, _>(&mut conn)
+                .await?
+                != Some(0)
+            {
+                sleep(Duration::from_millis(50)).await;
+            }
+            super::Result::Ok(())
+        })
+        .await
+        .expect("the discarded conn kept draining its result set")?;
+        drop(conn);
+        pool.disconnect().await
+    }
+
+    #[tokio::test]
+    async fn should_release_slot_when_ttl_disconnect_stalls() {
+        let pool_opts = PoolOpts::new()
+            .with_constraints(PoolConstraints::new(0, 1).unwrap())
+            .with_abs_conn_ttl(Some(Duration::from_millis(1)));
+        let pool = Pool::new(get_opts().pool_opts(pool_opts.clone()));
+
+        // A peer that never reads: once the send buffers are full, COM_QUIT cannot be written.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer_opts = crate::Opts::from(
+            crate::OptsBuilder::default()
+                .ip_or_hostname("127.0.0.1")
+                .tcp_port(listener.local_addr().unwrap().port()),
+        );
+        let stream = crate::io::Stream::connect_tcp(peer_opts.hostport_or_url(), None)
+            .await
+            .unwrap();
+        let (_peer, _) = listener.accept().await.unwrap();
+        let mut conn = crate::Conn::empty(peer_opts);
+        conn.inner.stream = Some(stream);
+        while let Ok(written) = timeout(
+            Duration::from_millis(50),
+            conn.write_command_data(crate::consts::Command::COM_QUERY, [0; 64 * 1024]),
+        )
+        .await
+        {
+            written.unwrap();
+        }
+
+        let expired_deadline = Instant::now();
+        sleep(Duration::from_millis(2)).await;
+        conn.inner.ttl_deadline = Some(expired_deadline);
+        {
+            let mut exchange = pool.inner.exchange.lock().unwrap();
+            exchange.exist = 1;
+            exchange.available.push_back(conn.into());
+        }
+        super::ttl_check_inerval::TtlCheckInterval::new(pool_opts, pool.inner.clone()).check_ttl();
+
+        timeout(RECYCLE_TIMEOUT + Duration::from_secs(1), async {
+            while ex_field!(pool, exist) != 0 {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the stalled TTL disconnect pinned the only slot");
     }
 
     #[cfg(feature = "nightly")]

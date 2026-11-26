@@ -666,6 +666,9 @@ pub mod test_misc {
 
     use crate::opts::{Opts, OptsBuilder, SslOpts};
 
+    #[cfg(test)]
+    pub(crate) mod proxy;
+
     #[allow(dead_code)]
     #[allow(unreachable_code)]
     fn error_should_implement_send_and_sync(err: crate::Error) {
