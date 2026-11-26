@@ -15,9 +15,10 @@ use mysql_common::proto::codec::{error::PacketCodecError, PacketCodec as PacketC
 use tokio::io::AsyncWriteExt;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ErrorKind::Interrupted, ReadBuf},
-    net::TcpStream,
+    net::{lookup_host, TcpStream},
 };
 use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
+use url::{Host, Url};
 
 #[cfg(unix)]
 use std::path::Path;
@@ -367,6 +368,20 @@ pub struct Stream {
     pub(crate) codec: Option<Box<Framed<Endpoint, PacketCodec>>>,
 }
 
+/// Async counterpart of [`Url::socket_addrs`] that resolves domains off the async worker threads.
+async fn url_socket_addrs(url: &Url) -> io::Result<Vec<SocketAddr>> {
+    let port = url.port_or_known_default().unwrap_or(DEFAULT_PORT);
+    match url.host() {
+        Some(Host::Domain(domain)) => Ok(lookup_host((domain, port)).await?.collect()),
+        Some(Host::Ipv4(ip)) => Ok(vec![(ip, port).into()]),
+        Some(Host::Ipv6(ip)) => Ok(vec![(ip, port).into()]),
+        None => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "No host name in the URL",
+        )),
+    }
+}
+
 impl fmt::Debug for Stream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -408,7 +423,7 @@ impl Stream {
                 None => TcpStream::connect((host.as_str(), *port)).await?,
             },
             HostPortOrUrl::Url(url) => {
-                let addrs = url.socket_addrs(|| Some(DEFAULT_PORT))?;
+                let addrs = url_socket_addrs(url).await?;
                 TcpStream::connect(&*addrs).await?
             }
         };
@@ -566,6 +581,74 @@ mod test {
                 assert_eq!(codec.inner.max_allowed_packet, 1024);
             }
         }
+    }
+
+    use url::Url;
+
+    use super::url_socket_addrs;
+
+    #[tokio::test]
+    async fn should_resolve_url_like_url_socket_addrs() {
+        for url in [
+            "mysql://localhost",
+            "mysql://root:password@localhost:3307/mysql",
+            "mysql://127.0.0.1:3308",
+            "mysql://[::1]",
+        ] {
+            let url = Url::parse(url).unwrap();
+            assert_eq!(
+                url_socket_addrs(&url).await.unwrap(),
+                url.socket_addrs(|| Some(crate::opts::DEFAULT_PORT))
+                    .unwrap(),
+                "{url}"
+            );
+        }
+
+        let url = Url::parse("mysql:/mysql").unwrap();
+        let err = url_socket_addrs(&url).await.unwrap_err();
+        let expected = url.socket_addrs(|| None).unwrap_err();
+        assert_eq!(err.kind(), expected.kind());
+        assert_eq!(err.to_string(), expected.to_string());
+    }
+
+    #[test]
+    fn should_not_resolve_url_host_on_async_worker_thread() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (release, blocked) = std::sync::mpsc::channel::<()>();
+            let blocker = tokio::task::spawn_blocking(move || blocked.recv());
+
+            // IP literals need no resolution, so they are ready while the blocking pool is busy.
+            let ip_url = Url::parse("mysql://127.0.0.1:3308").unwrap();
+            let addrs = tokio::time::timeout(Duration::from_millis(100), url_socket_addrs(&ip_url))
+                .await
+                .expect("IP literal waited for the blocking pool")
+                .unwrap();
+            assert_eq!(addrs, vec!["127.0.0.1:3308".parse().unwrap()]);
+
+            // A domain is resolved on the blocking pool, so it waits for the busy blocking thread
+            // instead of stalling the async worker thread.
+            let url = Url::parse("mysql://localhost").unwrap();
+            let mut resolve = std::pin::pin!(url_socket_addrs(&url));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), resolve.as_mut())
+                    .await
+                    .is_err(),
+                "domain was resolved on the async worker thread"
+            );
+
+            release.send(()).unwrap();
+            blocker.await.unwrap().unwrap();
+            assert_eq!(
+                resolve.await.unwrap(),
+                url.socket_addrs(|| Some(crate::opts::DEFAULT_PORT))
+                    .unwrap()
+            );
+        });
     }
 
     #[cfg(unix)] // no sane way to retrieve current keepalive value on windows
