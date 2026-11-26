@@ -1985,6 +1985,61 @@ mod test {
         );
     }
 
+    #[tokio::test]
+    async fn should_roll_back_transaction_characteristics_when_start_transaction_fails() {
+        use tokio::io::AsyncReadExt;
+
+        let (mut conn, mut server_stream) = mock_peer_conn(OptsBuilder::default()).await;
+        conn.inner.version = (10, 11, 0);
+
+        let peer = tokio::spawn(async move {
+            let mut queries = Vec::new();
+            let mut header = [0_u8; 4];
+            while server_stream.read_exact(&mut header).await.is_ok() {
+                let len = u32::from_le_bytes([header[0], header[1], header[2], 0]) as usize;
+                let mut packet = vec![0_u8; len];
+                server_stream.read_exact(&mut packet).await.unwrap();
+                let query = String::from_utf8(packet[1..].to_vec()).unwrap();
+                if queries.len() == 2 {
+                    server_stream
+                        .write_all(b"\x0d\x00\x00\x01\xff\x48\x04#HY000boom")
+                        .await
+                        .unwrap();
+                } else {
+                    write_mock_ok(&mut server_stream).await;
+                }
+                queries.push(query);
+            }
+            queries
+        });
+
+        let err = conn
+            .start_transaction(
+                crate::TxOpts::default()
+                    .with_isolation_level(crate::IsolationLevel::Serializable)
+                    .with_readonly(true)
+                    .clone(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Server(_)), "{err:?}");
+
+        drop(conn.start_transaction(Default::default()).await.unwrap());
+        conn.inner.disconnected = true;
+        drop(conn);
+
+        assert_eq!(
+            peer.await.unwrap(),
+            [
+                "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+                "SET TRANSACTION READ ONLY",
+                "START TRANSACTION",
+                "ROLLBACK",
+                "START TRANSACTION",
+            ]
+        );
+    }
+
     #[test]
     fn should_not_panic_if_dropped_without_tokio_runtime() {
         let fut = Conn::new(get_opts());

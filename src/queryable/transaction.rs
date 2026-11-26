@@ -153,30 +153,41 @@ impl<'a> Transaction<'a> {
             return Err(DriverError::ReadOnlyTransNotSupported.into());
         }
 
-        if let Some(isolation_level) = isolation_level {
-            let query = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation_level);
-            conn.as_mut().query_drop(query).await?;
-        }
+        let started = async {
+            if let Some(isolation_level) = isolation_level {
+                let query = format!("SET TRANSACTION ISOLATION LEVEL {}", isolation_level);
+                conn.as_mut().query_drop(query).await?;
+            }
 
-        if let Some(readonly) = readonly {
-            if readonly {
+            if let Some(readonly) = readonly {
+                if readonly {
+                    conn.as_mut()
+                        .query_drop("SET TRANSACTION READ ONLY")
+                        .await?;
+                } else {
+                    conn.as_mut()
+                        .query_drop("SET TRANSACTION READ WRITE")
+                        .await?;
+                }
+            }
+
+            if consistent_snapshot {
                 conn.as_mut()
-                    .query_drop("SET TRANSACTION READ ONLY")
-                    .await?;
+                    .query_drop("START TRANSACTION WITH CONSISTENT SNAPSHOT")
+                    .await
             } else {
-                conn.as_mut()
-                    .query_drop("SET TRANSACTION READ WRITE")
-                    .await?;
+                conn.as_mut().query_drop("START TRANSACTION").await
             }
         }
+        .await;
 
-        if consistent_snapshot {
-            conn.as_mut()
-                .query_drop("START TRANSACTION WITH CONSISTENT SNAPSHOT")
-                .await?
-        } else {
-            conn.as_mut().query_drop("START TRANSACTION").await?
-        };
+        if let Err(err) = started {
+            if isolation_level.is_some() || readonly.is_some() {
+                // `ROLLBACK` discards characteristics already set for the next transaction.
+                conn.as_mut().set_tx_status(TxStatus::RequiresRollback);
+            }
+            return Err(err);
+        }
 
         conn.as_mut().set_tx_status(TxStatus::InTransaction);
         Ok(Transaction(conn))
