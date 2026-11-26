@@ -703,4 +703,13 @@ pub mod test_misc {
     pub fn test_ssl() -> bool {
         ["true", "1"].contains(&&*env::var("SSL").unwrap_or_default())
     }
+
+    /// Leaves the current task's Tokio coop budget exhausted, as on a busy task.
+    pub fn exhaust_coop_budget(cx: &mut std::task::Context<'_>) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        for _ in 0..1024 {
+            tx.send(()).unwrap();
+        }
+        while let std::task::Poll::Ready(Some(())) = rx.poll_recv(cx) {}
+    }
 }

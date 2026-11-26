@@ -23,12 +23,11 @@ use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts};
 use std::path::Path;
 use std::{
     fmt,
-    future::Future,
     io::{
         self,
-        ErrorKind::{BrokenPipe, NotConnected, Other},
+        ErrorKind::{BrokenPipe, NotConnected},
     },
-    mem::replace,
+    mem::{replace, MaybeUninit},
     net::SocketAddr,
     ops::{Deref, DerefMut},
     pin::Pin,
@@ -174,29 +173,18 @@ pub(crate) enum Endpoint {
     Socket(Socket),
 }
 
-/// This future will check that TcpStream is live.
+/// Checks that a TcpStream is live.
 ///
 /// This check is similar to a one, implemented by GitHub team for the go-sql-driver/mysql.
-#[derive(Debug)]
-struct CheckTcpStream<'a>(&'a mut TcpStream);
-
-impl Future for CheckTcpStream<'_> {
-    type Output = io::Result<()>;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.0.poll_read_ready(cx) {
-            Poll::Ready(Ok(())) => {
-                // stream is readable
-                let mut buf = [0_u8; 1];
-                match self.0.try_read(&mut buf) {
-                    Ok(0) => Poll::Ready(Err(io::Error::new(BrokenPipe, "broken pipe"))),
-                    Ok(_) => Poll::Ready(Err(io::Error::new(Other, "stream should be empty"))),
-                    Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Ready(Ok(())),
-                    Err(err) => Poll::Ready(Err(err)),
-                }
-            }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-            Poll::Pending => Poll::Ready(Ok(())),
-        }
+/// It peeks the socket directly because Tokio readiness polling reports `Pending` once
+/// the task's coop budget is exhausted, which would hide a closed connection.
+fn check_tcp_stream(stream: &TcpStream) -> io::Result<()> {
+    let mut buf = [MaybeUninit::uninit(); 1];
+    match socket2::SockRef::from(stream).peek(&mut buf) {
+        Ok(0) => Err(io::Error::new(BrokenPipe, "broken pipe")),
+        Ok(_) => Err(io::Error::other("stream should be empty")),
+        Err(err) if err.kind() == io::ErrorKind::WouldBlock => Ok(()),
+        Err(err) => Err(err),
     }
 }
 
@@ -211,18 +199,17 @@ impl Endpoint {
         //return Ok(());
         match self {
             Endpoint::Plain(Some(stream)) => {
-                CheckTcpStream(stream).await?;
+                check_tcp_stream(stream)?;
                 Ok(())
             }
             #[cfg(feature = "native-tls-tls")]
             Endpoint::Secure(tls_stream) => {
-                CheckTcpStream(tls_stream.get_mut().get_mut().get_mut()).await?;
+                check_tcp_stream(tls_stream.get_ref().get_ref().get_ref())?;
                 Ok(())
             }
             #[cfg(feature = "rustls-tls")]
             Endpoint::Secure(tls_stream) => {
-                let stream = tls_stream.get_mut().0;
-                CheckTcpStream(stream).await?;
+                check_tcp_stream(tls_stream.get_ref().0)?;
                 Ok(())
             }
             #[cfg(unix)]
@@ -536,7 +523,41 @@ impl stream::Stream for Stream {
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
+    use std::{
+        future::{poll_fn, Future},
+        io::ErrorKind,
+        pin::pin,
+        time::Duration,
+    };
+
+    use tokio::net::{TcpListener, TcpStream};
+
+    use super::Endpoint;
+    use crate::{error::IoError, test_misc::exhaust_coop_budget};
+
+    #[tokio::test]
+    async fn should_detect_closed_tcp_stream_under_exhausted_coop_budget() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (client, server) = tokio::join!(
+            TcpStream::connect(listener.local_addr().unwrap()),
+            listener.accept()
+        );
+        drop(server.unwrap());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut endpoint = Endpoint::Plain(Some(client.unwrap()));
+        let mut check = pin!(endpoint.check());
+        let result = poll_fn(|cx| {
+            exhaust_coop_budget(cx);
+            check.as_mut().poll(cx)
+        })
+        .await;
+
+        assert!(
+            matches!(&result, Err(IoError::Io(err)) if err.kind() == ErrorKind::BrokenPipe),
+            "closed stream passed the liveness check: {result:?}"
+        );
+    }
 
     /// Scenario: definition framing, its type prefix and remaining body arrive separately.
     /// Guarantees: classification cannot admit an oversized body; decode restores the normal cap.
