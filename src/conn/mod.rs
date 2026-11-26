@@ -1092,6 +1092,15 @@ impl Conn {
     async fn run_init_commands(&mut self) -> Result<()> {
         if let Some(callback) = self.inner.opts.after_connect() {
             callback(self).await?;
+            // Reject connections left disconnected by the callback before subsequent
+            // init or setup SQL can consume a stale reply and clear the flag.
+            if self.is_disconnected() {
+                return Err(crate::DriverError::ConnectionClosed.into());
+            }
+            // Drain any tracked unread result set left by a healthy callback before setup SQL.
+            if self.has_pending_result() {
+                self.drop_result().await?;
+            }
         }
 
         let mut init = self.inner.opts.init().to_vec();
@@ -1115,9 +1124,35 @@ impl Conn {
 
     /// Returns a future that resolves to [`Conn`].
     pub fn new<T: Into<Opts>>(opts: T) -> crate::BoxFuture<'static, Conn> {
+        /// Closes the socket synchronously if setup ends early by cancellation or error.
+        struct ConnSetupGuard(Option<Conn>);
+
+        impl ConnSetupGuard {
+            fn conn_mut(&mut self) -> &mut Conn {
+                self.0
+                    .as_mut()
+                    .expect("ConnSetupGuard still owns the connection")
+            }
+
+            fn take(mut self) -> Conn {
+                self.0
+                    .take()
+                    .expect("ConnSetupGuard still owns the connection")
+            }
+        }
+
+        impl Drop for ConnSetupGuard {
+            fn drop(&mut self) {
+                if let Some(mut conn) = self.0.take() {
+                    conn.inner.disconnected = true;
+                    drop(conn);
+                }
+            }
+        }
+
         let opts = opts.into();
         async move {
-            let mut conn = Conn::empty(opts.clone());
+            let mut guard = ConnSetupGuard(Some(Conn::empty(opts.clone())));
 
             let stream = if let Some(_path) = opts.socket() {
                 #[cfg(unix)]
@@ -1131,6 +1166,7 @@ impl Conn {
                 Stream::connect_tcp(opts.hostport_or_url(), keepalive).await?
             };
 
+            let conn = guard.conn_mut();
             conn.inner.stream = Some(stream);
             conn.setup_stream()?;
             conn.handle_handshake().await?;
@@ -1150,7 +1186,7 @@ impl Conn {
             conn.run_init_commands().await?;
             conn.run_setup_commands().await?;
 
-            Ok(conn)
+            Ok(guard.take())
         }
         .boxed()
     }

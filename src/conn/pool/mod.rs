@@ -20,7 +20,7 @@ use std::{
     future::Future,
     str::FromStr,
     sync::{atomic, Arc, Mutex},
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 
@@ -79,6 +79,8 @@ struct Exchange {
     waiting: Waitlist,
     available: in_pool_connections::InPoolConnections,
     exist: usize,
+    // Wakes the recycler when an external slot release brings `exist` to zero during shutdown.
+    recycler_waker: Option<Waker>,
     // only used to spawn the recycler the first time we're in async context
     recycler: Option<(mpsc::UnboundedReceiver<Option<Conn>>, PoolOpts)>,
 }
@@ -102,6 +104,16 @@ impl Exchange {
             }
         }
     }
+
+    /// Pops the head waiter if available capacity exceeds eligible popped waiters.
+    fn pop_waker_if_needed(&mut self, max: usize) -> Option<Waker> {
+        let capacity = self.available.len() + max.saturating_sub(self.exist);
+        if capacity > 0 && self.waiting.has_fewer_eligible_woken(capacity) {
+            self.waiting.pop_waker()
+        } else {
+            None
+        }
+    }
 }
 
 /// Connection pool data.
@@ -111,6 +123,82 @@ pub struct Inner {
     close: atomic::AtomicBool,
     closed: atomic::AtomicBool,
     exchange: Mutex<Exchange>,
+}
+
+impl Inner {
+    /// Decrements the existing connection count and wakes the next waiter.
+    ///
+    /// Also wakes the recycler when `exist` reaches zero so shutdown or pool drop can finish.
+    pub(super) fn release_connection_slot(&self) {
+        let (waiter_waker, recycler_waker) = {
+            let mut exchange = self.exchange.lock().unwrap();
+            exchange.exist -= 1;
+            self.metrics
+                .connection_count
+                .store(exchange.exist, atomic::Ordering::Relaxed);
+            let recycler_waker = if exchange.exist == 0 {
+                exchange.recycler_waker.take()
+            } else {
+                None
+            };
+            let waiter_waker = exchange.waiting.pop_waker();
+            (waiter_waker, recycler_waker)
+        };
+        if let Some(waker) = waiter_waker {
+            waker.wake();
+        }
+        if let Some(waker) = recycler_waker {
+            waker.wake();
+        }
+    }
+}
+
+/// Keeps a pool slot charged until the checked connection is returned or its socket is closed.
+struct CheckingConnGuard {
+    conn: Option<Conn>,
+    inner: Option<Arc<Inner>>,
+}
+
+impl CheckingConnGuard {
+    fn new(conn: Conn, inner: Arc<Inner>) -> Self {
+        Self {
+            conn: Some(conn),
+            inner: Some(inner),
+        }
+    }
+
+    fn conn_mut(&mut self) -> &mut Conn {
+        self.conn
+            .as_mut()
+            .expect("CheckingConnGuard still owns the connection")
+    }
+
+    fn take_conn(mut self) -> Conn {
+        self.inner = None;
+        self.conn
+            .take()
+            .expect("CheckingConnGuard still owns the connection")
+    }
+
+    fn disarm_slot_release(&mut self) {
+        // Disarm slot release because `get_conn` calls `cancel_connection` on check errors.
+        // `Drop` still closes the socket synchronously before `cancel_connection` frees the slot.
+        self.inner = None;
+    }
+}
+
+impl Drop for CheckingConnGuard {
+    fn drop(&mut self) {
+        if let Some(mut conn) = self.conn.take() {
+            // Close the socket synchronously before releasing the slot so open sockets
+            // stay within the pool maximum.
+            conn.inner.disconnected = true;
+            drop(conn);
+        }
+        if let Some(inner) = self.inner.take() {
+            inner.release_connection_slot();
+        }
+    }
 }
 
 /// Asynchronous pool of MySql connections.
@@ -169,6 +257,7 @@ impl Pool {
                     ),
                     waiting: Waitlist::new(metrics),
                     exist: 0,
+                    recycler_waker: None,
                     recycler: Some((rx, pool_opts)),
                 }),
             }),
@@ -198,10 +287,12 @@ impl Pool {
         Transaction::new(conn, options).await
     }
 
-    /// Async function that disconnects this pool from the server and resolves to `()`.
+    /// Disconnects this pool from the server and resolves to `()`.
     ///
-    /// **Note:** This Future won't resolve until all active connections, taken from it,
-    /// are dropped or disonnected. Also all pending and new `get_conn()`'s will resolve to error.
+    /// **Note:** This future waits until all checked-out connections are dropped or disconnected,
+    /// and until any `get_conn()` already establishing a connection finishes setup or is dropped.
+    /// Parked and new `get_conn()` calls fail with [`DriverError::PoolDisconnected`].
+    /// Callers that need bounded shutdown should cancel or time-limit outstanding `get_conn()` calls.
     pub async fn disconnect(self) -> Result<()> {
         disconnect_pool(self).await
     }
@@ -217,7 +308,7 @@ impl Pool {
         self.send_to_recycler(conn);
     }
 
-    fn send_to_recycler(&self, conn: Conn) {
+    pub(super) fn send_to_recycler(&self, conn: Conn) {
         if let Err(conn) = self.drop.send(Some(conn)) {
             let conn = conn.0.unwrap();
 
@@ -234,43 +325,44 @@ impl Pool {
         }
     }
 
-    /// Indicate that a connection failed to be created and release it.
+    /// Releases a pool connection slot when a connection does not reach the pool,
+    /// then wakes the next waiter.
+    pub(super) fn release_connection_slot(&self) {
+        self.inner.release_connection_slot();
+    }
+
+    /// Indicates that connection creation failed and releases the connection slot.
     ///
-    /// Decreases the exist counter since a broken or dropped connection should not count towards
-    /// the total.
+    /// Decrements `exist` so a broken or dropped connection does not count toward the limit.
     pub(super) fn cancel_connection(&self) {
-        let mut exchange = self.inner.exchange.lock().unwrap();
-        exchange.exist -= 1;
         self.inner
             .metrics
             .create_failed
             .fetch_add(1, atomic::Ordering::Relaxed);
-        self.inner
-            .metrics
-            .connection_count
-            .store(exchange.exist, atomic::Ordering::Relaxed);
-        // we just enabled the creation of a new connection!
-        exchange.waiting.wake();
+        self.release_connection_slot();
     }
 
-    /// Poll the pool for an available connection.
+    /// Polls the pool for an available connection or a new connection slot.
     fn poll_new_conn(
         &mut self,
         cx: &mut Context<'_>,
         queue_id: QueueId,
     ) -> Poll<Result<GetConnInner>> {
         let mut exchange = self.inner.exchange.lock().unwrap();
+        let was_woken = exchange.waiting.clear_woken(queue_id);
 
         // NOTE: this load must happen while we hold the lock,
         // otherwise the recycler may choose to exit, see that .exist == 0, and then exit,
         // and then we decide to create a new connection, which would then never be torn down.
         if self.inner.close.load(atomic::Ordering::Acquire) {
-            return Err(Error::Driver(DriverError::PoolDisconnected)).into();
+            exchange.waiting.remove(queue_id);
+            return Poll::Ready(Err(Error::Driver(DriverError::PoolDisconnected)));
         }
 
         exchange.spawn_futures_if_needed(&self.inner);
 
-        // Check if we are higher priority than anything current
+        // Check if we are higher priority than anything current. The comparison is strict so
+        // a still-queued waiter does not take a connection ahead of an earlier popped waiter.
         let highest = if let Some(cur) = exchange.waiting.peek_id() {
             queue_id > cur
         } else {
@@ -280,6 +372,17 @@ impl Pool {
         // If we are not, just queue
         if !highest {
             exchange.waiting.push(cx.waker().clone(), queue_id);
+            // If this waiter held a wakeup but ranks behind an older queued waiter,
+            // wake the eligible head when available capacity is uncovered.
+            let wake_head = if was_woken {
+                exchange.pop_waker_if_needed(self.opts.pool_opts().constraints().max())
+            } else {
+                None
+            };
+            drop(exchange);
+            if let Some(waker) = wake_head {
+                waker.wake();
+            }
             return Poll::Pending;
         }
 
@@ -297,17 +400,34 @@ impl Pool {
                 #[cfg(feature = "hdrhistogram")]
                 let metrics = self.metrics();
                 conn.inner.active_since = Instant::now();
+                // Create the guard outside the async block so dropping before the first poll
+                // still closes the socket and releases the connection slot.
+                let mut guard = CheckingConnGuard::new(conn, self.inner.clone());
                 return Poll::Ready(Ok(GetConnInner::Checking(
                     async move {
-                        conn.stream_mut()?.check().await?;
-                        #[cfg(feature = "hdrhistogram")]
-                        metrics
-                            .check_duration
-                            .lock()
-                            .unwrap()
-                            .record(conn.inner.active_since.elapsed().as_micros() as u64)
-                            .ok();
-                        Ok(conn)
+                        let check_result = match guard.conn_mut().stream_mut() {
+                            Ok(stream) => stream.check().await.map_err(Error::from),
+                            Err(err) => Err(err),
+                        };
+                        match check_result {
+                            Ok(()) => {
+                                #[cfg(feature = "hdrhistogram")]
+                                metrics
+                                    .check_duration
+                                    .lock()
+                                    .unwrap()
+                                    .record(
+                                        guard.conn_mut().inner.active_since.elapsed().as_micros()
+                                            as u64,
+                                    )
+                                    .ok();
+                                Ok(guard.take_conn())
+                            }
+                            Err(err) => {
+                                guard.disarm_slot_release();
+                                Err(err)
+                            }
+                        }
                     }
                     .boxed(),
                 )));
@@ -316,10 +436,7 @@ impl Pool {
             }
         }
 
-        // we didn't _immediately_ get one -- try to make one
-        // we first try to just do a load so we don't do an unnecessary add then sub
         if exchange.exist < self.opts.pool_opts().constraints().max() {
-            // we are allowed to make a new connection, so we will!
             exchange.exist += 1;
 
             self.inner
@@ -355,8 +472,25 @@ impl Pool {
     }
 
     fn unqueue(&self, queue_id: QueueId) {
-        let mut exchange = self.inner.exchange.lock().unwrap();
-        exchange.waiting.remove(queue_id);
+        let waker = {
+            let mut exchange = self.inner.exchange.lock().unwrap();
+            exchange.waiting.remove(queue_id);
+            let was_woken = exchange.waiting.clear_woken(queue_id);
+            let closing = self.inner.close.load(atomic::Ordering::Acquire);
+            let max = self.opts.pool_opts().constraints().max();
+            // Wake the next waiter if the pool is closing, or if this waiter held a wakeup
+            // and the remaining eligible popped waiters do not cover the available capacity.
+            if closing {
+                exchange.waiting.pop_waker()
+            } else if was_woken {
+                exchange.pop_waker_if_needed(max)
+            } else {
+                None
+            }
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
     }
 }
 

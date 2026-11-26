@@ -63,8 +63,14 @@ impl GetConnState {
             .expect("GetConn::poll polled after returning Async::Ready")
     }
 
+    /// Prepares the connection to be delivered to the application.
     fn ready_connection(&mut self, mut c: Conn) -> Result<Conn> {
         let pool = self.pool_take();
+        if pool.inner.close.load(Ordering::Acquire) {
+            // Reject connections that finish connecting or checking after shutdown starts.
+            pool.send_to_recycler(c);
+            return Err(Error::Driver(DriverError::PoolDisconnected));
+        }
         pool.inner
             .metrics
             .connections_in_use
@@ -148,14 +154,20 @@ pub(crate) async fn get_conn(pool: Pool) -> Result<Conn> {
 
 impl Drop for GetConnState {
     fn drop(&mut self) {
-        // We drop a connection before it can be resolved, a.k.a. cancelling it.
-        // Make sure we maintain the necessary invariants towards the pool.
+        // Keep pool state consistent when a caller drops this future before completion.
         if let Some(pool) = self.pool.take() {
-            // Remove the waker from the pool's waitlist in case this task was
-            // woken by another waker, like from tokio::time::timeout.
-            pool.unqueue(self.queue_id);
-            if let GetConnInner::Connecting(..) = self.inner {
-                pool.cancel_connection();
+            match self.inner {
+                // Remove this waiter from the waitlist and pass its wakeup on if needed.
+                GetConnInner::New => pool.unqueue(self.queue_id),
+                GetConnInner::Connecting(..) => {
+                    // Drop the connecting future first so its socket closes synchronously
+                    // before `cancel_connection` releases the pool slot.
+                    self.inner = GetConnInner::Done;
+                    pool.cancel_connection();
+                }
+                // `CheckingConnGuard` inside the inner future closes the socket and releases
+                // the slot when `self.inner` drops.
+                GetConnInner::Checking(..) | GetConnInner::Done => {}
             }
         }
     }
