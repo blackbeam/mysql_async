@@ -541,7 +541,17 @@ impl Conn {
             }
             Err(err) => {
                 if self.inner.stream.is_some() {
-                    self.take_stream().close().await?;
+                    // The connection is unusable either way; the routine error is the root cause.
+                    let closed = self.take_stream().close().await;
+                    #[cfg(feature = "tracing")]
+                    if let Err(close_err) = closed {
+                        tracing::debug!(
+                            error = %close_err,
+                            "closing the stream after a failed routine also failed"
+                        );
+                    }
+                    #[cfg(not(feature = "tracing"))]
+                    drop(closed);
                 }
                 Err(err)
             }
@@ -1486,7 +1496,11 @@ impl Conn {
 
 #[cfg(test)]
 mod test {
+    use std::{future::poll_fn, net::Shutdown, pin::Pin};
+
     use bytes::Bytes;
+    use futures_core::future::BoxFuture;
+    use futures_sink::Sink;
     use futures_util::{
         stream::{self, StreamExt},
         FutureExt,
@@ -1496,14 +1510,16 @@ mod test {
         params::ParamsError,
     };
     use rand::RngExt as _;
+    use socket2::SockRef;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
 
+    use super::routines::Routine;
     use crate::{
-        from_row, params, prelude::*, test_misc::get_opts, ChangeUserOpts, Conn, DriverError,
-        Error, OptsBuilder, Pool, ServerError, Value, WhiteListFsHandler,
+        from_row, io::Endpoint, params, prelude::*, test_misc::get_opts, ChangeUserOpts, Conn,
+        DriverError, Error, OptsBuilder, Pool, ServerError, Value, WhiteListFsHandler,
     };
 
     fn random_pass() -> String {
@@ -2573,6 +2589,49 @@ mod test {
             .collect::<Vec<&[u8]>>();
         assert_eq!(order, &[b"DO 6", b"DO 5", b"DO 3"]);
         conn.disconnect().await?;
+        Ok(())
+    }
+
+    /// Fails with a driver error after shutting down the socket's write half and leaving an
+    /// unflushed packet, so that closing the stream fails too.
+    struct FailWithBrokenStream;
+
+    impl Routine<()> for FailWithBrokenStream {
+        fn call<'a>(self, conn: &'a mut Conn) -> BoxFuture<'a, super::Result<()>>
+        where
+            Self: 'a,
+        {
+            async move {
+                let codec = &mut **conn.stream_mut()?.codec.as_mut().unwrap();
+                if let Endpoint::Plain(Some(tcp)) = codec.get_ref() {
+                    SockRef::from(tcp).shutdown(Shutdown::Write)?;
+                }
+                poll_fn(|cx| Pin::new(&mut *codec).poll_ready(cx)).await?;
+                Pin::new(&mut *codec).start_send(crate::buffer_pool().get_with(b"\x0e"))?;
+                Err(DriverError::UnexpectedPacket { payload: vec![] }.into())
+            }
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn should_return_routine_error_when_closing_stream_fails() -> super::Result<()> {
+        let mut conn = Conn::new(get_opts()).await?;
+        if !matches!(
+            conn.stream_ref()?.codec.as_ref().unwrap().get_ref(),
+            Endpoint::Plain(Some(_))
+        ) {
+            println!(
+                "should_return_routine_error_when_closing_stream_fails needs a plain TCP conn"
+            );
+            return Ok(());
+        }
+        let err = conn.routine(FailWithBrokenStream).await.unwrap_err();
+        assert!(
+            matches!(err, Error::Driver(DriverError::UnexpectedPacket { .. })),
+            "{err:?}"
+        );
+        assert!(conn.is_disconnected());
         Ok(())
     }
 
