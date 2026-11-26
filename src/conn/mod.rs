@@ -1491,8 +1491,9 @@ mod test {
         stream::{self, StreamExt},
         FutureExt,
     };
-    use mysql_common::constants::{
-        CapabilityFlags, MariadbCapabilities, StatusFlags, MAX_PAYLOAD_LEN,
+    use mysql_common::{
+        constants::{CapabilityFlags, MariadbCapabilities, StatusFlags, MAX_PAYLOAD_LEN},
+        params::ParamsError,
     };
     use rand::RngExt as _;
     use tokio::{
@@ -2571,6 +2572,36 @@ mod test {
             .map(|item| item.1.query.0.as_ref())
             .collect::<Vec<&[u8]>>();
         assert_eq!(order, &[b"DO 6", b"DO 5", b"DO 3"]);
+        conn.disconnect().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_keep_conn_on_client_side_param_error() -> super::Result<()> {
+        let mut conn = Conn::new(get_opts()).await?;
+
+        let err = conn.exec_drop("SELECT ?, ?", (1,)).await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Driver(DriverError::StmtParamsMismatch {
+                required: 2,
+                supplied: 1
+            })
+        ));
+        assert!(!conn.is_disconnected());
+
+        let err = conn
+            .exec_drop("SELECT :a, :b", params! { "a" => 1 })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Driver(DriverError::Params(ParamsError::Missing(_)))
+        ));
+        assert!(!conn.is_disconnected());
+
+        let one: Option<u8> = conn.exec_first("SELECT ?", (1,)).await?;
+        assert_eq!(one, Some(1));
         conn.disconnect().await?;
         Ok(())
     }
