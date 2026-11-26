@@ -76,7 +76,16 @@ impl StmtCache {
         let query = QueryString(query);
 
         self.query_map.insert(query.clone(), stmt.id());
-        self.cache.put(stmt.id(), Entry { stmt, query });
+        let displaced = self.cache.put(
+            stmt.id(),
+            Entry {
+                stmt,
+                query: query.clone(),
+            },
+        );
+        if let Some(displaced) = displaced.filter(|entry| entry.query != query) {
+            self.query_map.remove(displaced.query.0.as_ref());
+        }
 
         if self.cache.len() > self.cap {
             if let Some((_, entry)) = self.cache.pop_lru() {
@@ -139,5 +148,49 @@ impl super::Conn {
         self.stmt_cache_mut()
             .by_query(raw_query)
             .map(|entry| entry.stmt.clone())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::sync::Arc;
+
+    use super::StmtCache;
+    use crate::queryable::stmt::StmtInner;
+
+    fn stmt(id: u32, query: &Arc<[u8]>) -> Arc<StmtInner> {
+        let mut ok_packet = vec![0u8];
+        ok_packet.extend_from_slice(&id.to_le_bytes());
+        ok_packet.extend_from_slice(&[0; 7]);
+        Arc::new(StmtInner::from_payload(&ok_packet, 1, query.clone()).unwrap())
+    }
+
+    #[test]
+    fn should_drop_query_alias_when_stmt_id_is_reused() {
+        let select: Arc<[u8]> = Arc::from(&b"SELECT a FROM t"[..]);
+        let delete: Arc<[u8]> = Arc::from(&b"DELETE FROM t"[..]);
+        let mut cache = StmtCache::new(10);
+
+        assert!(cache.put(select.clone(), stmt(7, &select)).is_none());
+        assert!(cache.put(delete.clone(), stmt(7, &delete)).is_none());
+
+        assert!(cache.by_query(&*select).is_none());
+        let hit = cache
+            .by_query(&*delete)
+            .expect("reused id must stay cached");
+        assert_eq!(&*hit.stmt.raw_query, &*delete);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn should_keep_query_alias_when_same_query_reuses_stmt_id() {
+        let select: Arc<[u8]> = Arc::from(&b"SELECT a FROM t"[..]);
+        let mut cache = StmtCache::new(10);
+
+        cache.put(select.clone(), stmt(7, &select));
+        cache.put(select.clone(), stmt(7, &select));
+
+        assert!(cache.by_query(&*select).is_some());
+        assert_eq!(cache.len(), 1);
     }
 }
