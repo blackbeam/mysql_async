@@ -116,6 +116,11 @@ impl Waitlist {
         }
     }
 
+    /// Returns the number of queued waiters plus popped waiters that have not polled again.
+    pub(crate) fn demand(&self) -> usize {
+        self.queue.len() + self.woken.len()
+    }
+
     pub(crate) fn peek_id(&mut self) -> Option<QueueId> {
         self.queue.peek().map(|(qw, _)| qw.queue_id)
     }

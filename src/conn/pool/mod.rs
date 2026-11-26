@@ -726,6 +726,48 @@ mod test {
         Ok(())
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn should_reuse_connections_while_saturated() -> super::Result<()> {
+        const MAX: usize = 10;
+        const TASKS: usize = 50;
+        const ITERATIONS: usize = 100;
+
+        // The default `inactive_connection_ttl` of zero makes the active bound equal `min`.
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, MAX).unwrap());
+        let opts = crate::Opts::from(get_opts().pool_opts(pool_opts));
+        let compressed = opts.compression().is_some();
+        let pool = Pool::new(opts);
+        let server_version = pool.get_conn().await?.server_version();
+        let ids = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+
+        let tasks = (0..TASKS).map(|_| {
+            let (pool, ids) = (pool.clone(), ids.clone());
+            tokio::spawn(async move {
+                for _ in 0..ITERATIONS {
+                    let mut conn = pool.get_conn().await?;
+                    conn.query_drop("DO 1").await?;
+                    ids.lock().unwrap().insert(conn.id());
+                }
+                super::Result::Ok(())
+            })
+        });
+        for result in join_all(tasks).await {
+            result.unwrap()?;
+        }
+        pool.disconnect().await?;
+
+        let distinct = ids.lock().unwrap().len();
+        // Without COM_RESET_CONNECTION (MySQL < 5.7.3) the pool resets connections with
+        // COM_CHANGE_USER, and with compression on some of those resets fail with
+        // "Couldn't uncompress communication packet". The pool then replaces the connection.
+        assert!(
+            distinct <= 2 * MAX || (compressed && server_version < (5, 7, 3)),
+            "{distinct} connections opened for {} checkouts",
+            TASKS * ITERATIONS
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     #[ignore]
     async fn can_handle_the_pressure() {
