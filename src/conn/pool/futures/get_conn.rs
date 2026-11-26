@@ -172,3 +172,66 @@ impl Drop for GetConnState {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::{
+        pin::pin,
+        sync::atomic::Ordering,
+        task::{Context, Poll, Waker},
+        time::Duration,
+    };
+
+    use futures_util::Future;
+    use tokio::time::timeout;
+
+    use super::{GetConnInner, GetConnState};
+    use crate::{
+        conn::pool::waitlist::QueueId, test_misc::get_opts, Conn, DriverError, Error, Opts, Pool,
+        PoolConstraints, PoolOpts,
+    };
+
+    #[tokio::test]
+    async fn pool_waitlist_disconnect_rejects_connecting_ready_connection() {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let opts = Opts::from(get_opts().pool_opts(pool_opts));
+        let pool = Pool::new(opts.clone());
+        let inner = pool.inner.clone();
+
+        // Simulate an in-flight `Connecting` acquisition holding the single slot.
+        {
+            let mut exchange = inner.exchange.lock().unwrap();
+            exchange.exist = 1;
+            pool.metrics().connection_count.store(1, Ordering::Relaxed);
+        }
+
+        let mut state = GetConnState {
+            queue_id: QueueId::next(),
+            pool: Some(pool.clone()),
+            inner: GetConnInner::Done,
+        };
+
+        // Start shutdown while the connection is still establishing.
+        let mut disconnect = pin!(pool.disconnect());
+        let noop_waker = Waker::noop();
+        let mut cx = Context::from_waker(noop_waker);
+        assert!(matches!(disconnect.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(inner.close.load(Ordering::Acquire));
+
+        // Deliver the established connection after shutdown started. It must be rejected
+        // and sent to the recycler so shutdown completes.
+        let mut conn = Conn::empty(opts);
+        conn.inner.disconnected = true;
+        assert!(matches!(
+            state.ready_connection(conn),
+            Err(Error::Driver(DriverError::PoolDisconnected))
+        ));
+        assert_eq!(inner.metrics.connections_in_use.load(Ordering::Relaxed), 0);
+
+        timeout(Duration::from_millis(100), disconnect)
+            .await
+            .expect("Pool::disconnect did not finish after rejecting an in-flight connection")
+            .unwrap();
+        assert!(inner.closed.load(Ordering::Acquire));
+    }
+}

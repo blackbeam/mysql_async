@@ -532,8 +532,8 @@ mod test {
         future::Future,
         pin::pin,
         sync::{Arc, OnceLock},
-        task::{Context, Poll},
-        time::Duration,
+        task::{Context, Poll, Waker},
+        time::{Duration, Instant},
     };
 
     use crate::{
@@ -1345,6 +1345,842 @@ mod test {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn pool_waitlist_woken_waiter_claims_returned_conn() {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let opts = crate::Opts::from(get_opts().pool_opts(pool_opts));
+        let mut pool = Pool::new(opts.clone());
+
+        // Occupy the single connection slot so `poll_new_conn` queues the waiter.
+        ex_field!(pool, exist) = 1;
+        let q1 = super::QueueId::next();
+
+        let woken = Arc::new(OnceLock::new());
+        let woken_clone = woken.clone();
+        let waker = waker_fn(move || {
+            let _ = woken_clone.set(());
+        });
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(pool.poll_new_conn(&mut cx, q1), Poll::Pending));
+        assert_eq!(ex_field!(pool, waiting).len(), 1);
+        assert_eq!(
+            pool.metrics()
+                .active_wait_requests
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
+        // Return an idle connection and wake the queued waiter.
+        let popped_waker = {
+            let mut conn = crate::Conn::empty(opts);
+            conn.inner.disconnected = true;
+            let mut exchange = pool.inner.exchange.lock().unwrap();
+            exchange.available.push_back(conn.into());
+            exchange.waiting.pop_waker()
+        };
+        popped_waker
+            .expect("expected the queued waiter to be popped")
+            .wake();
+        assert!(woken.get().is_some());
+
+        // On the next poll, `q1` claims the idle connection.
+        let checking = pool.poll_new_conn(&mut cx, q1);
+        assert!(matches!(
+            checking,
+            Poll::Ready(Ok(super::futures::GetConnInner::Checking(_)))
+        ));
+        assert_eq!(ex_field!(pool, available).len(), 0);
+        assert_eq!(ex_field!(pool, waiting).len(), 0);
+        assert_eq!(ex_field!(pool, exist), 1);
+
+        // Dropping the checking future releases the connection slot.
+        drop(checking);
+        assert_eq!(ex_field!(pool, exist), 0);
+        assert_eq!(
+            pool.metrics()
+                .active_wait_requests
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_waitlist_queued_waiter_does_not_steal_woken_waiters_connection() {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let opts = crate::Opts::from(get_opts().pool_opts(pool_opts));
+        let mut pool = Pool::new(opts.clone());
+
+        // Occupy the single connection slot so `q1` and `q2` both enqueue.
+        ex_field!(pool, exist) = 1;
+        let q1 = super::QueueId::next();
+        let q2 = super::QueueId::next();
+
+        let noop_waker = Waker::noop();
+        let mut cx = Context::from_waker(noop_waker);
+
+        assert!(matches!(pool.poll_new_conn(&mut cx, q1), Poll::Pending));
+        assert!(matches!(pool.poll_new_conn(&mut cx, q2), Poll::Pending));
+        assert_eq!(ex_field!(pool, waiting).len(), 2);
+
+        // Return an idle connection and pop `q1`. `q2` remains at the head of `waiting`.
+        let popped_waker = {
+            let mut conn = crate::Conn::empty(opts);
+            conn.inner.disconnected = true;
+            let mut exchange = pool.inner.exchange.lock().unwrap();
+            exchange.available.push_back(conn.into());
+            exchange.waiting.pop_waker()
+        };
+        assert!(popped_waker.is_some());
+        assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+        // Poll the still-queued waiter `q2` before `q1`. `q2` must not take the connection.
+        assert!(matches!(pool.poll_new_conn(&mut cx, q2), Poll::Pending));
+        assert_eq!(ex_field!(pool, available).len(), 1);
+        assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+        // Poll `q1`. `q1` has higher priority than `q2` and takes the connection.
+        let checking = pool.poll_new_conn(&mut cx, q1);
+        assert!(matches!(
+            checking,
+            Poll::Ready(Ok(super::futures::GetConnInner::Checking(_)))
+        ));
+        assert_eq!(ex_field!(pool, available).len(), 0);
+        assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+        // Drop `checking` to release the slot and pop `q2`.
+        drop(checking);
+        assert_eq!(ex_field!(pool, exist), 0);
+        assert_eq!(ex_field!(pool, waiting).len(), 0);
+        pool.unqueue(q2);
+    }
+
+    #[tokio::test]
+    async fn pool_waitlist_wakes_next_waiter_when_woken_waiter_cancels() {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let pool = Pool::new(get_opts().pool_opts(pool_opts));
+
+        // Occupy the single connection slot so both callers enqueue in `exchange.waiting`.
+        ex_field!(pool, exist) = 1;
+
+        let noop_waker = Waker::noop();
+        let mut cx1 = Context::from_waker(noop_waker);
+
+        let fut2_woken = Arc::new(OnceLock::new());
+        let fut2_woken_clone = fut2_woken.clone();
+        let waker2 = waker_fn(move || {
+            let _ = fut2_woken_clone.set(());
+        });
+        let mut cx2 = Context::from_waker(&waker2);
+
+        {
+            let mut fut1 = Box::pin(pool.get_conn());
+            assert!(matches!(fut1.as_mut().poll(&mut cx1), Poll::Pending));
+
+            let mut fut2 = pin!(pool.get_conn());
+            assert!(matches!(fut2.as_mut().poll(&mut cx2), Poll::Pending));
+            assert_eq!(ex_field!(pool, waiting).len(), 2);
+
+            // Release the slot. This pops `fut1` from `waiting` and leaves `fut2` queued.
+            pool.release_connection_slot();
+            assert_eq!(ex_field!(pool, exist), 0);
+            assert_eq!(ex_field!(pool, waiting).len(), 1);
+            assert!(fut2_woken.get().is_none());
+
+            // Drop `fut1` before its next poll. `unqueue` must wake `fut2`.
+            drop(fut1);
+            assert!(
+                fut2_woken.get().is_some(),
+                "cancelling a woken waiter failed to wake the next waiter"
+            );
+            assert_eq!(ex_field!(pool, waiting).len(), 0);
+        }
+
+        assert_eq!(
+            pool.metrics()
+                .active_wait_requests
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_waitlist_cancelling_queued_waiter_does_not_wake_others() {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let opts = crate::Opts::from(get_opts().pool_opts(pool_opts));
+        let pool = Pool::new(opts.clone());
+
+        // Occupy the single connection slot so `fut1`, `fut2`, and `fut3` all enqueue.
+        ex_field!(pool, exist) = 1;
+
+        let noop_waker = Waker::noop();
+        let mut cx1 = Context::from_waker(noop_waker);
+        let mut cx3 = Context::from_waker(noop_waker);
+
+        let fut2_woken = Arc::new(OnceLock::new());
+        let fut2_woken_clone = fut2_woken.clone();
+        let waker2 = waker_fn(move || {
+            let _ = fut2_woken_clone.set(());
+        });
+        let mut cx2 = Context::from_waker(&waker2);
+
+        {
+            let mut fut1 = pin!(pool.get_conn());
+            assert!(matches!(fut1.as_mut().poll(&mut cx1), Poll::Pending));
+
+            let mut fut2 = pin!(pool.get_conn());
+            assert!(matches!(fut2.as_mut().poll(&mut cx2), Poll::Pending));
+
+            let mut fut3 = Box::pin(pool.get_conn());
+            assert!(matches!(fut3.as_mut().poll(&mut cx3), Poll::Pending));
+            assert_eq!(ex_field!(pool, waiting).len(), 3);
+
+            // Return an idle connection and pop `fut1`. `fut2` and `fut3` remain queued.
+            let popped_waker = {
+                let mut conn = crate::Conn::empty(opts);
+                conn.inner.disconnected = true;
+                let mut exchange = pool.inner.exchange.lock().unwrap();
+                exchange.available.push_back(conn.into());
+                exchange.waiting.pop_waker()
+            };
+            assert!(popped_waker.is_some());
+            assert_eq!(ex_field!(pool, waiting).len(), 2);
+
+            // Drop `fut3` while it is still queued. `fut2` must remain asleep because `fut1`
+            // already covers the available connection.
+            drop(fut3);
+            assert!(
+                fut2_woken.get().is_none(),
+                "cancelling a still-queued waiter must not wake another waiter"
+            );
+            assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+            // Clear synthetic test state before `fut1` and `fut2` drop.
+            let mut exchange = pool.inner.exchange.lock().unwrap();
+            let _ = exchange.available.pop_back();
+            exchange.exist = 0;
+        }
+
+        assert_eq!(
+            pool.metrics()
+                .active_wait_requests
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_waitlist_cancelling_old_wakeup_does_not_wake_younger_waiter() {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let opts = crate::Opts::from(get_opts().pool_opts(pool_opts));
+        let mut pool = Pool::new(opts.clone());
+
+        // Occupy the single connection slot so waiter A enqueues.
+        ex_field!(pool, exist) = 1;
+
+        let noop_waker = Waker::noop();
+        let mut cx_a = Context::from_waker(noop_waker);
+        let mut cx_b = Context::from_waker(noop_waker);
+        let mut cx_x = Context::from_waker(noop_waker);
+
+        let c_woken = Arc::new(OnceLock::new());
+        let c_woken_clone = c_woken.clone();
+        let waker_c = waker_fn(move || {
+            let _ = c_woken_clone.set(());
+        });
+        let mut cx_c = Context::from_waker(&waker_c);
+
+        {
+            let mut fut_a = Box::pin(pool.get_conn());
+            assert!(matches!(fut_a.as_mut().poll(&mut cx_a), Poll::Pending));
+            assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+            // Return a connection and pop A. The queue is now empty while A has not polled yet.
+            {
+                let mut conn = crate::Conn::empty(opts.clone());
+                conn.inner.disconnected = true;
+                let mut exchange = pool.inner.exchange.lock().unwrap();
+                exchange.available.push_back(conn.into());
+                assert!(exchange.waiting.pop_waker().is_some());
+            }
+
+            // A newcomer X checks out the connection before A runs.
+            let q_x = super::QueueId::next();
+            let x_checking = pool.poll_new_conn(&mut cx_x, q_x);
+            assert!(matches!(
+                x_checking,
+                Poll::Ready(Ok(super::futures::GetConnInner::Checking(_)))
+            ));
+            assert_eq!(ex_field!(pool, available).len(), 0);
+
+            // Waiters B and C enqueue in order while X holds the connection.
+            let mut fut_b = Box::pin(pool.get_conn());
+            assert!(matches!(fut_b.as_mut().poll(&mut cx_b), Poll::Pending));
+            let mut fut_c = pin!(pool.get_conn());
+            assert!(matches!(fut_c.as_mut().poll(&mut cx_c), Poll::Pending));
+            assert_eq!(ex_field!(pool, waiting).len(), 2);
+
+            // Return the connection and pop B. C remains queued.
+            {
+                let mut conn = crate::Conn::empty(opts);
+                conn.inner.disconnected = true;
+                let mut exchange = pool.inner.exchange.lock().unwrap();
+                exchange.available.push_back(conn.into());
+                assert!(exchange.waiting.pop_waker().is_some());
+            }
+            assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+            // Cancel A. B already covers the available connection, so C must remain queued.
+            drop(fut_a);
+            assert!(
+                c_woken.get().is_none(),
+                "cancelling an older unused wakeup must not wake C while B is woken"
+            );
+            assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+            // Cancel B as well. Now no woken waiter covers the connection, so C must wake.
+            drop(fut_b);
+            assert!(
+                c_woken.get().is_some(),
+                "cancelling B when no other woken waiter remains must wake C"
+            );
+            assert_eq!(ex_field!(pool, waiting).len(), 0);
+
+            // Clear synthetic test state before `x_checking` and `fut_c` drop.
+            let mut exchange = pool.inner.exchange.lock().unwrap();
+            let _ = exchange.available.pop_back();
+            drop(exchange);
+            drop(x_checking);
+        }
+
+        assert_eq!(ex_field!(pool, exist), 0);
+        assert_eq!(
+            pool.metrics()
+                .active_wait_requests
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_waitlist_cancelling_head_with_lower_priority_woken_wakes_next_head() {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let opts = crate::Opts::from(get_opts().pool_opts(pool_opts));
+        let mut pool = Pool::new(opts.clone());
+
+        // Occupy the single connection slot so A, B, and C all enqueue in priority order.
+        ex_field!(pool, exist) = 1;
+
+        let noop_waker = Waker::noop();
+        let mut cx_a = Context::from_waker(noop_waker);
+        let mut cx_c = Context::from_waker(noop_waker);
+
+        let b_woken = Arc::new(OnceLock::new());
+        let b_woken_clone = b_woken.clone();
+        let waker_b = waker_fn(move || {
+            let _ = b_woken_clone.set(());
+        });
+        let mut cx_b = Context::from_waker(&waker_b);
+
+        let q_a = super::QueueId::next();
+        let q_b = super::QueueId::next();
+        let q_c = super::QueueId::next();
+
+        assert!(matches!(pool.poll_new_conn(&mut cx_a, q_a), Poll::Pending));
+        assert!(matches!(pool.poll_new_conn(&mut cx_b, q_b), Poll::Pending));
+        assert!(matches!(pool.poll_new_conn(&mut cx_c, q_c), Poll::Pending));
+        assert_eq!(ex_field!(pool, waiting).len(), 3);
+
+        // Pop A, B, and C into `woken` while another caller still holds the slot.
+        {
+            let mut exchange = pool.inner.exchange.lock().unwrap();
+            assert!(exchange.waiting.pop_waker().is_some());
+            assert!(exchange.waiting.pop_waker().is_some());
+            assert!(exchange.waiting.pop_waker().is_some());
+        }
+        assert_eq!(ex_field!(pool, waiting).len(), 0);
+
+        // Poll A and B while `exist == 1` and `available == 0`. Both requeue in order [A, B],
+        // leaving only the younger waiter C with an outstanding wakeup in `woken`.
+        assert!(matches!(pool.poll_new_conn(&mut cx_a, q_a), Poll::Pending));
+        assert!(matches!(pool.poll_new_conn(&mut cx_b, q_b), Poll::Pending));
+        assert_eq!(ex_field!(pool, waiting).len(), 2);
+
+        // Return an idle connection and pop A. `waiting` is [B] and `woken` is {A, C}.
+        {
+            let mut conn = crate::Conn::empty(opts.clone());
+            conn.inner.disconnected = true;
+            let mut exchange = pool.inner.exchange.lock().unwrap();
+            exchange.available.push_back(conn.into());
+            assert!(exchange.waiting.pop_waker().is_some());
+        }
+        assert_eq!(ex_field!(pool, waiting).len(), 1);
+        assert!(b_woken.get().is_none());
+
+        // Cancel A. C ranks behind B, so C cannot claim the connection. `unqueue` must wake B.
+        pool.unqueue(q_a);
+        assert!(
+            b_woken.get().is_some(),
+            "cancelling A while only lower-priority C was woken failed to wake B"
+        );
+        assert_eq!(ex_field!(pool, waiting).len(), 0);
+
+        // Poll B. B claims the idle connection while C remains parked when polled next.
+        let b_checking = pool.poll_new_conn(&mut cx_b, q_b);
+        assert!(matches!(
+            b_checking,
+            Poll::Ready(Ok(super::futures::GetConnInner::Checking(_)))
+        ));
+        assert_eq!(ex_field!(pool, available).len(), 0);
+        assert_eq!(ex_field!(pool, exist), 1);
+
+        assert!(matches!(pool.poll_new_conn(&mut cx_c, q_c), Poll::Pending));
+        assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+        // Drop B's checking future to release the slot and pop C.
+        drop(b_checking);
+        assert_eq!(ex_field!(pool, exist), 0);
+        assert_eq!(ex_field!(pool, waiting).len(), 0);
+        pool.unqueue(q_c);
+
+        // Also verify lower-priority requeue handoff in `poll_new_conn` directly:
+        // if C is popped while B sits at the head and an idle connection is available,
+        // polling C requeues C behind B and wakes B.
+        ex_field!(pool, exist) = 1;
+        let q_b2 = super::QueueId::next();
+        let q_c2 = super::QueueId::next();
+        let b2_woken = Arc::new(OnceLock::new());
+        let b2_woken_clone = b2_woken.clone();
+        let waker_b2 = waker_fn(move || {
+            let _ = b2_woken_clone.set(());
+        });
+        let mut cx_b2 = Context::from_waker(&waker_b2);
+
+        assert!(matches!(pool.poll_new_conn(&mut cx_c, q_c2), Poll::Pending));
+        {
+            let mut exchange = pool.inner.exchange.lock().unwrap();
+            assert!(exchange.waiting.pop_waker().is_some());
+        }
+        assert!(matches!(
+            pool.poll_new_conn(&mut cx_b2, q_b2),
+            Poll::Pending
+        ));
+        {
+            let mut conn = crate::Conn::empty(opts);
+            conn.inner.disconnected = true;
+            let mut exchange = pool.inner.exchange.lock().unwrap();
+            exchange.available.push_back(conn.into());
+        }
+        assert!(matches!(pool.poll_new_conn(&mut cx_c, q_c2), Poll::Pending));
+        assert!(
+            b2_woken.get().is_some(),
+            "requeueing a lower-priority woken waiter did not wake the eligible head"
+        );
+        assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+        let checking = pool.poll_new_conn(&mut cx_b2, q_b2);
+        assert!(matches!(
+            checking,
+            Poll::Ready(Ok(super::futures::GetConnInner::Checking(_)))
+        ));
+        drop(checking);
+        pool.unqueue(q_c2);
+        assert_eq!(ex_field!(pool, exist), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pool_waitlist_cancelling_checking_closes_socket_before_releasing_slot() {
+        use std::{io::Read, os::unix::net::UnixListener};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("checking.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let client_stream = crate::io::Stream::connect_socket(&socket_path)
+            .await
+            .unwrap();
+        let (mut server_stream, _) = listener.accept().unwrap();
+        server_stream.set_nonblocking(true).unwrap();
+
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let opts = crate::Opts::from(
+            crate::OptsBuilder::default()
+                .socket(Some(socket_path.to_string_lossy().into_owned()))
+                .pool_opts(pool_opts),
+        );
+        let mut pool = Pool::new(opts.clone());
+
+        // Place the real Unix-socket connection into `available` occupying the single slot.
+        {
+            let mut conn = crate::Conn::empty(opts);
+            conn.inner.stream = Some(client_stream);
+            let mut exchange = pool.inner.exchange.lock().unwrap();
+            exchange.exist = 1;
+            pool.metrics()
+                .connection_count
+                .store(1, std::sync::atomic::Ordering::Relaxed);
+            exchange.available.push_back(conn.into());
+        }
+
+        let noop_waker = Waker::noop();
+        let mut cx1 = Context::from_waker(noop_waker);
+        let q1 = super::QueueId::next();
+
+        // Take the idle connection into `GetConnInner::Checking`.
+        let checking = pool.poll_new_conn(&mut cx1, q1);
+        assert!(matches!(
+            checking,
+            Poll::Ready(Ok(super::futures::GetConnInner::Checking(_)))
+        ));
+        assert_eq!(ex_field!(pool, available).len(), 0);
+        assert_eq!(ex_field!(pool, exist), 1);
+
+        // Verify the peer socket is still open while `checking` is alive.
+        let mut buf = [0_u8; 1];
+        assert_eq!(
+            server_stream.read(&mut buf).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+
+        let woken = Arc::new(OnceLock::new());
+        let woken_clone = woken.clone();
+        let waker2 = waker_fn(move || {
+            let _ = woken_clone.set(());
+        });
+        let mut cx2 = Context::from_waker(&waker2);
+
+        let mut fut2 = Box::pin(pool.get_conn());
+        assert!(matches!(fut2.as_mut().poll(&mut cx2), Poll::Pending));
+        assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+        // Drop `checking`. It must close the socket synchronously before releasing the slot.
+        drop(checking);
+
+        assert!(
+            woken.get().is_some(),
+            "dropping a checking future did not wake the next waiter"
+        );
+        assert_eq!(ex_field!(pool, exist), 0);
+        assert_eq!(ex_field!(pool, waiting).len(), 0);
+        assert_eq!(
+            pool.metrics()
+                .connection_count
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            pool.metrics()
+                .create_failed
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+
+        // Before yielding to any spawned cleanup task, start the replacement checkout and verify
+        // via direct OS `read` that the original socket already observed EOF.
+        assert!(matches!(fut2.as_mut().poll(&mut cx2), Poll::Pending));
+        assert_eq!(ex_field!(pool, exist), 1);
+        assert_eq!(
+            server_stream
+                .read(&mut buf)
+                .expect("original socket was still open when replacement checkout started"),
+            0,
+            "expected immediate EOF on the cancelled Checking socket before yielding"
+        );
+
+        drop(fut2);
+        assert_eq!(ex_field!(pool, exist), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pool_waitlist_cancelling_connecting_closes_socket_before_releasing_slot() {
+        use std::{
+            io::{Read, Write},
+            os::unix::net::UnixListener,
+            sync::atomic::{AtomicBool, Ordering},
+        };
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("connecting.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let opts = crate::Opts::from(
+            crate::OptsBuilder::default()
+                .socket(Some(socket_path.to_string_lossy().into_owned()))
+                .pool_opts(pool_opts),
+        );
+        let pool = Pool::new(opts);
+
+        let fut1_woken = Arc::new(AtomicBool::new(false));
+        let fut1_woken_clone = fut1_woken.clone();
+        let waker1 = waker_fn(move || {
+            fut1_woken_clone.store(true, Ordering::Release);
+        });
+        let mut cx1 = Context::from_waker(&waker1);
+
+        // Start `fut1` so it connects to the Unix listener.
+        let mut fut1 = Box::pin(pool.get_conn());
+        assert!(matches!(fut1.as_mut().poll(&mut cx1), Poll::Pending));
+        assert_eq!(ex_field!(pool, exist), 1);
+
+        let (mut server_stream, _) = timeout(Duration::from_millis(100), async {
+            loop {
+                match listener.accept() {
+                    Ok(pair) => break pair,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        tokio::task::yield_now().await;
+                    }
+                    Err(err) => panic!("unexpected accept error: {err}"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for Connecting future to connect");
+        server_stream.set_nonblocking(true).unwrap();
+
+        // Drive `fut1` past `Stream::connect_socket` into `handle_handshake().await`.
+        // Write 1 byte of the 4-byte packet header so `waker1` fires only once the driver
+        // has stored `conn.inner.stream` and registered its greeting read.
+        fut1_woken.store(false, Ordering::Release);
+        assert!(matches!(fut1.as_mut().poll(&mut cx1), Poll::Pending));
+        server_stream.write_all(&[0x00]).unwrap();
+        timeout(Duration::from_millis(100), async {
+            while !fut1_woken.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for Connecting future to read the partial greeting");
+        assert!(matches!(fut1.as_mut().poll(&mut cx1), Poll::Pending));
+
+        let mut buf = [0_u8; 1];
+        assert_eq!(
+            server_stream.read(&mut buf).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+
+        let woken = Arc::new(OnceLock::new());
+        let woken_clone = woken.clone();
+        let waker2 = waker_fn(move || {
+            let _ = woken_clone.set(());
+        });
+        let mut cx2 = Context::from_waker(&waker2);
+
+        let mut fut2 = Box::pin(pool.get_conn());
+        assert!(matches!(fut2.as_mut().poll(&mut cx2), Poll::Pending));
+        assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+        // Drop `fut1` while waiting for the greeting. It must close its socket synchronously
+        // before releasing the slot to `fut2`.
+        drop(fut1);
+
+        assert!(
+            woken.get().is_some(),
+            "dropping a connecting future did not wake the next waiter"
+        );
+        assert_eq!(ex_field!(pool, exist), 0);
+        assert_eq!(ex_field!(pool, waiting).len(), 0);
+        assert_eq!(
+            pool.metrics()
+                .create_failed
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
+        // Before yielding to any spawned task, start the replacement checkout and verify via
+        // direct OS `read` that the original peer socket already observed EOF.
+        assert!(matches!(fut2.as_mut().poll(&mut cx2), Poll::Pending));
+        assert_eq!(ex_field!(pool, exist), 1);
+        assert_eq!(
+            server_stream
+                .read(&mut buf)
+                .expect("original connecting socket was still open when replacement started"),
+            0,
+            "expected immediate EOF on the cancelled Connecting socket before yielding"
+        );
+
+        drop(fut2);
+        assert_eq!(ex_field!(pool, exist), 0);
+    }
+
+    #[tokio::test]
+    async fn pool_waitlist_wakes_waiter_when_ttl_check_frees_slot() {
+        let pool_opts = PoolOpts::new()
+            .with_constraints(PoolConstraints::new(0, 1).unwrap())
+            .with_abs_conn_ttl(Some(Duration::from_millis(1)));
+        let opts = crate::Opts::from(get_opts().pool_opts(pool_opts.clone()));
+        let pool = Pool::new(opts.clone());
+
+        // Record a deadline and wait briefly so the deadline is strictly in the past without
+        // subtracting from `Instant::now()`.
+        let expired_deadline = Instant::now();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+
+        // Place an expired idle connection into `available` to occupy the single slot.
+        {
+            let mut conn = crate::Conn::empty(opts);
+            conn.inner.disconnected = true;
+            conn.inner.ttl_deadline = Some(expired_deadline);
+            let mut exchange = pool.inner.exchange.lock().unwrap();
+            exchange.exist = 1;
+            exchange.available.push_back(conn.into());
+        }
+
+        // `check_ttl` removes the expired connection from `available` and spawns a task that
+        // disconnects it and releases the slot.
+        let ttl_check =
+            super::ttl_check_inerval::TtlCheckInterval::new(pool_opts, pool.inner.clone());
+        ttl_check.check_ttl();
+        assert_eq!(ex_field!(pool, available).len(), 0);
+        assert_eq!(ex_field!(pool, exist), 1);
+
+        let woken = Arc::new(OnceLock::new());
+        let woken_clone = woken.clone();
+        let waker = waker_fn(move || {
+            let _ = woken_clone.set(());
+        });
+        let mut cx = Context::from_waker(&waker);
+
+        let mut fut = pin!(pool.get_conn());
+        assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Pending));
+        assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+        // Wait for the spawned TTL task to release the slot and wake `fut`.
+        timeout(Duration::from_millis(100), async {
+            while woken.get().is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("TTL slot release did not wake the waiting get_conn caller");
+
+        assert_eq!(ex_field!(pool, exist), 0);
+        assert_eq!(ex_field!(pool, waiting).len(), 0);
+    }
+
+    #[tokio::test]
+    async fn pool_waitlist_disconnect_completes_when_external_release_frees_last_slot() {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let pool = Pool::new(get_opts().pool_opts(pool_opts));
+        let inner = pool.inner.clone();
+
+        // Simulate an in-progress TTL disconnect or cancelled acquisition owning the last slot.
+        ex_field!(pool, exist) = 1;
+
+        let mut disconnect = pin!(pool.disconnect());
+        let noop_waker = Waker::noop();
+        let mut cx = Context::from_waker(noop_waker);
+
+        // Start shutdown and let the recycler process the close signal while `exist == 1`.
+        assert!(matches!(disconnect.as_mut().poll(&mut cx), Poll::Pending));
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!inner.closed.load(std::sync::atomic::Ordering::Acquire));
+
+        // Release the last slot externally. This must wake the recycler so `disconnect` completes.
+        inner.release_connection_slot();
+
+        timeout(Duration::from_millis(100), disconnect)
+            .await
+            .expect("Pool::disconnect hung after external release of the last slot")
+            .unwrap();
+        assert!(inner.closed.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn pool_waitlist_drop_pool_during_ttl_cleanup_does_not_panic_recycler() {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let pool = Pool::new(get_opts().pool_opts(pool_opts));
+        let inner = pool.inner.clone();
+
+        // Spawn the recycler and hold `exist = 1` as if a TTL disconnect task owns the connection.
+        {
+            let mut exchange = inner.exchange.lock().unwrap();
+            exchange.spawn_futures_if_needed(&inner);
+            exchange.exist = 1;
+        }
+
+        // Drop the last `Pool` handle so the recycler receives channel EOF while `exist == 1`.
+        drop(pool);
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !inner.closed.load(std::sync::atomic::Ordering::Acquire),
+            "recycler must wait for outstanding TTL slots before exiting"
+        );
+
+        // Finish the TTL release. The recycler must wake and exit cleanly without panicking.
+        inner.release_connection_slot();
+        timeout(Duration::from_millis(100), async {
+            while !inner.closed.load(std::sync::atomic::Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("recycler did not exit after TTL released the last slot");
+    }
+
+    #[tokio::test]
+    async fn pool_waitlist_disconnect_wakes_parked_waiters() {
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 1).unwrap());
+        let pool = Pool::new(get_opts().pool_opts(pool_opts));
+        let inner = pool.inner.clone();
+
+        // Occupy the single connection slot so `fut1` parks in `exchange.waiting`.
+        ex_field!(pool, exist) = 1;
+
+        let woken = Arc::new(OnceLock::new());
+        let woken_clone = woken.clone();
+        let waker = waker_fn(move || {
+            let _ = woken_clone.set(());
+        });
+        let mut cx = Context::from_waker(&waker);
+
+        let mut fut1 = pin!(pool.get_conn());
+        assert!(matches!(fut1.as_mut().poll(&mut cx), Poll::Pending));
+        assert_eq!(ex_field!(pool, waiting).len(), 1);
+
+        // Start shutdown while `exist == 1`. `disconnect` must wake `fut1` immediately.
+        let mut disconnect = pin!(pool.disconnect());
+        let noop_waker = Waker::noop();
+        let mut disc_cx = Context::from_waker(noop_waker);
+        assert!(matches!(
+            disconnect.as_mut().poll(&mut disc_cx),
+            Poll::Pending
+        ));
+        assert!(
+            woken.get().is_some(),
+            "starting Pool::disconnect did not wake already-parked waiters"
+        );
+
+        // Polling `fut1` after wakeup returns `PoolDisconnected` while `exist` is still 1.
+        assert!(matches!(
+            fut1.as_mut().poll(&mut cx),
+            Poll::Ready(Err(crate::Error::Driver(
+                crate::DriverError::PoolDisconnected
+            )))
+        ));
+        assert_eq!(
+            inner
+                .metrics
+                .active_wait_requests
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+
+        // Release the occupied slot so shutdown finishes cleanly.
+        inner.release_connection_slot();
+        timeout(Duration::from_millis(100), disconnect)
+            .await
+            .expect("Pool::disconnect did not finish after releasing the slot")
+            .unwrap();
     }
 
     #[cfg(feature = "nightly")]
