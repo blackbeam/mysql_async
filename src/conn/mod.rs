@@ -1328,6 +1328,21 @@ impl Conn {
         self.inner.last_io.elapsed()
     }
 
+    /// Turns multi-statement support on or off for this connection
+    /// with [`COM_SET_OPTION`][1].
+    ///
+    /// The client always asks for `CLIENT_MULTI_STATEMENTS` in the handshake. With this
+    /// set to `false` the server refuses a query that holds more than one statement.
+    ///
+    /// The server keeps the setting across [`Conn::reset`], so a pooled connection
+    /// keeps it when it goes back to the pool.
+    ///
+    /// [1]: https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_set_option.html
+    pub async fn set_multi_statements(&mut self, enabled: bool) -> Result<()> {
+        self.routine(routines::SetMultiStatementsRoutine(enabled))
+            .await
+    }
+
     /// Executes [`COM_RESET_CONNECTION`][1].
     ///
     /// Returns `false` if command is not supported (requires MySql >5.7.2, MariaDb >10.2.3).
@@ -1997,6 +2012,38 @@ mod test {
             assert_eq!(
                 conn.query_first::<String, _>("SELECT @foo").await?.unwrap(),
                 "foo",
+            );
+        }
+
+        conn.disconnect().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_set_multi_statements() -> super::Result<()> {
+        let mut conn = Conn::new(get_opts()).await?;
+
+        conn.set_multi_statements(false).await?;
+        let err = conn.query_drop("SELECT 1; SELECT 2").await.unwrap_err();
+        assert!(
+            matches!(err, Error::Server(ref e) if e.code == 1064),
+            "{err:?}"
+        );
+        assert_eq!(conn.query_first::<u8, _>("SELECT 3").await?, Some(3));
+
+        conn.set_multi_statements(true).await?;
+        let mut result = conn.query_iter("SELECT 1; SELECT 2").await?;
+        assert_eq!(result.collect::<u8>().await?, vec![1]);
+        assert_eq!(result.collect::<u8>().await?, vec![2]);
+        drop(result);
+
+        // The server keeps the setting across a reset.
+        conn.set_multi_statements(false).await?;
+        if conn.reset().await? {
+            let err = conn.query_drop("SELECT 1; SELECT 2").await.unwrap_err();
+            assert!(
+                matches!(err, Error::Server(ref e) if e.code == 1064),
+                "{err:?}"
             );
         }
 
