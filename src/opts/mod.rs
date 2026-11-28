@@ -671,8 +671,8 @@ pub(crate) struct MysqlOpts {
 
     /// Prefer socket connection (defaults to `true`).
     ///
-    /// Will reconnect via socket (or named pipe on Windows) after TCP connection to `127.0.0.1`
-    /// if `true`.
+    /// Will reconnect via socket (or named pipe on Windows) after TCP connection to a loopback
+    /// address (e.g. `127.0.0.1` or `localhost`) if `true`. Ignored if [`Opts::ssl_opts`] is set.
     ///
     /// Will fall back to TCP on error. Use `socket` option to enforce socket connection.
     ///
@@ -1108,8 +1108,8 @@ impl Opts {
 
     /// Prefer socket connection (defaults to `true` **temporary `false` on Windows platform**).
     ///
-    /// Will reconnect via socket (or named pipe on Windows) after TCP connection to `127.0.0.1`
-    /// if `true`.
+    /// Will reconnect via socket (or named pipe on Windows) after TCP connection to a loopback
+    /// address (e.g. `127.0.0.1` or `localhost`) if `true`. Ignored if [`Opts::ssl_opts`] is set.
     ///
     /// Will fall back to TCP on error. Use `socket` option to enforce socket connection.
     ///

@@ -1146,9 +1146,10 @@ impl Conn {
 
             conn.switch_to_compression()?;
             conn.read_settings().await?;
-            conn.reconnect_via_socket_if_needed().await?;
-            conn.run_init_commands().await?;
-            conn.run_setup_commands().await?;
+            if !conn.reconnect_via_socket_if_needed().await? {
+                conn.run_init_commands().await?;
+                conn.run_setup_commands().await?;
+            }
 
             Ok(conn)
         }
@@ -1163,7 +1164,10 @@ impl Conn {
     /// Will try to reconnect via socket using socket address in `self.inner.socket`.
     ///
     /// Won't try to reconnect if socket connection is already enforced in [`Opts`].
-    async fn reconnect_via_socket_if_needed(&mut self) -> Result<()> {
+    ///
+    /// Returns `true` if the connection was replaced. The replacement has already run the init
+    /// and setup commands.
+    async fn reconnect_via_socket_if_needed(&mut self) -> Result<bool> {
         if let Some(socket) = self.inner.socket.as_ref() {
             let opts = self.inner.opts.clone();
             if opts.socket().is_none() {
@@ -1172,16 +1176,18 @@ impl Conn {
                     let old_conn = std::mem::replace(self, conn);
                     // tidy up the old connection
                     old_conn.close_conn().await?;
+                    return Ok(true);
                 }
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Configures the connection based on server settings. In particular:
     ///
-    /// * It reads and stores socket address inside the connection unless if socket address is
-    ///   already in [`Opts`] or if `prefer_socket` is `false`.
+    /// * It reads and stores socket address inside the connection if `prefer_socket` is `true`,
+    ///   the address is a loopback address and neither a socket address nor SSL options are set
+    ///   in [`Opts`].
     ///
     /// * It reads and stores `max_allowed_packet` in the connection unless it's already in [`Opts`]
     ///
@@ -1266,7 +1272,12 @@ impl Conn {
             },
         ];
 
-        if self.inner.opts.prefer_socket() && self.inner.socket.is_none() {
+        if self.inner.opts.prefer_socket()
+            && self.inner.opts.addr_is_loopback()
+            && self.inner.opts.ssl_opts().is_none()
+            && self.inner.opts.socket().is_none()
+            && self.inner.socket.is_none()
+        {
             actions.push(Action::Load(Cfg::Socket))
         }
 
@@ -1782,6 +1793,81 @@ mod test {
         struct A<T: Sync + Send>(T);
         #[allow(clippy::unnecessary_operation)]
         A(get_opts());
+    }
+
+    /// Options for a server reached at a non-loopback address whose `@@socket` path also exists
+    /// on this host.
+    fn socket_server_opts() -> Option<OptsBuilder> {
+        let Ok(url) = std::env::var("SOCK_DATABASE_URL") else {
+            println!("SOCK_DATABASE_URL is not set, skipping");
+            return None;
+        };
+        Some(OptsBuilder::from_opts(crate::Opts::from_url(&url).unwrap()).prefer_socket(true))
+    }
+
+    async fn global_connections(conn: &mut Conn) -> super::Result<u64> {
+        let row: Option<(String, u64)> =
+            "SHOW GLOBAL STATUS LIKE 'Connections'".first(conn).await?;
+        Ok(row.unwrap().1)
+    }
+
+    /// Connects with `opts` and returns the connection, the number of server connections it
+    /// opened and how many times its init command ran on the final connection.
+    async fn connect_and_count(
+        monitor: &mut Conn,
+        opts: OptsBuilder,
+    ) -> super::Result<(Conn, u64, Option<u64>)> {
+        let before = global_connections(monitor).await?;
+        let mut conn =
+            Conn::new(opts.init(vec!["SET @init_runs = COALESCE(@init_runs, 0) + 1"])).await?;
+        let opened = global_connections(monitor).await? - before;
+        let init_runs = "SELECT @init_runs".first(&mut conn).await?;
+        Ok((conn, opened, init_runs))
+    }
+
+    #[tokio::test]
+    async fn should_reconnect_via_socket_only_for_loopback_address() -> super::Result<()> {
+        let Some(opts) = socket_server_opts() else {
+            return Ok(());
+        };
+        let mut monitor = Conn::new(opts.clone().prefer_socket(false)).await?;
+
+        let (conn, opened, init_runs) = connect_and_count(&mut monitor, opts.clone()).await?;
+        assert!(!conn.is_socket());
+        assert_eq!((opened, init_runs), (1, Some(1)));
+        conn.disconnect().await?;
+
+        let loopback = opts.ip_or_hostname("127.0.0.1");
+        let (conn, opened, init_runs) = connect_and_count(&mut monitor, loopback).await?;
+        assert!(conn.is_socket());
+        assert_eq!((opened, init_runs), (2, Some(1)));
+        conn.disconnect().await?;
+
+        monitor.disconnect().await
+    }
+
+    #[cfg(any(feature = "native-tls-tls", feature = "rustls-tls"))]
+    #[tokio::test]
+    async fn should_not_reconnect_via_socket_when_ssl_is_configured() -> super::Result<()> {
+        let Some(opts) = socket_server_opts() else {
+            return Ok(());
+        };
+        let Ok(ca) = std::env::var("TLS_CA_PEM") else {
+            println!("TLS_CA_PEM is not set, skipping");
+            return Ok(());
+        };
+        let mut monitor = Conn::new(opts.clone().prefer_socket(false)).await?;
+
+        let ssl_opts = crate::SslOpts::default()
+            .with_root_certs(vec![std::path::PathBuf::from(ca).into()])
+            .with_danger_tls_hostname_override(Some("db.example.internal"));
+        let loopback = opts.ip_or_hostname("127.0.0.1").ssl_opts(ssl_opts);
+        let (conn, opened, init_runs) = connect_and_count(&mut monitor, loopback).await?;
+        assert!(conn.is_secure());
+        assert_eq!((opened, init_runs), (1, Some(1)));
+        conn.disconnect().await?;
+
+        monitor.disconnect().await
     }
 
     #[tokio::test]
