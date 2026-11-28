@@ -19,13 +19,13 @@ use mysql_common::{
 
 use std::{
     future::Future,
-    io::{Cursor, ErrorKind},
+    io::Cursor,
     pin::Pin,
     task::{Context, Poll},
 };
 
 use crate::{connection_like::ConnectionInner, queryable::Queryable};
-use crate::{error::DriverError, io::ReadPacket, Conn, Error, IoError, Result};
+use crate::{error::DriverError, io::ReadPacket, Conn, Result};
 
 use self::request::BinlogStreamRequest;
 
@@ -50,6 +50,9 @@ impl super::Conn {
         com_register_slave: ComRegisterSlave<'_>,
     ) -> crate::Result<()> {
         self.query_drop("SET @master_binlog_checksum='ALL'").await?;
+        // From here on the connection can only serve the binlog stream, so it must never be
+        // reused, e.g. by returning to a pool when the stream is dropped.
+        self.inner.disconnected = true;
         self.write_command(&com_register_slave).await?;
 
         // Server will respond with OK.
@@ -95,15 +98,14 @@ impl BinlogStream {
     /// pool (if any) will regain a connection slot.
     pub async fn close(self) -> Result<()> {
         match self.read_packet.conn.inner {
-            // `close_conn` requires ownership of `Conn`. That's okay, because
-            // `BinLogStream`'s connection is always owned.
-            ConnectionInner::Conn(conn) => {
-                if let Err(Error::Io(IoError::Io(ref error))) = conn.close_conn().await {
-                    // If the binlog was requested with the flag BINLOG_DUMP_NON_BLOCK,
-                    // the connection's file handler will already have been closed (EOF).
-                    if error.kind() == ErrorKind::BrokenPipe {
-                        return Ok(());
-                    }
+            // The server no longer reads commands from a binlog connection, so there is no
+            // `COM_QUIT` to send; closing the stream is enough.
+            ConnectionInner::Conn(mut conn) => {
+                if let Some(stream) = conn.inner.stream.take() {
+                    // A close error is not reported: the socket is released either way, and
+                    // the peer may already be gone, e.g. after BINLOG_DUMP_NON_BLOCK reached
+                    // EOF. `close` has always returned `Ok` for this reason.
+                    let _ = stream.close().await;
                 }
             }
             ConnectionInner::ConnMut(_) => {}
@@ -196,6 +198,53 @@ mod tests {
 
     use crate::prelude::*;
     use crate::{test_misc::get_opts, *};
+
+    #[tokio::test]
+    async fn should_not_return_a_dropped_binlog_stream_conn_to_the_pool() -> super::Result<()> {
+        let pool = Pool::new(
+            get_opts().pool_opts(
+                PoolOpts::new()
+                    .with_constraints(PoolConstraints::new(1, 1).unwrap())
+                    .with_reset_connection(false),
+            ),
+        );
+        let mut conn = pool.get_conn().await?;
+        let binlog_conn_id = conn.id();
+        let row: crate::Row = "SHOW BINARY LOGS".first(&mut conn).await?.unwrap();
+        let (filename, pos): (Vec<u8>, u64) = (row.get(0).unwrap(), row.get(1).unwrap());
+        let mut binlog_stream = conn
+            .get_binlog_stream(
+                BinlogStreamRequest::new(19)
+                    .with_filename(&filename)
+                    .with_pos(pos),
+            )
+            .await?;
+        // Drain the initial events so the idle conn passes the pool's liveness check. The
+        // deadline keeps a heartbeat flood from draining forever.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            match timeout(Duration::from_millis(500), binlog_stream.next()).await {
+                Ok(Some(event)) => drop(event?),
+                Ok(None) | Err(_) => break,
+            }
+        }
+        drop(binlog_stream);
+
+        let mut conn = timeout(Duration::from_secs(10), pool.get_conn())
+            .await
+            .unwrap()?;
+        assert_ne!(conn.id(), binlog_conn_id);
+        let one = timeout(Duration::from_secs(5), "SELECT 1".first::<u8, _>(&mut conn))
+            .await
+            .unwrap()?;
+        assert_eq!(one, Some(1));
+
+        drop(conn);
+        timeout(Duration::from_secs(10), pool.disconnect())
+            .await
+            .unwrap()?;
+        Ok(())
+    }
 
     async fn gen_dummy_data(conn: &mut Conn) -> super::Result<()> {
         "CREATE TABLE IF NOT EXISTS customers (customer_id int not null)"
