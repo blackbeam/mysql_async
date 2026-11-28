@@ -76,12 +76,7 @@ impl TtlCheckInterval {
             assert!(idling_conn.conn.inner.pool.is_none());
             let inner = self.inner.clone();
             tokio::spawn(idling_conn.conn.disconnect().then(move |_| {
-                let mut exchange = inner.exchange.lock().unwrap();
-                exchange.exist -= 1;
-                inner
-                    .metrics
-                    .connection_count
-                    .store(exchange.exist, Ordering::Relaxed);
+                inner.release_connection_slot();
                 ok::<_, ()>(())
             }));
         }

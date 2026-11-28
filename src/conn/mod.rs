@@ -628,7 +628,7 @@ impl Conn {
         mem::replace(self, Conn::empty(Default::default()))
     }
 
-    fn empty(opts: Opts) -> Self {
+    pub(crate) fn empty(opts: Opts) -> Self {
         Self {
             inner: Box::new(ConnInner::empty(opts)),
             #[cfg(test)]
@@ -1092,6 +1092,15 @@ impl Conn {
     async fn run_init_commands(&mut self) -> Result<()> {
         if let Some(callback) = self.inner.opts.after_connect() {
             callback(self).await?;
+            // Reject connections left disconnected by the callback before subsequent
+            // init or setup SQL can consume a stale reply and clear the flag.
+            if self.is_disconnected() {
+                return Err(crate::DriverError::ConnectionClosed.into());
+            }
+            // Drain any tracked unread result set left by a healthy callback before setup SQL.
+            if self.has_pending_result() {
+                self.drop_result().await?;
+            }
         }
 
         let mut init = self.inner.opts.init().to_vec();
@@ -1115,9 +1124,35 @@ impl Conn {
 
     /// Returns a future that resolves to [`Conn`].
     pub fn new<T: Into<Opts>>(opts: T) -> crate::BoxFuture<'static, Conn> {
+        /// Closes the socket synchronously if setup ends early by cancellation or error.
+        struct ConnSetupGuard(Option<Conn>);
+
+        impl ConnSetupGuard {
+            fn conn_mut(&mut self) -> &mut Conn {
+                self.0
+                    .as_mut()
+                    .expect("ConnSetupGuard still owns the connection")
+            }
+
+            fn take(mut self) -> Conn {
+                self.0
+                    .take()
+                    .expect("ConnSetupGuard still owns the connection")
+            }
+        }
+
+        impl Drop for ConnSetupGuard {
+            fn drop(&mut self) {
+                if let Some(mut conn) = self.0.take() {
+                    conn.inner.disconnected = true;
+                    drop(conn);
+                }
+            }
+        }
+
         let opts = opts.into();
         async move {
-            let mut conn = Conn::empty(opts.clone());
+            let mut guard = ConnSetupGuard(Some(Conn::empty(opts.clone())));
 
             let stream = if let Some(_path) = opts.socket() {
                 #[cfg(unix)]
@@ -1131,6 +1166,7 @@ impl Conn {
                 Stream::connect_tcp(opts.hostport_or_url(), keepalive).await?
             };
 
+            let conn = guard.conn_mut();
             conn.inner.stream = Some(stream);
             conn.setup_stream()?;
             conn.handle_handshake().await?;
@@ -1150,7 +1186,7 @@ impl Conn {
             conn.run_init_commands().await?;
             conn.run_setup_commands().await?;
 
-            Ok(conn)
+            Ok(guard.take())
         }
         .boxed()
     }
@@ -3313,6 +3349,181 @@ mod test {
         assert_eq!(fetched_rows[0], 12);
         assert_eq!(fetched_rows2[0], 42);
         assert_eq!(fetched_rows3[0], "foo".to_owned());
+    }
+
+    #[tokio::test]
+    async fn pool_waitlist_after_connect_disconnected_rejected_before_init_sql() {
+        use tokio::{io::AsyncReadExt, net::TcpListener, time::timeout};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let target = crate::opts::HostPortOrUrl::HostPort {
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            resolved_ips: None,
+        };
+        let connect_fut = crate::io::Stream::connect_tcp(&target, None);
+        let (client_stream, (mut server_stream, _)) =
+            tokio::try_join!(connect_fut, listener.accept()).unwrap();
+
+        let opts = crate::Opts::from(
+            crate::OptsBuilder::default()
+                .ip_or_hostname("127.0.0.1")
+                .tcp_port(addr.port())
+                .init(vec!["SET @init_marker = 1"])
+                .after_connect(|conn: &mut Conn| {
+                    // Simulate an interrupted query whose error the callback swallowed.
+                    conn.inner.disconnected = true;
+                    Box::pin(async { Ok(()) })
+                }),
+        );
+
+        let mut conn = Conn::empty(opts);
+        conn.inner.stream = Some(client_stream);
+
+        // Poll the mock peer concurrently and bound the await so a regression fails immediately
+        // if init SQL writes bytes to the wire.
+        let mut buf = [0_u8; 64];
+        tokio::select! {
+            res = timeout(std::time::Duration::from_millis(200), conn.run_init_commands()) => {
+                let err = res
+                    .expect("run_init_commands timed out waiting on mock peer")
+                    .unwrap_err();
+                assert!(matches!(
+                    err,
+                    crate::Error::Driver(crate::DriverError::ConnectionClosed)
+                ));
+            }
+            read_res = server_stream.read(&mut buf) => {
+                panic!(
+                    "init SQL wrote bytes to the mock peer after disconnected callback: {read_res:?}"
+                );
+            }
+        }
+
+        assert_eq!(
+            server_stream.try_read(&mut buf).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_waitlist_after_connect_drains_unread_result_before_init_sql() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+            time::timeout,
+        };
+
+        fn frame(seq: u8, payload: &[u8]) -> Vec<u8> {
+            let len = payload.len();
+            let mut out = Vec::with_capacity(4 + len);
+            out.push((len & 0xff) as u8);
+            out.push(((len >> 8) & 0xff) as u8);
+            out.push(((len >> 16) & 0xff) as u8);
+            out.push(seq);
+            out.extend_from_slice(payload);
+            out
+        }
+
+        async fn read_packet(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+            let mut hdr = [0_u8; 4];
+            stream.read_exact(&mut hdr).await.unwrap();
+            let len = (hdr[0] as usize) | ((hdr[1] as usize) << 8) | ((hdr[2] as usize) << 16);
+            let mut payload = vec![0_u8; len];
+            stream.read_exact(&mut payload).await.unwrap();
+            payload
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let peer = tokio::spawn(async move {
+            let (mut server_stream, _) = listener.accept().await.unwrap();
+
+            // 1. Read the callback's `SELECT 1` query and reply with 1 column + 1 unread row.
+            let q1 = read_packet(&mut server_stream).await;
+            assert_eq!(q1[0], 0x03);
+            assert_eq!(&q1[1..], b"SELECT 1");
+
+            let col_def = [
+                0x03, b'd', b'e', b'f', // catalog
+                0x00, // schema
+                0x00, // table
+                0x00, // org_table
+                0x01, b'1', // name
+                0x00, // org_name
+                0x0c, // fixed-length fields marker
+                0x3f, 0x00, // charset (binary)
+                0x01, 0x00, 0x00, 0x00, // column length
+                0x08, // MYSQL_TYPE_LONGLONG
+                0x00, 0x00, // flags
+                0x00, // decimals
+                0x00, 0x00, // filler
+            ];
+            let eof = [0xfe, 0x00, 0x00, 0x02, 0x00];
+            let row = [0x01, b'1'];
+
+            let mut reply = Vec::new();
+            reply.extend_from_slice(&frame(1, &[0x01]));
+            reply.extend_from_slice(&frame(2, &col_def));
+            reply.extend_from_slice(&frame(3, &eof));
+            reply.extend_from_slice(&frame(4, &row));
+            reply.extend_from_slice(&frame(5, &eof));
+            server_stream.write_all(&reply).await.unwrap();
+
+            // 2. After `drop_result()` drains the unread row, expect the configured init SQL.
+            let q2 = read_packet(&mut server_stream).await;
+            assert_eq!(q2[0], 0x03);
+            assert_eq!(&q2[1..], b"SET @init_marker = 1");
+
+            let ok = [0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00];
+            server_stream.write_all(&frame(1, &ok)).await.unwrap();
+        });
+
+        let target = crate::opts::HostPortOrUrl::HostPort {
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            resolved_ips: None,
+        };
+        let client_stream = crate::io::Stream::connect_tcp(&target, None).await.unwrap();
+
+        let opts = crate::Opts::from(
+            crate::OptsBuilder::default()
+                .ip_or_hostname("127.0.0.1")
+                .tcp_port(addr.port())
+                .init(vec!["SET @init_marker = 1"])
+                .after_connect(|conn: &mut Conn| {
+                    Box::pin(async move {
+                        // Drop the result set without consuming its row on a healthy connection.
+                        let _result = conn.query_iter("SELECT 1").await?;
+                        assert!(!conn.is_disconnected());
+                        assert!(conn.has_pending_result());
+                        Ok(())
+                    })
+                }),
+        );
+
+        let mut conn = Conn::empty(opts);
+        conn.inner.stream = Some(client_stream);
+
+        timeout(
+            std::time::Duration::from_millis(500),
+            conn.run_init_commands(),
+        )
+        .await
+        .expect("run_init_commands timed out")
+        .expect("healthy unread result in after_connect should drain before init SQL");
+
+        assert!(!conn.is_disconnected());
+        assert!(!conn.has_pending_result());
+        conn.inner.disconnected = true;
+
+        timeout(std::time::Duration::from_millis(500), peer)
+            .await
+            .expect("mock peer timed out")
+            .unwrap();
     }
 
     #[cfg(feature = "nightly")]

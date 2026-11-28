@@ -14,7 +14,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{atomic::Ordering, Arc},
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
 use super::{IdlingConn, Inner};
@@ -29,6 +29,8 @@ pub(crate) struct Recycler {
     discarded: usize,
     cleaning: FuturesUnordered<BoxFuture<'static, Conn>>,
     reset: FuturesUnordered<BoxFuture<'static, Conn>>,
+    /// Reusable buffer for waking waiters after releasing the `exchange` mutex.
+    wakers: Vec<Waker>,
 
     // Option<Conn> so that we have a way to send a "I didn't make a Conn after all" signal
     dropped: mpsc::UnboundedReceiver<Option<Conn>>,
@@ -49,6 +51,7 @@ impl Recycler {
             discarded: 0,
             cleaning: FuturesUnordered::new(),
             reset: FuturesUnordered::new(),
+            wakers: Vec::new(),
             dropped,
             pool_opts,
             eof: false,
@@ -57,7 +60,11 @@ impl Recycler {
 
     fn conn_return(&mut self, conn: Conn, pool_is_closed: bool) {
         let mut exchange = self.inner.exchange.lock().unwrap();
-        if pool_is_closed || exchange.available.len() >= self.pool_opts.active_bound() {
+        // Keep connections past the active bound while waiters still need them.
+        let idle = exchange.available.len();
+        if pool_is_closed
+            || (idle >= self.pool_opts.active_bound() && idle >= exchange.waiting.demand())
+        {
             drop(exchange);
             self.inner
                 .metrics
@@ -82,7 +89,11 @@ impl Recycler {
                 .metrics
                 .connections_in_pool
                 .store(exchange.available.len(), Ordering::Relaxed);
-            exchange.waiting.wake();
+            let waker = exchange.waiting.pop_waker();
+            drop(exchange);
+            if let Some(waker) = waker {
+                waker.wake();
+            }
         }
     }
 
@@ -229,55 +240,60 @@ impl Future for Recycler {
         }
 
         if self.discarded != 0 {
-            // we need to open up slots for new connctions to be established!
-            let mut exchange = self.inner.exchange.lock().unwrap();
-            exchange.exist -= self.discarded;
-            self.inner
-                .metrics
-                .connection_count
-                .store(exchange.exist, Ordering::Relaxed);
-            for _ in 0..self.discarded {
-                exchange.waiting.wake();
+            // Open slots so waiters can create new connections.
+            let this = &mut *self;
+            this.wakers.clear();
+            {
+                let mut exchange = this.inner.exchange.lock().unwrap();
+                exchange.exist -= this.discarded;
+                this.inner
+                    .metrics
+                    .connection_count
+                    .store(exchange.exist, Ordering::Relaxed);
+                for _ in 0..this.discarded {
+                    match exchange.waiting.pop_waker() {
+                        Some(waker) => this.wakers.push(waker),
+                        None => break,
+                    }
+                }
             }
-            drop(exchange);
-            self.discarded = 0;
+            for waker in this.wakers.drain(..) {
+                waker.wake();
+            }
+            this.discarded = 0;
         }
 
-        // NOTE: we are asserting here that no more connections will ever be returned to
-        // us. see the explanation in Pool::poll_new_conn for why this is okay, even during
-        // races on .exist
-        let effectively_eof = close && self.inner.exchange.lock().unwrap().exist == 0;
-
-        if (self.eof || effectively_eof)
+        // Exit only after all active and TTL connections reach `exist == 0`.
+        // See `Pool::poll_new_conn` for why `close` prevents new connections once `exist == 0`.
+        let ready_to_close = if (self.eof || close)
             && self.cleaning.is_empty()
             && self.discard.is_empty()
             && self.reset.is_empty()
         {
-            // we know that all Pool handles have been dropped (self.dropped.poll returned None).
+            let this = &mut *self;
+            this.wakers.clear();
+            let mut exchange = this.inner.exchange.lock().unwrap();
+            if exchange.exist == 0 {
+                // No idle connections can remain when `exist == 0`.
+                assert_eq!(exchange.available.len(), 0);
+                exchange.recycler_waker = None;
+                // Mark the pool closed before draining any remaining waiters.
+                this.inner.closed.store(true, Ordering::Release);
+                exchange.waiting.drain_wakers(&mut this.wakers);
+                true
+            } else {
+                // Store our waker so `Inner::release_connection_slot` wakes us at `exist == 0`.
+                exchange.recycler_waker = Some(cx.waker().clone());
+                false
+            }
+        } else {
+            false
+        };
 
-            // if this assertion fails, where are the remaining connections?
-            assert_eq!(self.inner.exchange.lock().unwrap().available.len(), 0);
-
-            // NOTE: it is _necessary_ that we set this _before_ we call .wake
-            // otherwise, the following may happen to the DisconnectPool future:
-            //
-            //  - We wake all in .wake
-            //  - DisconnectPool::poll adds to .wake
-            //  - DisconnectPool::poll reads .closed == false
-            //  - We set .closed = true
-            //
-            // At this point, DisconnectPool::poll will never be notified again.
-            self.inner.closed.store(true, Ordering::Release);
-        }
-
-        if self.inner.closed.load(Ordering::Acquire) {
-            // `DisconnectPool` might still wait to be woken up.
-            let mut exchange = self.inner.exchange.lock().unwrap();
-            while exchange.waiting.wake() {}
-            // we're about to exit, so there better be no outstanding connections
-            assert_eq!(exchange.exist, 0);
-            assert_eq!(exchange.available.len(), 0);
-            drop(exchange);
+        if ready_to_close {
+            for waker in self.wakers.drain(..) {
+                waker.wake();
+            }
 
             Poll::Ready(())
         } else {
@@ -294,5 +310,71 @@ impl Drop for Recycler {
             // all we can do is try to ensure a clean shutdown
             self.inner.close.store(true, Ordering::SeqCst);
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{
+        future::Future,
+        pin::pin,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        task::{Context, Poll},
+    };
+
+    use tokio::sync::mpsc;
+    use waker_fn::waker_fn;
+
+    use super::Recycler;
+    use crate::{test_misc::get_opts, Conn, Opts, Pool, PoolConstraints, PoolOpts};
+
+    fn idle_conn(opts: &Opts) -> Conn {
+        let mut conn = Conn::empty(opts.clone());
+        conn.inner.disconnected = true;
+        conn
+    }
+
+    #[tokio::test]
+    async fn should_keep_returned_conns_past_active_bound_while_waiters_need_them() {
+        // The default `inactive_connection_ttl` of zero makes the active bound equal `min`.
+        let pool_opts = PoolOpts::new().with_constraints(PoolConstraints::new(0, 3).unwrap());
+        let opts = Opts::from(get_opts().pool_opts(pool_opts.clone()));
+        let pool = Pool::new(opts.clone());
+        pool.inner.exchange.lock().unwrap().exist = 3;
+
+        let wakeups = Arc::new(AtomicUsize::new(0));
+        let wakeups_clone = wakeups.clone();
+        let waker = waker_fn(move || {
+            wakeups_clone.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut cx = Context::from_waker(&waker);
+
+        let mut first = pin!(pool.get_conn());
+        let mut second = pin!(pool.get_conn());
+        assert!(matches!(first.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(second.as_mut().poll(&mut cx), Poll::Pending));
+
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let mut recycler = Recycler::new(pool_opts, pool.inner.clone(), rx);
+        let superfluous = || {
+            pool.metrics()
+                .discarded_superfluous_connection
+                .load(Ordering::Relaxed)
+        };
+
+        // Both returns are kept for the two waiters, which are woken to claim them.
+        recycler.conn_return(idle_conn(&opts), false);
+        recycler.conn_return(idle_conn(&opts), false);
+        assert_eq!(pool.inner.exchange.lock().unwrap().available.len(), 2);
+        assert_eq!(wakeups.load(Ordering::SeqCst), 2);
+        assert_eq!(superfluous(), 0);
+
+        // Woken waiters already have a connection each, so a further return is superfluous.
+        recycler.conn_return(idle_conn(&opts), false);
+        assert_eq!(pool.inner.exchange.lock().unwrap().available.len(), 2);
+        assert_eq!(superfluous(), 1);
     }
 }
