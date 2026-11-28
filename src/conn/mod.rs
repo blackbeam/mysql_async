@@ -118,7 +118,8 @@ fn disconnect(mut conn: Conn) {
         // this might fail if, say, the runtime is shutting down, but we've done what we could
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                if let Ok(conn) = conn.cleanup_for_pool().await {
+                if let Ok(mut conn) = conn.cleanup_for_pool().await {
+                    conn.inner.disconnected = false;
                     let _ = conn.disconnect().await;
                 }
             });
@@ -1897,6 +1898,43 @@ mod test {
 
         conn.disconnect().await?;
         Ok(())
+    }
+
+    async fn mock_peer_conn(opts: OptsBuilder) -> (Conn, tokio::net::TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = crate::opts::HostPortOrUrl::HostPort {
+            host: "127.0.0.1".into(),
+            port: listener.local_addr().unwrap().port(),
+            resolved_ips: None,
+        };
+        let (client_stream, (server_stream, _)) = tokio::try_join!(
+            crate::io::Stream::connect_tcp(&target, None),
+            listener.accept()
+        )
+        .unwrap();
+
+        let mut conn = Conn::empty(opts.into());
+        conn.inner.stream = Some(client_stream);
+        (conn, server_stream)
+    }
+
+    #[tokio::test]
+    async fn should_send_com_quit_when_dropped() {
+        use mysql_common::constants::Command;
+        use tokio::{io::AsyncReadExt, time::timeout};
+
+        let (conn, mut server_stream) = mock_peer_conn(OptsBuilder::default()).await;
+        drop(conn);
+
+        let mut received = Vec::new();
+        timeout(
+            std::time::Duration::from_secs(1),
+            server_stream.read_to_end(&mut received),
+        )
+        .await
+        .expect("dropped conn was not closed")
+        .unwrap();
+        assert_eq!(received, [0x01, 0x00, 0x00, 0x00, Command::COM_QUIT as u8]);
     }
 
     #[test]

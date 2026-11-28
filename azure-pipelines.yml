@@ -246,8 +246,9 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
           source ~/.profile
           source ~/.bash_profile
+          tiup update --all
           tiup playground $(DB_VERSION) --db 1 --pd 1 --kv 1 &
-          while ! nc -W 1 localhost 4000 | grep -q -P '.+'; do sleep 1; done
+          timeout 300 bash -c "while ! nc -W 1 localhost 4000 | grep -q -P '.+'; do sleep 1; done"
         displayName: Install and run TiDB
       - bash: cargo test should_reuse_connections -- --nocapture
         displayName: Run tests
