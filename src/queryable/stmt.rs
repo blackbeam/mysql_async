@@ -400,7 +400,7 @@ impl crate::Conn {
     where
         P: Into<Params>,
     {
-        self.routine(ExecRoutine::new(statement, params.into()))
+        self.routine(ExecRoutine::new(statement, params.into())?)
             .await?;
         Ok(())
     }

@@ -3,6 +3,7 @@ use futures_util::FutureExt;
 use mysql_common::{
     packets::{ComStmtBulkExecuteRequestBuilder, ComStmtExecuteRequestBuilder},
     params::Params,
+    value::Value,
 };
 #[cfg(feature = "tracing")]
 use tracing::{field, info_span, Level, Span};
@@ -17,12 +18,30 @@ use super::Routine;
 #[derive(Debug, Clone)]
 pub struct ExecRoutine<'a> {
     stmt: &'a Statement,
-    params: Params,
+    params: Vec<Value>,
 }
 
 impl<'a> ExecRoutine<'a> {
-    pub fn new(stmt: &'a Statement, params: Params) -> Self {
-        Self { stmt, params }
+    /// Validates `params` against `stmt` up front, so that a client-side error
+    /// doesn't break the connection.
+    pub fn new(stmt: &'a Statement, params: Params) -> crate::Result<Self> {
+        let params =
+            params.into_values(Some(stmt.named_params.as_slice()).filter(|x| !x.is_empty()))?;
+
+        if params.len() > MAX_STATEMENT_PARAMS {
+            Err(DriverError::StmtParamsNumberExceedsLimit {
+                supplied: params.len(),
+            })?
+        }
+
+        if stmt.num_params() as usize != params.len() {
+            Err(DriverError::StmtParamsMismatch {
+                required: stmt.num_params(),
+                supplied: params.len(),
+            })?
+        }
+
+        Ok(Self { stmt, params })
     }
 }
 
@@ -40,13 +59,9 @@ impl Routine<()> for ExecRoutine<'_> {
         );
 
         let stmt_id = self.stmt.id();
-        let expected_num_params = self.stmt.num_params();
-        let params = self
-            .params
-            .into_values(Some(self.stmt.named_params.as_slice()).filter(|x| !x.is_empty()));
+        let params = self.params;
 
         let fut = async move {
-            let params = params?;
             #[cfg(feature = "tracing")]
             if tracing::span_enabled!(Level::DEBUG) {
                 // The params may contain sensitive data. Restrict to DEBUG.
@@ -60,19 +75,6 @@ impl Routine<()> for ExecRoutine<'_> {
                     .map(|(val, sep)| val + sep)
                     .collect::<String>();
                 Span::current().record("mysql_async.query.params", ps);
-            }
-
-            if params.len() > MAX_STATEMENT_PARAMS {
-                Err(DriverError::StmtParamsNumberExceedsLimit {
-                    supplied: params.len(),
-                })?
-            }
-
-            if expected_num_params as usize != params.len() {
-                Err(DriverError::StmtParamsMismatch {
-                    required: expected_num_params,
-                    supplied: params.len(),
-                })?
             }
 
             let (body, as_long_data) = ComStmtExecuteRequestBuilder::new(stmt_id).build(&params);
