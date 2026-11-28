@@ -1651,6 +1651,30 @@ mod test {
     }
 
     #[tokio::test]
+    async fn should_not_roll_back_a_transaction_after_a_dropped_statement() -> super::Result<()> {
+        let mut conn = Conn::new(get_opts()).await?;
+        conn.query_drop("CREATE TEMPORARY TABLE tmp (id INT PRIMARY KEY, v INT) ENGINE=InnoDB")
+            .await?;
+        let mut transaction = conn.start_transaction(Default::default()).await?;
+
+        let dropped = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            transaction.query_drop("INSERT INTO tmp SELECT 1, SLEEP(0.5)"),
+        )
+        .await;
+        assert!(dropped.is_err());
+
+        // The dropped INSERT's OK packet must not be taken as the ROLLBACK's.
+        let rollback = transaction.rollback().await;
+        assert!(
+            matches!(rollback, Err(Error::Driver(DriverError::ConnectionClosed))),
+            "{rollback:?}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn should_return_found_rows_if_flag_is_set() -> super::Result<()> {
         let opts = get_opts().client_found_rows(true);
         let mut conn = Conn::new(opts).await.unwrap();

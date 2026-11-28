@@ -614,6 +614,45 @@ mod test {
     }
 
     #[tokio::test]
+    async fn should_not_hand_out_a_conn_whose_query_was_dropped() -> super::Result<()> {
+        for reset_connection in [false, true] {
+            let pool_opts = PoolOpts::new()
+                .with_constraints(PoolConstraints::new(1, 1).unwrap())
+                .with_reset_connection(reset_connection);
+            let pool = Pool::new(get_opts().pool_opts(pool_opts));
+
+            let mut conn = pool.get_conn().await?;
+            let dropped = timeout(
+                Duration::from_millis(100),
+                "SELECT 1 + SLEEP(0.5)".first::<i64, _>(&mut conn),
+            )
+            .await;
+            assert!(dropped.is_err());
+            // The dropped query's reply may still be in flight, so the conn refuses further
+            // commands instead of reading that reply as their result.
+            let refused = "SELECT 2 + SLEEP(1)".first::<i64, _>(&mut conn).await;
+            assert!(
+                matches!(
+                    refused,
+                    Err(crate::Error::Driver(crate::DriverError::ConnectionClosed))
+                ),
+                "reset_connection={reset_connection}: {refused:?}"
+            );
+            drop(conn);
+
+            let mut conn = pool.get_conn().await?;
+            let next = "SELECT 3".first::<i64, _>(&mut conn).await;
+            assert!(
+                matches!(next, Ok(Some(3))),
+                "reset_connection={reset_connection}: {next:?}"
+            );
+            drop(conn);
+            pool.disconnect().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn should_start_transaction() -> super::Result<()> {
         let pool = pool_with_one_connection();
 
