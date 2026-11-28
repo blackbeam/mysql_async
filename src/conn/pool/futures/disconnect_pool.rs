@@ -6,34 +6,33 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-use std::{
-    future::poll_fn,
-    sync::atomic,
-    task::{Context, Poll},
-};
+use std::sync::atomic;
 
-use crate::{
-    conn::pool::{waitlist::QUEUE_END_ID, Pool},
-    error::Error,
-};
+use crate::{conn::pool::Pool, error::Error};
 
-/// Disconnect this pool from a server and resolves to `()`.
+/// Disconnects this pool from the server and resolves to `()`.
 ///
-/// **Note:** This won't resolve until all active connections, taken from the poll,
-/// are dropped or disonnected. Also all pending and new `GetConn`'s will resolve to error.
+/// **Note:** This future waits until all checked-out connections are dropped or disconnected,
+/// and until any `get_conn()` already establishing a connection finishes setup or is dropped.
+/// Parked and new `get_conn()` calls fail with [`crate::DriverError::PoolDisconnected`].
+/// Callers that need bounded shutdown should cancel or time-limit outstanding `get_conn()` calls.
 pub(crate) async fn disconnect_pool(pool: Pool) -> Result<(), Error> {
     let inner = pool.inner;
     let drop = pool.drop;
 
-    inner.close.store(true, atomic::Ordering::Release);
-
-    let f = |cx: &mut Context| {
+    // Mark the pool as closing and drain all parked waiters under one lock.
+    let wakers = {
         let mut exchange = inner.exchange.lock().unwrap();
+        inner.close.store(true, atomic::Ordering::Release);
         exchange.spawn_futures_if_needed(&inner);
-        exchange.waiting.push(cx.waker().clone(), QUEUE_END_ID);
-        Poll::Ready(())
+        let mut wakers = Vec::new();
+        exchange.waiting.drain_wakers(&mut wakers);
+        wakers
     };
-    poll_fn(f).await;
+
+    for waker in wakers {
+        waker.wake();
+    }
 
     if !inner.closed.load(atomic::Ordering::Acquire) && drop.send(None).is_ok() {
         // Recycler is alive. Wait for it to finish.
