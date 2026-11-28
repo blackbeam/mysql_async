@@ -118,7 +118,8 @@ fn disconnect(mut conn: Conn) {
         // this might fail if, say, the runtime is shutting down, but we've done what we could
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                if let Ok(conn) = conn.cleanup_for_pool().await {
+                if let Ok(mut conn) = conn.cleanup_for_pool().await {
+                    conn.inner.disconnected = false;
                     let _ = conn.disconnect().await;
                 }
             });
@@ -1094,9 +1095,9 @@ impl Conn {
             callback(self).await?;
         }
 
-        let mut init = self.inner.opts.init().to_vec();
+        let init = self.inner.opts.init().to_vec();
 
-        while let Some(query) = init.pop() {
+        for query in init {
             self.query_drop(query).await?;
         }
 
@@ -1104,9 +1105,9 @@ impl Conn {
     }
 
     async fn run_setup_commands(&mut self) -> Result<()> {
-        let mut setup = self.inner.opts.setup().to_vec();
+        let setup = self.inner.opts.setup().to_vec();
 
-        while let Some(query) = setup.pop() {
+        for query in setup {
             self.query_drop(query).await?;
         }
 
@@ -1897,6 +1898,146 @@ mod test {
 
         conn.disconnect().await?;
         Ok(())
+    }
+
+    async fn mock_peer_conn(opts: OptsBuilder) -> (Conn, tokio::net::TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = crate::opts::HostPortOrUrl::HostPort {
+            host: "127.0.0.1".into(),
+            port: listener.local_addr().unwrap().port(),
+            resolved_ips: None,
+        };
+        let (client_stream, (server_stream, _)) = tokio::try_join!(
+            crate::io::Stream::connect_tcp(&target, None),
+            listener.accept()
+        )
+        .unwrap();
+
+        let mut conn = Conn::empty(opts.into());
+        conn.inner.stream = Some(client_stream);
+        (conn, server_stream)
+    }
+
+    #[tokio::test]
+    async fn should_send_com_quit_when_dropped() {
+        use mysql_common::constants::Command;
+        use tokio::{io::AsyncReadExt, time::timeout};
+
+        let (conn, mut server_stream) = mock_peer_conn(OptsBuilder::default()).await;
+        drop(conn);
+
+        let mut received = Vec::new();
+        timeout(
+            std::time::Duration::from_secs(1),
+            server_stream.read_to_end(&mut received),
+        )
+        .await
+        .expect("dropped conn was not closed")
+        .unwrap();
+        assert_eq!(received, [0x01, 0x00, 0x00, 0x00, Command::COM_QUIT as u8]);
+    }
+
+    async fn read_mock_packet(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+        use tokio::io::AsyncReadExt;
+
+        let mut header = [0_u8; 4];
+        stream.read_exact(&mut header).await.unwrap();
+        let len = u32::from_le_bytes([header[0], header[1], header[2], 0]) as usize;
+        let mut payload = vec![0_u8; len];
+        stream.read_exact(&mut payload).await.unwrap();
+        payload
+    }
+
+    async fn write_mock_ok(stream: &mut tokio::net::TcpStream) {
+        stream
+            .write_all(&[
+                0x07, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+            ])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn should_run_init_and_setup_commands_in_order() {
+        let opts = OptsBuilder::default()
+            .init(vec!["SET @a = 1", "SET @a = 2"])
+            .setup(vec!["SET @b = 1", "SET @b = 2"]);
+        let (mut conn, mut server_stream) = mock_peer_conn(opts).await;
+
+        let peer = tokio::spawn(async move {
+            let mut queries = Vec::new();
+            for _ in 0..4 {
+                let packet = read_mock_packet(&mut server_stream).await;
+                assert_eq!(packet[0], 0x03);
+                queries.push(String::from_utf8(packet[1..].to_vec()).unwrap());
+                write_mock_ok(&mut server_stream).await;
+            }
+            queries
+        });
+
+        conn.run_init_commands().await.unwrap();
+        conn.run_setup_commands().await.unwrap();
+        conn.inner.disconnected = true;
+
+        assert_eq!(
+            peer.await.unwrap(),
+            ["SET @a = 1", "SET @a = 2", "SET @b = 1", "SET @b = 2"]
+        );
+    }
+
+    #[tokio::test]
+    async fn should_roll_back_transaction_characteristics_when_start_transaction_fails() {
+        use tokio::io::AsyncReadExt;
+
+        let (mut conn, mut server_stream) = mock_peer_conn(OptsBuilder::default()).await;
+        conn.inner.version = (10, 11, 0);
+
+        let peer = tokio::spawn(async move {
+            let mut queries = Vec::new();
+            let mut header = [0_u8; 4];
+            while server_stream.read_exact(&mut header).await.is_ok() {
+                let len = u32::from_le_bytes([header[0], header[1], header[2], 0]) as usize;
+                let mut packet = vec![0_u8; len];
+                server_stream.read_exact(&mut packet).await.unwrap();
+                let query = String::from_utf8(packet[1..].to_vec()).unwrap();
+                if queries.len() == 2 {
+                    server_stream
+                        .write_all(b"\x0d\x00\x00\x01\xff\x48\x04#HY000boom")
+                        .await
+                        .unwrap();
+                } else {
+                    write_mock_ok(&mut server_stream).await;
+                }
+                queries.push(query);
+            }
+            queries
+        });
+
+        let err = conn
+            .start_transaction(
+                crate::TxOpts::default()
+                    .with_isolation_level(crate::IsolationLevel::Serializable)
+                    .with_readonly(true)
+                    .clone(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Server(_)), "{err:?}");
+
+        drop(conn.start_transaction(Default::default()).await.unwrap());
+        conn.inner.disconnected = true;
+        drop(conn);
+
+        assert_eq!(
+            peer.await.unwrap(),
+            [
+                "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+                "SET TRANSACTION READ ONLY",
+                "START TRANSACTION",
+                "ROLLBACK",
+                "START TRANSACTION",
+            ]
+        );
     }
 
     #[test]
